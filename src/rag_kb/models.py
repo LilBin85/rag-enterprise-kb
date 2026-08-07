@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -74,3 +75,30 @@ class ChunkRecord(BaseModel):
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
+
+
+class Citation(BaseModel):
+    """蓝图 7.3 的引用格式:每条引用必须指向实际检索到的、已授权且 active 的块。"""
+
+    document_id: str
+    document_version: int
+    source_file_name: str
+    source_locator: str
+    chunk_id: str
+
+
+class Refusal(BaseModel):
+    """标准化拒答(蓝图 7.4):kind 为机器可读原因码,message 为对外统一文案。"""
+
+    kind: str
+    message: str
+
+
+class QuestionResponse(BaseModel):
+    """POST /questions 的响应契约。不回显问题原文,避免响应意外携带敏感查询上下文。"""
+
+    verdict: Literal["answer", "refusal"]
+    answer: str | None = None
+    refusal: Refusal | None = None
+    citations: list[Citation] = []
+    role: Role

@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # 切块上限(按字符数;结构化边界优先,超长章节再细分)
     chunk_max_chars: int = 800
 
+    # 检索(蓝图 7.1):Top-K 候选数;相似度阈值待冻结评测校准,None 表示不裁切
+    retrieval_top_k: int = 5
+    retrieval_score_threshold: float | None = None
+
     # bge-m3 dense 向量维度(工作单元 3 使用)
     embedding_dim: int = 1024
 

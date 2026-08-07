@@ -29,6 +29,19 @@ class RetrievalCandidate:
     text: str
 
 
+@dataclass(frozen=True)
+class RetrievalResult:
+    """检索结果:候选 + 被阈值裁掉的授权候选数。
+
+    suppressed_count 用于区分蓝图 7.4 的两类拒答:
+    - candidates 空且 suppressed_count 为 0 → 无任何授权候选(含无权限);
+    - candidates 空但 suppressed_count > 0 → 有授权候选但相关性不足。
+    """
+
+    candidates: list[RetrievalCandidate]
+    suppressed_count: int
+
+
 class Retriever:
     """单一 dense 检索基线:Top-K + 可选相似度阈值(蓝图 7.1,阈值待冻结评测校准)。"""
 
@@ -45,7 +58,7 @@ class Retriever:
         self.top_k = top_k
         self.score_threshold = score_threshold
 
-    def search(self, question: str, role: Role) -> list[RetrievalCandidate]:
+    def search(self, question: str, role: Role) -> RetrievalResult:
         vector = self.embedder.embed([question])[0]
         acl_filter = models.Filter(
             must=[
@@ -57,16 +70,20 @@ class Retriever:
                 ),
             ]
         )
+        # 先按 Top-K 取回(不带阈值),再在内存中按阈值裁切,以统计被裁数量。
         response = self.store.client.query_points(
             collection_name=self.store.collection,
             query=vector,
             query_filter=acl_filter,
             limit=self.top_k,
-            score_threshold=self.score_threshold,
             with_payload=True,
             with_vectors=False,
         )
-        return [self._to_candidate(point) for point in response.points]
+        candidates = [self._to_candidate(point) for point in response.points]
+        if self.score_threshold is not None:
+            kept = [c for c in candidates if c.score >= self.score_threshold]
+            return RetrievalResult(candidates=kept, suppressed_count=len(candidates) - len(kept))
+        return RetrievalResult(candidates=candidates, suppressed_count=0)
 
     @staticmethod
     def _to_candidate(point: models.ScoredPoint) -> RetrievalCandidate:

@@ -14,6 +14,7 @@ from pydantic import BaseModel, ValidationError
 from qdrant_client import QdrantClient
 
 from rag_kb.config import ROOT_DIR, get_settings
+from rag_kb.answerer import AnswerService, DeepSeekAnswerModel
 from rag_kb.embedder import BgeM3Embedder
 from rag_kb.ingestion import UploadValidationError, validate_upload
 from rag_kb.lifecycle import (
@@ -21,7 +22,8 @@ from rag_kb.lifecycle import (
     DocumentLifecycle,
     DocumentNotFoundError,
 )
-from rag_kb.models import DocumentSpec, Role
+from rag_kb.models import DocumentSpec, QuestionResponse, Role
+from rag_kb.retriever import Retriever
 from rag_kb.store import ChunkStore
 
 app = FastAPI(title="RAG 企业知识库智能体", version="0.1.0")
@@ -143,3 +145,41 @@ def remove_document(document_id: str, lifecycle: LifecycleDep, mode: str = "dele
 def get_versions(document_id: str, lifecycle: LifecycleDep) -> dict:
     """查看版本状态(蓝图 8:仅用于调试与演示版本生命周期)。"""
     return {"document_id": document_id, "versions": lifecycle.versions(document_id)}
+
+
+# ---------- 问答(蓝图 8:POST /questions) ----------
+
+class QuestionRequest(BaseModel):
+    """提问请求;首版角色身份为显式传入的固定演示身份,不是真实企业认证(蓝图 8 末注)。"""
+
+    question: str
+    role: Role
+
+
+_answer_service_singleton: AnswerService | None = None
+
+
+def build_answer_service() -> AnswerService:
+    """生产问答服务单例;模型懒加载,不会在健康检查或非问答路径触发。"""
+    global _answer_service_singleton
+    if _answer_service_singleton is None:
+        settings = get_settings()
+        store = ChunkStore(settings.qdrant_url, settings.qdrant_collection)
+        store.ensure_collection(settings.embedding_dim)
+        retriever = Retriever(
+            store,
+            BgeM3Embedder(),
+            top_k=settings.retrieval_top_k,
+            score_threshold=settings.retrieval_score_threshold,
+        )
+        _answer_service_singleton = AnswerService(retriever, DeepSeekAnswerModel(settings))
+    return _answer_service_singleton
+
+
+@app.post("/questions", response_model=QuestionResponse)
+def ask_question(
+    req: QuestionRequest,
+    service: Annotated[AnswerService, Depends(build_answer_service)],
+) -> QuestionResponse:
+    """提问并检索:返回回答或标准化拒答及引用(蓝图 8 / 7.3 / 7.4)。"""
+    return service.ask(req.question, req.role)
