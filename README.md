@@ -27,6 +27,39 @@ python scripts/verify_qdrant.py
 
 # 3. 配置密钥
 Copy-Item .env.example .env   # 然后填入真实 DEEPSEEK_API_KEY
+
+# 4. 启动 API 服务(脚本内含 PYTHONUTF8,修复中文 Windows 下 Docling 的 GBK 编码问题)
+.\scripts\start_api.ps1
+```
+
+## 环境变量
+
+| 变量 | 必需 | 说明 |
+| --- | --- | --- |
+| `DEEPSEEK_API_KEY` | 是 | DeepSeek API 密钥，只存在于本地 `.env`，不提交 Git |
+| `DEEPSEEK_BASE_URL` | 否 | 默认 `https://api.deepseek.com` |
+| `DEEPSEEK_MODEL` | 否 | 默认 `deepseek-v4-flash` |
+| `QDRANT_URL` | 否 | 默认 `http://localhost:6333` |
+| `HF_ENDPOINT` | 否 | HuggingFace 下载端点；国内网络建议 `https://hf-mirror.com` |
+
+## 固定演示
+
+服务启动后，运行蓝图第 12 节的固定演示脚本（可重复运行，开头自动重置数据）：
+
+```powershell
+python scripts/demo.py                # 完整演示(含冻结测试回归)
+python scripts/demo.py --skip-tests   # 仅演示 API 行为
+```
+
+演示顺序：导入语料 → engineer 查询（回答+引用）→ employee 越权查询（零泄露拒答）→ 上传 v2（仅引用新版）→ 删除后查询（无证据拒答）→ 冻结 pytest 回归。
+
+## 验证与测试
+
+```powershell
+python -m pytest tests/ -q            # 冻结测试(57 项,默认脱离真实模型与真实 API)
+python scripts/smoke_real_ingest.py   # 手动冒烟:真 bge-m3 + 真 Docling PDF 摄取
+python scripts/smoke_answer.py        # 手动冒烟:真 DeepSeek 端到端问答
+python scripts/download_bge_m3.py     # 预下载 bge-m3(经 hf-mirror 镜像)
 ```
 
 ## 目录说明
