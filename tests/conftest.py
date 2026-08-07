@@ -18,7 +18,6 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import UnexpectedResponse
 
 from rag_kb.config import get_settings
-from rag_kb.embedder import DeterministicEmbedder
 from rag_kb.store import ChunkStore
 
 
@@ -83,8 +82,8 @@ def store(qdrant_url: str) -> Iterator[ChunkStore]:
 
 
 @pytest.fixture()
-def embedder() -> DeterministicEmbedder:
-    return DeterministicEmbedder(dim=1024)
+def embedder() -> TopicEmbedder:
+    return TopicEmbedder()
 
 
 @pytest.fixture()

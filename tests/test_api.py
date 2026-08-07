@@ -11,7 +11,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rag_kb.api import app, build_lifecycle
-from rag_kb.embedder import DeterministicEmbedder
 from rag_kb.lifecycle import DocumentLifecycle
 from rag_kb.store import ChunkStore
 
@@ -27,7 +26,7 @@ DOC_V2 = "# API 测试制度\n## 年假\n员工每年可享受带薪年假 15 �
 
 
 @pytest.fixture()
-def client(store: ChunkStore, embedder: DeterministicEmbedder, tmp_path: Path) -> TestClient:
+def client(store: ChunkStore, embedder, tmp_path: Path) -> TestClient:
     test_lifecycle = DocumentLifecycle(
         store=store, embedder=embedder, upload_dir=tmp_path / "uploads", max_chars=800
     )

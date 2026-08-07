@@ -29,6 +29,13 @@ from rag_kb.store import ChunkStore
 app = FastAPI(title="RAG 企业知识库智能体", version="0.1.0")
 
 
+def _build_store() -> ChunkStore:
+    settings = get_settings()
+    store = ChunkStore(settings.qdrant_url, settings.qdrant_collection)
+    store.ensure_collection(settings.embedding_dim)
+    return store
+
+
 class DocumentMetadata(BaseModel):
     """POST /documents 随文件提交的元数据表单(JSON 字符串)。"""
 
@@ -45,9 +52,7 @@ def build_lifecycle() -> DocumentLifecycle:
     """生产 lifecycle 单例;embedder 懒加载,不会在健康检查时触发模型下载。"""
     global _lifecycle_singleton
     if _lifecycle_singleton is None:
-        settings = get_settings()
-        store = ChunkStore(settings.qdrant_url, settings.qdrant_collection)
-        store.ensure_collection(settings.embedding_dim)
+        store = _build_store()
         _lifecycle_singleton = DocumentLifecycle(
             store=store,
             embedder=BgeM3Embedder(),
@@ -163,9 +168,7 @@ def build_answer_service() -> AnswerService:
     """生产问答服务单例;模型懒加载,不会在健康检查或非问答路径触发。"""
     global _answer_service_singleton
     if _answer_service_singleton is None:
-        settings = get_settings()
-        store = ChunkStore(settings.qdrant_url, settings.qdrant_collection)
-        store.ensure_collection(settings.embedding_dim)
+        store = _build_store()
         retriever = Retriever(
             store,
             BgeM3Embedder(),

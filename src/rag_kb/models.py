@@ -60,21 +60,7 @@ class ChunkRecord(BaseModel):
 
     def to_payload(self) -> dict:
         """序列化为 Qdrant payload:JSON 兼容、枚举转值、时间转 ISO 8601。"""
-        return {
-            "document_id": self.document_id,
-            "document_version": self.document_version,
-            "chunk_id": self.chunk_id,
-            "source_file_name": self.source_file_name,
-            "source_locator": self.source_locator,
-            "title": self.title,
-            "department": self.department,
-            "allowed_roles": list(self.allowed_roles),
-            "status": str(self.status),
-            "content_hash": self.content_hash,
-            "text": self.text,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat(),
-        }
+        return self.model_dump(mode="json")
 
 
 class Citation(BaseModel):

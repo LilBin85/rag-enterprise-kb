@@ -141,7 +141,7 @@ def test_chunk_record_payload_covers_blueprint_fields() -> None:
         assert field in payload, f"payload 缺少蓝图字段: {field}"
     assert payload["allowed_roles"] == ["hr", "admin"]
     assert payload["status"] == "active"
-    assert payload["created_at"] == NOW.isoformat()
+    assert payload["created_at"] in (NOW.isoformat(), NOW.isoformat().replace("+00:00", "Z"))
 
 
 # ---------- 真实语料的 Markdown 解析 ----------

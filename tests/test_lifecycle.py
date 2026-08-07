@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from rag_kb.embedder import DeterministicEmbedder
 from rag_kb.lifecycle import (
     DocumentConflictError,
     DocumentLifecycle,
@@ -44,7 +43,7 @@ def _spec(version: int = 1, filename: str = "测试休假制度-v1.md") -> Docum
 
 
 @pytest.fixture()
-def lifecycle(store: ChunkStore, embedder: DeterministicEmbedder, tmp_path: Path) -> DocumentLifecycle:
+def lifecycle(store: ChunkStore, embedder, tmp_path: Path) -> DocumentLifecycle:
     return DocumentLifecycle(store=store, embedder=embedder, upload_dir=tmp_path / "uploads", max_chars=800)
 
 

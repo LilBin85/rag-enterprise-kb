@@ -6,7 +6,6 @@
 
 from pathlib import Path
 
-from rag_kb.embedder import Embedder
 from rag_kb.ingestion import chunk_items, parse_document
 from rag_kb.models import ChunkStatus, DocumentSpec
 from rag_kb.store import ChunkStore
@@ -21,7 +20,7 @@ class DocumentNotFoundError(RuntimeError):
 
 
 class DocumentLifecycle:
-    def __init__(self, store: ChunkStore, embedder: Embedder, upload_dir: Path, max_chars: int = 800) -> None:
+    def __init__(self, store: ChunkStore, embedder, upload_dir: Path, max_chars: int = 800) -> None:
         self.store = store
         self.embedder = embedder
         self.upload_dir = upload_dir

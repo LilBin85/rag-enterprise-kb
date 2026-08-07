@@ -6,7 +6,7 @@
 - AnswerService:拒答分流(不调模型)、引用组装(模型只能选择,应用层构造)、失败关闭。
 """
 
-from typing import Literal, Protocol
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -43,12 +43,6 @@ class ModelVerdict(BaseModel):
     used_chunk_ids: list[str] = []
 
 
-class AnswerModel(Protocol):
-    """生成层抽象:AnswerService 只依赖此协议,不关心下游是 DeepSeek 还是测试桩。"""
-
-    def answer(self, question: str, chunks: list[RetrievalCandidate]) -> ModelVerdict: ...
-
-
 class DeepSeekAnswerModel:
     """ChatDeepSeek + with_structured_output:输出结构由 Pydantic schema 约束(蓝图 7.2)。"""
 
@@ -80,7 +74,7 @@ class DeepSeekAnswerModel:
 class AnswerService:
     """问答编排骨架:检索 → 拒答分流 → 生成 → 引用组装。"""
 
-    def __init__(self, retriever: Retriever, model: AnswerModel) -> None:
+    def __init__(self, retriever: Retriever, model) -> None:
         self.retriever = retriever
         self.model = model
 

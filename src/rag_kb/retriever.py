@@ -10,7 +10,6 @@ from dataclasses import dataclass
 
 from qdrant_client.http import models
 
-from rag_kb.embedder import Embedder
 from rag_kb.models import ChunkStatus, Role
 from rag_kb.store import ChunkStore
 
@@ -48,7 +47,7 @@ class Retriever:
     def __init__(
         self,
         store: ChunkStore,
-        embedder: Embedder,
+        embedder,
         *,
         top_k: int = 5,
         score_threshold: float | None = None,

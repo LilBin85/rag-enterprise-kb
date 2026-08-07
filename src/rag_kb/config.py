@@ -54,10 +54,6 @@ class Settings(BaseSettings):
             os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
         os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
 
-    def apply_hf_endpoint(self) -> None:
-        """兼容别名;统一转发到 prepare_runtime_env。"""
-        self.prepare_runtime_env()
-
 
 @lru_cache
 def get_settings() -> Settings:

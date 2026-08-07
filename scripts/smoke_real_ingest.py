@@ -18,7 +18,7 @@ from rag_kb.store import ChunkStore
 
 def main() -> None:
     settings = get_settings()
-    settings.apply_hf_endpoint()
+    settings.prepare_runtime_env()
 
     store = ChunkStore(settings.qdrant_url, f"smoke_{uuid.uuid4().hex[:8]}")
     store.ensure_collection(settings.embedding_dim)
