@@ -1,0 +1,17 @@
+# 密钥与本地环境
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 构建产物
+dist/
+build/
+
+# 本地数据（冻结语料 data/corpus 需提交，本地临时数据不提交）
+data/local/
