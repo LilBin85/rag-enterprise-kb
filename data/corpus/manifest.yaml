@@ -1,0 +1,116 @@
+# 冻结语料清单与预期断言(蓝图 10.1 / 10.2 / 阶段 1 完成条件)
+# 所有文档均为自造模拟内容,不含任何真实企业敏感数据。
+# 本文件是摄取、检索与测试的唯一事实来源:allowed_roles 在摄取时写入 Qdrant payload,
+# cases 驱动 pytest 参数化;修改语料或预期必须同步修改本文件。
+
+roles: [employee, engineer, hr, admin]
+
+documents:
+  - document_id: travel-reimbursement-policy
+    file: 全员差旅报销制度.md
+    title: 全员差旅报销制度
+    department: general
+    allowed_roles: [employee, engineer, hr, admin]
+    version: 1
+
+  - document_id: dev-release-process
+    file: 研发发布流程.md
+    title: 研发发布流程
+    department: engineering
+    allowed_roles: [engineer, admin]
+    version: 1
+
+  - document_id: hr-leave-policy
+    file: 员工休假制度-v1.pdf
+    title: 员工休假制度
+    department: hr
+    allowed_roles: [hr, admin]
+    version: 1
+    note: 2025 版;年假 10 天;无育儿假条款
+
+  - document_id: hr-leave-policy
+    file: 员工休假制度-v2.pdf
+    title: 员工休假制度
+    department: hr
+    allowed_roles: [hr, admin]
+    version: 2
+    note: 2026 版;年假 15 天;新增育儿假 10 天;激活后替代 v1(superseded)
+
+cases:
+  - name: authorized-retrieval
+    comment: 授权检索(蓝图 10.2 第 1 行)
+    role: engineer
+    question: 常规发布窗口是什么时间?灰度放量的阶段和观察时长是怎样的?
+    expect: answer
+    expect_documents: [dev-release-process]
+    must_not_mention: [员工休假, 年假, 育儿假, hr-leave-policy]
+
+  - name: unauthorized-isolation
+    comment: 越权隔离;拒答文本与元数据均不得暴露受限文档存在(蓝图 7.4 / 10.2 第 2 行)
+    role: employee
+    question: 员工年假有多少天?
+    expect: refusal
+    refusal_kind: no_authorized_evidence
+    must_not_mention: [员工休假, 休假制度, 年假, 育儿假, hr-leave-policy, v1, v2]
+
+  - name: version-replacement
+    comment: 版本替换;v2 激活后只引用 v2(蓝图 10.2 第 3 行)
+    role: hr
+    precondition: hr-leave-policy v2 已激活,v1 为 superseded
+    question: 员工年假有多少天?
+    expect: answer
+    expect_answer_contains: ["15 天"]
+    expect_answer_not_contains: ["10 天"]
+    expect_versions: [2]
+
+  - name: version-replacement-new-clause
+    comment: 补充;v2 新增条款仅在 v2 激活后可答
+    role: hr
+    precondition: hr-leave-policy v2 已激活,v1 为 superseded
+    question: 育儿假有多少天?
+    expect: answer
+    expect_answer_contains: ["10 天"]
+    expect_versions: [2]
+
+  - name: old-version-no-evidence
+    comment: 补充;仅 v1 激活时育儿假属于无证据问题
+    role: hr
+    precondition: 仅 hr-leave-policy v1 激活
+    question: 育儿假有多少天?
+    expect: refusal
+
+  - name: deletion-isolation
+    comment: 删除隔离(蓝图 10.2 第 4 行)
+    role: hr
+    precondition: hr-leave-policy 全部版本已删除或撤回
+    question: 员工年假有多少天?
+    expect: refusal
+    refusal_kind: no_authorized_evidence
+
+  - name: no-evidence-refusal
+    comment: 无证据拒答(蓝图 10.2 第 5 行);语料中完全不存在该主题
+    role: admin
+    question: 公司健身房几点关门?
+    expect: refusal
+    refusal_kind: no_authorized_evidence
+
+  - name: insufficient-evidence-refusal
+    comment: 证据不足拒答(蓝图 10.2 第 6 行);差旅制度只规定 15 个工作日内提交报销,未规定打款日期
+    role: engineer
+    question: 报销款的具体打款日期是每月几号?
+    expect: refusal
+    refusal_kind: insufficient_evidence
+
+  - name: citation-integrity
+    comment: 引用完整性(蓝图 10.2 第 7 行);每条引用须指向实际检索到的、已授权且 active 的块
+    role: employee
+    question: 高铁报销选择什么座位等级?住宿限额是多少?
+    expect: answer
+    expect_documents: [travel-reimbursement-policy]
+    citation_check: 引用的 document_id/version/chunk_id 均来自本次实际检索候选,且 allowed_roles 包含 employee,status 为 active
+
+  - name: upload-validation
+    comment: 上传校验(蓝图 10.2 第 8 行);不支持的类型或超大小文件,API 拒绝且不写入 Qdrant
+    role: admin
+    expect: api_reject
+    invalid_inputs: [不支持扩展名(如 .exe/.docx), 超过大小上限的文件]

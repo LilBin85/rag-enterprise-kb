@@ -111,6 +111,7 @@ qdrant-client==1.19.0
 rapidocr==3.9.2
 referencing==0.37.0
 regex==2026.7.19
+reportlab==5.0.0
 requests==2.34.2
 requests-toolbelt==1.0.0
 rich==15.0.0
