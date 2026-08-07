@@ -36,10 +36,23 @@ class Settings(BaseSettings):
 
     corpus_dir: Path = ROOT_DIR / "data" / "corpus"
 
-    def apply_hf_endpoint(self) -> None:
-        """huggingface_hub 在导入时读取 HF_ENDPOINT;下载模型前调用一次。"""
+    def prepare_runtime_env(self) -> None:
+        """运行时环境准备;必须在相关三方库被 import 之前调用(其常量于导入时读取)。
+
+        - HF_ENDPOINT 指向国内镜像(huggingface.co 直连超时,2026-08-07 实测);
+        - HF_HUB_DISABLE_XET=1:镜像下 xet 协议会回跳官方 CAS 服务器报 401,
+          禁用后回退普通 HTTP 下载,与镜像兼容(同日实测);
+        - TORCH_COMPILE_DISABLE=1:本机无 MSVC(cl.exe),Docling/FlagEmbedding
+          部分模型默认启用 torch.compile,须显式禁用(同日实测 InvalidCxxCompiler)。
+        """
         if self.hf_endpoint:
             os.environ.setdefault("HF_ENDPOINT", self.hf_endpoint)
+            os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+        os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+
+    def apply_hf_endpoint(self) -> None:
+        """兼容别名;统一转发到 prepare_runtime_env。"""
+        self.prepare_runtime_env()
 
 
 @lru_cache

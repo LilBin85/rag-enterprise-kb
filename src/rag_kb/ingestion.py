@@ -75,6 +75,53 @@ def parse_markdown(md_text: str) -> list[ParsedItem]:
     return items
 
 
+def parse_document(path: Path) -> list[ParsedItem]:
+    """统一解析入口:Markdown 走轻量解析,PDF 走 Docling(蓝图 3.1)。"""
+    suffix = path.suffix.lower()
+    if suffix == ".md":
+        return parse_markdown(path.read_text(encoding="utf-8"))
+    if suffix == ".pdf":
+        return _parse_pdf_with_docling(path)
+    raise UploadValidationError(f"不支持的文件类型: {suffix or '(无扩展名)'}")
+
+
+def _parse_pdf_with_docling(path: Path) -> list[ParsedItem]:
+    """Docling 解析 PDF,懒加载(首次转换需经 HF_ENDPOINT 下载布局分析模型)。
+
+    蓝图 3.2:OCR 不属于 MVP——语料 PDF 均为数字原生文本层,故显式禁用 OCR 管线;
+    这也避免了 RapidOCR 模型下载这一额外外部依赖(2026-08-07 实测 modelscope 不可达)。
+
+    标题/章节标题保留页码,供 source_locator 生成"第 N 页 / 章节"格式(蓝图 6.1)。
+    """
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+
+    get_settings().prepare_runtime_env()  # 须在 Docling 模型加载前禁用 torch.compile
+    pipeline_options = PdfPipelineOptions(do_ocr=False)
+    converter = DocumentConverter(
+        format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
+    )
+    result = converter.convert(str(path))
+    items: list[ParsedItem] = []
+    for item, _level in result.document.iterate_items():
+        text = (getattr(item, "text", "") or "").strip()
+        if not text:
+            continue
+        raw_label = getattr(item, "label", None)
+        label = str(getattr(raw_label, "value", raw_label or "text"))
+        prov = getattr(item, "prov", None)
+        page = prov[0].page_no if prov else None
+        if label == "title":
+            kind: Literal["title", "heading", "text"] = "title"
+        elif label == "section_header":
+            kind = "heading"
+        else:
+            kind = "text"
+        items.append(ParsedItem(kind, text, page))
+    return items
+
+
 def _split_long_paragraph(para: str, max_chars: int) -> list[str]:
     """段落超过 max_chars 时先按句子边界装箱;极端长句按字符硬切,保证每片不超限。"""
     if len(para) <= max_chars:
