@@ -108,6 +108,8 @@ python-pptx==1.0.2
 pywin32==312
 PyYAML==6.0.3
 qdrant-client==1.19.0
+# Editable Git install with no remote (rag-kb==0.1.0)
+-e d:\pythonproject\rag-enterprise-kb
 rapidocr==3.9.2
 referencing==0.37.0
 regex==2026.7.19
