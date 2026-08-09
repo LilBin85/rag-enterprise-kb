@@ -47,12 +47,27 @@ class Settings(BaseSettings):
         - HF_HUB_DISABLE_XET=1:镜像下 xet 协议会回跳官方 CAS 服务器报 401,
           禁用后回退普通 HTTP 下载,与镜像兼容(同日实测);
         - TORCH_COMPILE_DISABLE=1:本机无 MSVC(cl.exe),Docling/FlagEmbedding
-          部分模型默认启用 torch.compile,须显式禁用(同日实测 InvalidCxxCompiler)。
+          部分模型默认启用 torch.compile,须显式禁用(同日实测 InvalidCxxCompiler);
+        - HF_HUB_OFFLINE=1(仅当 bge-m3 已完整缓存):transformers 5.x 加载 tokenizer
+          时会向 HF 发起 list_repo_templates 远程探测,即使模型已在本地——该探测在
+          镜像抖动时会以 ConnectTimeout 拖垮 /questions(2026-08-08 实测)。
+          模型冻结后运行期不应依赖外网;缓存不完整时不设此值,允许走镜像下载。
         """
         if self.hf_endpoint:
             os.environ.setdefault("HF_ENDPOINT", self.hf_endpoint)
             os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
         os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+        if self._bge_m3_fully_cached():
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
+    @staticmethod
+    def _bge_m3_fully_cached() -> bool:
+        """检测 bge-m3 主权重是否已落地本地 HF 缓存。"""
+        hf_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+        snapshots = hf_home / "hub" / "models--BAAI--bge-m3" / "snapshots"
+        return snapshots.exists() and any(
+            (s / "pytorch_model.bin").is_file() for s in snapshots.iterdir() if s.is_dir()
+        )
 
 
 @lru_cache

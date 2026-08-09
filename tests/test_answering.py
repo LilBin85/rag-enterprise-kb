@@ -104,6 +104,20 @@ def test_model_exception_fails_closed(service, fake_model) -> None:
     assert resp.refusal.kind == "retrieval_failure"
 
 
+def test_retrieval_exception_fails_closed(fake_model) -> None:
+    """检索阶段异常(向量库断连/embedding 失败)同样失败关闭,不向调用方抛 500(蓝图 7.4)。"""
+
+    class BrokenRetriever:
+        def search(self, question, role):
+            raise RuntimeError("qdrant unreachable")
+
+    service = AnswerService(retriever=BrokenRetriever(), model=fake_model)
+    resp = service.ask("任何问题", Role.EMPLOYEE)
+    assert resp.verdict == "refusal"
+    assert resp.refusal.kind == "retrieval_failure"
+    assert fake_model.calls == []  # 检索失败时不应再调用模型
+
+
 # ---------- 拒答不泄露受限元数据(蓝图 7.4 用户无权限行) ----------
 
 def test_refusal_leaks_no_restricted_metadata(service, fake_model) -> None:

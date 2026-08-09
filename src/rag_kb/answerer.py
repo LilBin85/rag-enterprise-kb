@@ -79,7 +79,12 @@ class AnswerService:
         self.model = model
 
     def ask(self, question: str, role: Role) -> QuestionResponse:
-        result = self.retriever.search(question, role)
+        try:
+            result = self.retriever.search(question, role)
+        except Exception:
+            # 检索失败(向量库断连/embedding 加载失败等)同样失败关闭(蓝图 7.4),
+            # 不向调用方抛 500,而是返回标准化拒答。
+            return self._refusal("retrieval_failure", role)
 
         # 蓝图 7.4:无授权候选(含无权限)/ 相关性不足 → 直接拒答,不调用模型。
         if not result.candidates:

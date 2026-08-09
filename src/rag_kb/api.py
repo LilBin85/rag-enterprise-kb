@@ -52,6 +52,7 @@ def build_lifecycle() -> DocumentLifecycle:
     """生产 lifecycle 单例;embedder 懒加载,不会在健康检查时触发模型下载。"""
     global _lifecycle_singleton
     if _lifecycle_singleton is None:
+        settings = get_settings()
         store = _build_store()
         _lifecycle_singleton = DocumentLifecycle(
             store=store,
@@ -168,6 +169,7 @@ def build_answer_service() -> AnswerService:
     """生产问答服务单例;模型懒加载,不会在健康检查或非问答路径触发。"""
     global _answer_service_singleton
     if _answer_service_singleton is None:
+        settings = get_settings()
         store = _build_store()
         retriever = Retriever(
             store,
