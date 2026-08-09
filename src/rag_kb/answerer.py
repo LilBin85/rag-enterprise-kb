@@ -6,6 +6,7 @@
 - AnswerService:拒答分流(不调模型)、引用组装(模型只能选择,应用层构造)、失败关闭。
 """
 
+import logging
 from typing import Literal
 
 from pydantic import BaseModel
@@ -13,6 +14,8 @@ from pydantic import BaseModel
 from rag_kb.config import Settings
 from rag_kb.models import Citation, QuestionResponse, Refusal, Role
 from rag_kb.retriever import RetrievalCandidate, Retriever
+
+logger = logging.getLogger(__name__)
 
 # 蓝图 7.4 的标准化拒答文案;kind 为机器可读原因码。
 REFUSAL_MESSAGES = {
@@ -83,7 +86,8 @@ class AnswerService:
             result = self.retriever.search(question, role)
         except Exception:
             # 检索失败(向量库断连/embedding 加载失败等)同样失败关闭(蓝图 7.4),
-            # 不向调用方抛 500,而是返回标准化拒答。
+            # 不向调用方抛 500,而是返回标准化拒答;异常堆栈必须落服务端日志,否则无法排障。
+            logger.exception("检索阶段失败(role=%s),已按失败关闭返回拒答", role)
             return self._refusal("retrieval_failure", role)
 
         # 蓝图 7.4:无授权候选(含无权限)/ 相关性不足 → 直接拒答,不调用模型。
@@ -94,7 +98,8 @@ class AnswerService:
         try:
             verdict = self.model.answer(question, result.candidates)
         except Exception:
-            # 失败关闭(蓝图 7.4):生成服务故障时不补全、不猜测。
+            # 失败关闭(蓝图 7.4):生成服务故障时不补全、不猜测;堆栈落日志。
+            logger.exception("生成阶段失败(role=%s),已按失败关闭返回拒答", role)
             return self._refusal("retrieval_failure", role)
 
         if verdict.verdict == "refusal":

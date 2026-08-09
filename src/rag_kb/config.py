@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     # HuggingFace 下载端点(国内镜像;可直连时留空)
     hf_endpoint: str | None = None
 
+    # HF 缓存根目录(模型冻结位置)。.env 兜底:用户级 HF_HOME 变量在旧终端会话里
+    # 可能读不到,导致缓存检测误判、误走联网探测(2026-08-08 实测)。
+    hf_home: Path | None = None
+
     # 摄取限制(蓝图 8 节上传校验)
     max_upload_bytes: int = 10 * 1024 * 1024
     allowed_extensions: tuple[str, ...] = (".md", ".pdf")
@@ -53,6 +57,8 @@ class Settings(BaseSettings):
           镜像抖动时会以 ConnectTimeout 拖垮 /questions(2026-08-08 实测)。
           模型冻结后运行期不应依赖外网;缓存不完整时不设此值,允许走镜像下载。
         """
+        if self.hf_home:
+            os.environ.setdefault("HF_HOME", str(self.hf_home))
         if self.hf_endpoint:
             os.environ.setdefault("HF_ENDPOINT", self.hf_endpoint)
             os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
@@ -60,10 +66,11 @@ class Settings(BaseSettings):
         if self._bge_m3_fully_cached():
             os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
-    @staticmethod
-    def _bge_m3_fully_cached() -> bool:
+    def _bge_m3_fully_cached(self) -> bool:
         """检测 bge-m3 主权重是否已落地本地 HF 缓存。"""
-        hf_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+        hf_home = self.hf_home or Path(
+            os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")
+        )
         snapshots = hf_home / "hub" / "models--BAAI--bge-m3" / "snapshots"
         return snapshots.exists() and any(
             (s / "pytorch_model.bin").is_file() for s in snapshots.iterdir() if s.is_dir()
