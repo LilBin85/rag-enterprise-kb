@@ -4,6 +4,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
@@ -16,6 +17,9 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-v4-flash"
+
+    # 本地策略比较接口的演示身份令牌;不等同于生产认证系统
+    demo_role_tokens: dict[str, str] = {}
 
     # Qdrant
     qdrant_url: str = "http://localhost:6333"
@@ -38,6 +42,11 @@ class Settings(BaseSettings):
     # 检索(蓝图 7.1):Top-K 候选数;相似度阈值待冻结评测校准,None 表示不裁切
     retrieval_top_k: int = 5
     retrieval_score_threshold: float | None = None
+
+    # 策略比较 Agent:只读工具循环的有界运行参数
+    agent_max_steps: int = Field(default=4, ge=1, le=10)
+    agent_max_tool_calls: int = Field(default=3, ge=1, le=10)
+    agent_timeout_seconds: int = Field(default=20, ge=1, le=120)
 
     # bge-m3 dense 向量维度(工作单元 3 使用)
     embedding_dim: int = 1024
