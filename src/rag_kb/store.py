@@ -10,9 +10,15 @@ import uuid
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
-from rag_kb.models import ChunkRecord, ChunkStatus
+from rag_kb.models import ChunkRecord, ChunkStatus, Role
 
 _POINT_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "rag-enterprise-kb")
+_PAYLOAD_INDEXES = (
+    ("document_id", models.PayloadSchemaType.KEYWORD),
+    ("status", models.PayloadSchemaType.KEYWORD),
+    ("allowed_roles", models.PayloadSchemaType.KEYWORD),
+    ("document_version", models.PayloadSchemaType.INTEGER),
+)
 
 
 class ChunkStore:
@@ -27,19 +33,16 @@ class ChunkStore:
 
     def ensure_collection(self, dim: int) -> None:
         """创建 collection 并为 ACL/生命周期过滤字段建 payload 索引(免全表扫描)。"""
-        if self.client.collection_exists(self.collection):
-            return
-        self.client.create_collection(
-            collection_name=self.collection,
-            vectors_config=models.VectorParams(size=dim, distance=models.Distance.COSINE),
-        )
-        for field, schema in [
-            ("document_id", models.PayloadSchemaType.KEYWORD),
-            ("status", models.PayloadSchemaType.KEYWORD),
-            ("allowed_roles", models.PayloadSchemaType.KEYWORD),
-            ("document_version", models.PayloadSchemaType.INTEGER),
-        ]:
-            self.client.create_payload_index(self.collection, field, schema)
+        if not self.client.collection_exists(self.collection):
+            self.client.create_collection(
+                collection_name=self.collection,
+                vectors_config=models.VectorParams(size=dim, distance=models.Distance.COSINE),
+            )
+        payload_schema = self.client.get_collection(self.collection).payload_schema or {}
+        for field, schema in _PAYLOAD_INDEXES:
+            current = payload_schema.get(field)
+            if current is None or current.data_type != schema:
+                self.client.create_payload_index(self.collection, field, schema)
 
     def upsert_chunks(self, chunks: list[ChunkRecord], vectors: list[list[float]]) -> None:
         points = [
@@ -60,6 +63,58 @@ class ChunkStore:
             limit=256,
         )
         return [r.payload for r in results]
+
+    def scroll_authorized_version(self, document_id: str, version: int, role: Role) -> list[dict]:
+        """只读取指定文档版本中当前角色有权看到的 active/superseded 块。
+
+        这是比较工作流的存储边界:工具闭包只能调用本方法，任何未授权正文都不会
+        进入 Agent 上下文。若版本状态不一致或不是允许比较的状态，整体返回空集。
+        """
+        all_payloads = self._scroll_all(
+            models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="document_id", match=models.MatchValue(value=document_id)
+                    ),
+                    models.FieldCondition(
+                        key="document_version", match=models.MatchValue(value=version)
+                    ),
+                ]
+            )
+        )
+        statuses = {p.get("status") for p in all_payloads}
+        if not all_payloads or len(statuses) != 1 or statuses - {
+            str(ChunkStatus.ACTIVE), str(ChunkStatus.SUPERSEDED)
+        }:
+            return []
+        payloads = [
+            payload
+            for payload in all_payloads
+            if str(role) in {str(value) for value in payload.get("allowed_roles", [])}
+        ]
+        return (
+            payloads
+            if len(payloads) == len(all_payloads)
+            and {p.get("chunk_id") for p in payloads} == {p.get("chunk_id") for p in all_payloads}
+            else []
+        )
+
+    def _scroll_all(self, scroll_filter: models.Filter) -> list[dict]:
+        """完整消费 Qdrant 游标;分页异常时抛错,调用方统一失败关闭。"""
+        payloads: list[dict] = []
+        offset = None
+        while True:
+            points, offset = self.client.scroll(
+                collection_name=self.collection,
+                scroll_filter=scroll_filter,
+                with_payload=True,
+                with_vectors=False,
+                limit=256,
+                offset=offset,
+            )
+            payloads.extend(point.payload or {} for point in points)
+            if offset is None:
+                return payloads
 
     def set_status(
         self,
