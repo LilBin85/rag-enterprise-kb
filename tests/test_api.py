@@ -5,6 +5,7 @@
 """
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,7 @@ DOC_V2 = "# API 测试制度\n## 年假\n员工每年可享受带薪年假 15 �
 
 
 @pytest.fixture()
-def client(store: ChunkStore, embedder, tmp_path: Path) -> TestClient:
+def client(store: ChunkStore, embedder, tmp_path: Path) -> Iterator[TestClient]:
     test_lifecycle = DocumentLifecycle(
         store=store, embedder=embedder, upload_dir=tmp_path / "uploads", max_chars=800
     )
@@ -50,6 +51,20 @@ def test_health(client: TestClient) -> None:
     assert resp.json()["qdrant"] == "ok"
 
 
+def test_health_returns_503_when_qdrant_is_unreachable(client: TestClient, monkeypatch) -> None:
+    class BrokenQdrantClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def get_collections(self):
+            raise RuntimeError("qdrant unavailable")
+
+    monkeypatch.setattr("rag_kb.api.QdrantClient", BrokenQdrantClient)
+    resp = client.get("/health")
+    assert resp.status_code == 503
+    assert resp.json() == {"status": "unavailable", "qdrant": "unreachable"}
+
+
 def test_post_document_success(client: TestClient, store: ChunkStore) -> None:
     resp = _post(client, DOC_V1)
     assert resp.status_code == 200
@@ -68,6 +83,35 @@ def test_post_rejects_unsupported_extension(client: TestClient, store: ChunkStor
     resp = _post(client, "MZ 伪造内容", name="evil.exe")
     assert resp.status_code == 422
     assert store.scroll_document("api-leave-policy") == []  # 拒绝时不写入任何块
+
+
+def test_post_rejects_path_in_filename(client: TestClient, store: ChunkStore) -> None:
+    resp = _post(client, DOC_V1, name="../outside.md")
+    assert resp.status_code == 422
+    assert store.scroll_document("api-leave-policy") == []
+
+
+def test_post_rejects_path_in_document_id(client: TestClient, store: ChunkStore) -> None:
+    resp = _post(client, DOC_V1, metadata={**METADATA, "document_id": "../outside"})
+    assert resp.status_code == 422
+    assert store.scroll_document("../outside") == []
+
+
+def test_failed_duplicate_upload_preserves_original(client: TestClient, tmp_path: Path) -> None:
+    assert _post(client, DOC_V1).status_code == 200
+    upload_dir = tmp_path / "uploads" / METADATA["document_id"]
+    originals = list(upload_dir.iterdir())
+    assert len(originals) == 1
+    assert originals[0].read_text(encoding="utf-8") == DOC_V1
+
+    assert _post(client, DOC_V2).status_code == 409
+    remaining = list(upload_dir.iterdir())
+    assert remaining == originals
+    assert remaining[0].read_text(encoding="utf-8") == DOC_V1
+
+
+def test_existing_collection_indexes_are_idempotent(store: ChunkStore) -> None:
+    store.ensure_collection(dim=1024)
 
 
 def test_put_creates_new_version_and_supersedes(client: TestClient) -> None:

@@ -5,6 +5,7 @@
 """
 
 from pathlib import Path
+from uuid import uuid4
 
 from rag_kb.ingestion import chunk_items, parse_document
 from rag_kb.models import ChunkStatus, DocumentSpec
@@ -28,7 +29,14 @@ class DocumentLifecycle:
 
     def save_upload(self, document_id: str, filename: str, content: bytes) -> Path:
         """保存上传原件(可追溯),返回落盘路径。"""
-        dest = self.upload_dir / document_id / filename
+        normalized_document_id = document_id.replace("\\", "/")
+        if not document_id or Path(normalized_document_id).name != normalized_document_id:
+            raise ValueError("document_id 不得包含路径")
+        normalized = filename.replace("\\", "/")
+        safe_name = Path(normalized).name
+        if not filename or safe_name != normalized:
+            raise ValueError("文件名不得包含路径")
+        dest = self.upload_dir / normalized_document_id / f"{uuid4().hex}-{safe_name}"
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(content)
         return dest
