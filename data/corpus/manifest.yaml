@@ -1,7 +1,7 @@
 # 冻结语料清单与预期断言(蓝图 10.1 / 10.2 / 阶段 1 完成条件)
 # 所有文档均为自造模拟内容,不含任何真实企业敏感数据。
 # 本文件是摄取、检索与测试的唯一事实来源:allowed_roles 在摄取时写入 Qdrant payload,
-# cases 驱动 pytest 参数化;修改语料或预期必须同步修改本文件。
+# cases 供 benchmark 与相关测试读取;修改语料或预期必须同步修改本文件。
 
 roles: [employee, engineer, hr, admin]
 
@@ -114,3 +114,34 @@ cases:
     role: admin
     expect: api_reject
     invalid_inputs: [不支持扩展名(如 .exe/.docx), 超过大小上限的文件]
+
+policy_comparisons:
+  - name: policy-authorized-diff
+    document_id: hr-leave-policy
+    from_version: 1
+    to_version: 2
+    role: hr
+    expect: comparison
+    expect_changes: [modified, added]
+
+  - name: policy-unauthorized-refusal
+    document_id: hr-leave-policy
+    from_version: 1
+    to_version: 2
+    role: employee
+    expect: refusal
+    must_not_mention: [hr-leave-policy, 员工休假制度, 年假, v1, v2]
+
+  - name: policy-missing-refusal
+    document_id: hr-leave-policy
+    from_version: 9
+    to_version: 10
+    role: hr
+    expect: refusal
+
+  - name: policy-reversed-refusal
+    document_id: hr-leave-policy
+    from_version: 2
+    to_version: 1
+    role: hr
+    expect: refusal
