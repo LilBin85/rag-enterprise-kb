@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictInt
 
 
 class Role(StrEnum):
@@ -88,3 +88,42 @@ class QuestionResponse(BaseModel):
     refusal: Refusal | None = None         # 拒答信息(verdict=refusal 时非空)
     citations: list[Citation] = []         # 引用来源列表
     role: Role                             # 请求用户的角色身份
+
+
+class PolicyComparisonRequest(BaseModel):
+    """策略版本比较请求;版本必须由服务端按原样绑定,不接受 latest 等别名。"""
+
+    document_id: str
+    from_version: StrictInt
+    to_version: StrictInt
+    role: Role
+
+
+class PolicyChange(BaseModel):
+    """应用层确定性 diff 的单个章节变化。"""
+
+    section: str
+    change: Literal["added", "modified", "removed"]
+    from_text: str | None = None
+    to_text: str | None = None
+
+
+class PolicyComparison(BaseModel):
+    """策略比较结果;文本来自已授权证据,不是模型自由生成的引用字段。"""
+
+    document_id: str
+    from_version: int
+    to_version: int
+    changes: list[PolicyChange]
+    summary: str
+    citations: list[Citation]
+
+
+class PolicyComparisonResponse(BaseModel):
+    """POST /policy-comparisons 的稳定响应;拒答不回显文档或版本标识。"""
+
+    verdict: Literal["comparison", "refusal"]
+    comparison: PolicyComparison | None = None
+    refusal: Refusal | None = None
+    role: Role
+    run_id: str
