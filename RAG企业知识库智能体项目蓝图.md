@@ -1,6 +1,6 @@
 ---
 title: RAG 企业知识库智能体项目蓝图
-status: MVP 完成——全部 6 阶段交付，57 项冻结测试通过，固定演示脚本全流程实测通过（2026-08-07）
+status: MVP + 受限策略比较工作流——原有问答路径保持兼容，比较路径由聚焦测试与 manifest 基准验证
 project_type: 应届生求职作品集
 ---
 
@@ -21,6 +21,7 @@ project_type: 应届生求职作品集
 - 文档更新、撤回和删除后，旧内容不会继续被默认检索。
 - 无证据、无权限和证据不足均是可验证的拒答场景。
 - 冻结测试数据与 `pytest` 回归测试使关键行为可以重复验证。
+- 新增的策略比较不是开放式自治 Agent：它只在服务端 ACL 后读取两个明确版本，并把 diff、引用和拒答留在应用层。
 
 ### 1.3 不应使用的表述
 
@@ -59,6 +60,7 @@ project_type: 应届生求职作品集
 5. 无授权证据、无检索结果或证据不足时，返回标准化拒答。
 6. 更新、撤回或删除文档后，默认检索不再返回失效版本。
 7. 使用冻结样本通过 `pytest` 验证上述行为。
+8. 提供 `POST /policy-comparisons`，在有界只读工具循环中比较两个请求版本。
 
 ## 3. MVP 范围与明确边界
 
@@ -81,6 +83,7 @@ project_type: 应届生求职作品集
 以下项目不属于首版交付，不能因“看起来高级”而提前引入：
 
 - 多 Agent 协作、开放式自治工具调用、MCP 市场接入。
+- `/questions` 仍采用原有线性问答链；策略比较只使用两个固定只读工具，不扩展为通用 Agent 平台。
 - 混合检索、BM25、稀疏向量、RRF 融合、查询改写。
 - reranker、ColBERT、多向量检索。
 - LangGraph、Langfuse、Ragas。
@@ -111,7 +114,7 @@ project_type: 应届生求职作品集
 - Docker Desktop 的 Engine 已正常启动。
 - 已执行 `docker run --rm hello-world`，镜像拉取、容器创建与运行均成功。
 - 已可在浏览器打开 Qdrant Dashboard（`http://localhost:6333/dashboard`）。
-- 尚未验证 `docker compose` 命令，也尚未创建 Conda 项目环境或验证 FastAPI 对 Qdrant 的连接。
+- 阶段 0 的 `docker compose`、Conda 环境和 FastAPI/Qdrant 连通性已在后续收尾记录中验证；本行仅保留为历史过程，不作为当前状态判断。
 
 **2026-08-07 阶段 0 收尾（已执行）**：
 
@@ -123,7 +126,7 @@ project_type: 应届生求职作品集
 
 ### 4.3 环境验证门槛
 
-在创建项目代码前，必须确认 Docker Desktop 的 Engine 已正常启动，并能运行 Docker Compose。当前 Docker 的 WSL 2 与虚拟化后端问题已不再阻塞；Docker Engine 和手工启动的 Qdrant 已验证，Docker Compose 仍须在落地项目配置前验证。
+在创建项目代码前，必须确认 Docker Desktop 的 Engine 已正常启动，并能运行 Docker Compose。当前 Docker 的 WSL 2 与虚拟化后端问题已不再阻塞；Docker Engine、Docker Compose 和 Qdrant 均已验证。
 
 ### 4.4 主机软件
 
@@ -152,6 +155,7 @@ project_type: 应届生求职作品集
 | `FlagEmbedding` | 加载与调用 `bge-m3` embedding 模型 |
 | `torch` | `FlagEmbedding` 推理依赖，首版使用 CPU 方案 |
 | `qdrant-client` | 与 Qdrant 服务通信 |
+| `langchain` | 仅用于策略比较路径的 `create_agent` 有界工具循环；不直接使用 LangGraph API |
 | `langchain-deepseek` | 以 `ChatDeepSeek` 组件级封装 DeepSeek 调用，并用 `with_structured_output` 约束回答与拒答的输出结构（连带 `langchain-core`、`langchain-openai`，版本在初始化时锁定） |
 | `httpx` | FastAPI TestClient 依赖与一般 HTTP 请求 |
 | `pytest` | 冻结测试与回归验证 |
@@ -208,6 +212,29 @@ DeepSeek API 基于上下文回答，或由应用层拒答
         ▼
 返回 answer / refusal + document_id + version + source_locator + chunk_id
 ```
+
+### 5.3 受限策略比较数据流
+
+```text
+请求携带 document_id、from_version、to_version、role
+        │
+        ▼
+服务端校验正整数、顺序和请求绑定；模型不能修改这些值
+        │
+        ▼
+Qdrant 按 document_id + version 完整读取；应用层校验 status(active/superseded)、allowed_roles 与块集合完整性
+        │
+        ▼
+只把授权版本证据交给两个固定工具：fetch_authorized_version / compare_authorized_versions
+        │
+        ▼
+应用层执行确定性章节 diff，应用层从实际证据构造 Citation
+        │
+        ▼
+结构化 Agent 摘要 + diff + 引用；任一异常、越权或护栏超限均通用拒答
+```
+
+该路径使用 `langchain.agents.create_agent`，循环最多 4 步、最多 3 次工具调用，不提供文件、HTTP、网络、写入、删除、上传、MCP、Memory 或任意 Qdrant 工具。真实 `ChatDeepSeek` 仅在运行时懒加载；`/questions` 仍保持原有线性流程与响应契约。
 
 ### 5.3 摄取数据流
 
@@ -335,11 +362,14 @@ DeepSeek 输出不能单独作为可信来源。最终响应中的引用必须�
 | `POST /documents` | `admin` | 上传新文档 | 返回 `document_id`、版本、处理状态 |
 | `PUT /documents/{document_id}` | `admin` | 上传新版本 | 新版本激活，旧版本失效 |
 | `DELETE /documents/{document_id}` | `admin` | 删除或撤回文档 | 后续默认检索不得返回相关块 |
-| `POST /questions` | 所有模拟角色 | 提问并检索 | 返回回答或拒答及引用 |
+| `POST /questions` | 所有模拟角色 | 原有提问并检索 | 返回回答或拒答及引用，契约保持不变 |
+| `POST /policy-comparisons` | 所有模拟角色 | 比较两个明确策略版本 | 返回确定性章节 diff、授权引用或通用拒答 |
 | `GET /documents/{document_id}/versions` | `admin` | 查看版本状态 | 仅用于调试与演示版本生命周期 |
-| `GET /health` | 任意 | 健康检查 | 确认 API 与 Qdrant 连接状态 |
+| `GET /health` | 任意 | 健康检查 | Qdrant 正常返回 200；不可达返回 503 |
 
 `POST /questions` 的请求必须显式传入用于演示的用户身份或角色。首版的角色身份可以是固定测试身份，不把模拟身份认证误称为真实企业认证。
+
+`POST /policy-comparisons` 请求体为 `document_id`、正整数 `from_version`、正整数 `to_version` 和 `role`，同时要求服务端配置的 `X-Demo-Role-Token` 与请求角色匹配。服务端绑定文档、角色、集合、生命周期与 ACL；Agent 只能调用授权版本证据读取和确定性比较两个工具。仅允许 `active`/`superseded`，撤回、删除、缺失、未授权、令牌不匹配、反向/相同版本和模型/工具错误全部失败关闭，拒答不回显文档、版本、文件、块或正文。
 
 ## 9. 测试优先的实施阶段
 
@@ -347,7 +377,7 @@ DeepSeek 输出不能单独作为可信来源。最终响应中的引用必须�
 
 ### 阶段 0：环境可用性
 
-目标：确认 Docker Desktop Engine、Docker Compose、Qdrant 容器、Conda Python 和 DeepSeek API 配置都可用。当前 Docker Engine、Qdrant Dashboard 已验证；其余项目仍待验证。
+目标：确认 Docker Desktop Engine、Docker Compose、Qdrant 容器、Conda Python 和 DeepSeek API 配置都可用。当前 Docker Engine、Docker Compose、Qdrant、Conda 环境和项目测试链路已验证；真实 DeepSeek 调用仍依赖本地密钥与网络。
 
 完成条件：Docker 能启动 Qdrant；应用能够从本机连接 Qdrant；DeepSeek 密钥只从环境变量读取。
 
@@ -409,6 +439,8 @@ DeepSeek 输出不能单独作为可信来源。最终响应中的引用必须�
 
 确定性的摄取、状态、ACL 和引用验证必须完全脱离真实 LLM 输出。大多数单元测试应 mock DeepSeek API；仅保留少量手工演示调用真实 API。这样可避免模型随机性、网络问题和 API 成本破坏回归稳定性。
 
+策略比较另有 `tests/test_policy_compare.py` 聚焦测试：授权比较、added/modified 章节、越权、withdrawn/deleted/missing、非法/反向/相同版本、工具绑定、步数/工具次数、模型和工具失败、引用完整性、只读约束及端点契约。基准脚本 `scripts/benchmark_policy_comparisons.py` 读取 manifest 的 `policy_comparisons` 和固定语料 fixture，不依赖运行态 Qdrant 数据；它将实际 case pass/fail、ACL 泄漏、版本不匹配、引用完整性、护栏违规、拒答错误计数与耗时写入 `data/local/benchmarks/`；报告结构由 `schemas/policy-comparison-report.schema.json` 固定，不预填结果。
+
 在没有实际跑出结果之前，不写入任何准确率、召回率、延迟、幻觉率或成本数字。后续若进行评测，应将结果与数据集版本、配置和失败样例一起记录。
 
 ## 11. 安全与数据边界
@@ -422,6 +454,8 @@ DeepSeek 输出不能单独作为可信来源。最终响应中的引用必须�
 - 文档中的“忽略此前指令”“泄露系统提示词”等文本只能作为证据内容，不能获得工具执行或权限提升能力。
 - 应用查询路径只有检索权限；写入向量库的能力只应由摄取路径使用。
 - 日志优先记录请求标识、角色、检索块 ID、版本和状态；避免默认记录完整敏感原文。
+- 策略比较的本地演示令牌只用于替代真实身份上下文；生产环境必须接入真实认证与授权系统，不能把请求体 `role` 当作身份凭据。
+- 比较运行日志采用标准库 JSON 字段白名单：`run_id`、operation/stage、role、document_hash、step/tool、counts、duration_ms、status、error_code；不记录 API key、prompt、正文或完整模型输出。
 
 ### 11.2 不承诺的安全范围
 
@@ -448,6 +482,8 @@ MVP 没有真实企业身份系统、审计合规认证、加密密钥管理、�
 
 “我实现的是一个面向内部制度和技术文档的 RAG 问答原型。它的重点不是让模型尽可能多说，而是在检索阶段按角色过滤可见文档，并要求每个回答附带有效版本的来源。对于没有授权证据的问题，系统明确拒答。文档更新和删除会改变有效版本，冻结测试保证这些行为不会回归。”
 
+求职表述应保持诚实：可以说“实现了一个有界的策略版本比较 Agent 工作流”，具体强调服务端 ACL、固定只读工具、确定性 diff、应用层引用、结构化观测和 manifest 基准；不能表述为通用自治 Agent、生产级审计平台或真实企业身份系统。
+
 ### 13.2 可解释的技术取舍
 
 | 选择 | 原因 |
@@ -458,7 +494,7 @@ MVP 没有真实企业身份系统、审计合规认证、加密密钥管理、�
 | 生成层采用 ChatDeepSeek 组件级封装 | 获得 `with_structured_output` 的结构化拒答与统一消息抽象；检索层评估后保持原生 `qdrant-client`，因为 ACL filter 是第一公民，框架在此无增量收益 |
 | ACL 在检索前执行 | 防止未授权文本进入候选、上下文、引用或模型提示词 |
 | 使用 mock 做多数测试 | 将确定性工程行为与随机的模型生成行为分开验证 |
-| 延后 Agent 编排 | 固定受控工作流更容易测试、调试和解释，也更适合当前问题边界 |
+| 只在策略比较中采用有界 Agent | 原有 `/questions` 保持线性和稳定；比较路径的工具、版本、ACL、步数和引用均由应用层固定，避免开放自治攻击面 |
 
 ### 13.3 可能被问到的问题
 
@@ -467,7 +503,7 @@ MVP 没有真实企业身份系统、审计合规认证、加密密钥管理、�
 | 为什么不直接让模型判断权限？ | 模型不是访问控制系统；权限必须约束检索候选，避免敏感内容先进入上下文。 |
 | 为什么要引用？ | 引用让回答可审查、可定位；它也能帮助发现过期或不支持结论的内容。 |
 | 为什么需要拒答？ | 检索不到或证据不足时继续回答会把猜测伪装为企业事实。 |
-| 为什么不先上 LangChain、LangGraph 或多 Agent？ | LangChain 已以组件级接入生成层（`ChatDeepSeek` 与结构化输出）；未引入的是全链条抽象与 LangGraph——首版问题是受控检索与可信回答，线性管线不需要状态机；检索层的 ACL filter 经评估保持原生 `qdrant-client`。LangGraph 与更深接入的采纳触发器已写入第 15 节。 |
+| 为什么不把整个项目改成 `create_agent`、LangGraph 或多 Agent？ | 原有 `/questions` 是稳定的线性 RAG，不需要开放式工具循环；新增的 `/policy-comparisons` 单独使用 `create_agent`，但只允许两个服务端绑定的只读工具。LangGraph、多 Agent 和 Memory 仍未引入，因为当前没有持久状态、人工审批或多角色协作需求；ACL、diff、引用和拒答仍由应用层控制。 |
 | 为什么不做混合检索和 reranker？ | 它们是质量优化手段，不是 ACL、版本、引用与拒答的前提；应由冻结评测证明需要后再加入。 |
 | 如何避免旧文档继续被引用？ | 向量 payload 有版本与状态；更新后旧版本标为失效，检索始终限定 `status=active`。 |
 
@@ -487,7 +523,7 @@ MVP 没有真实企业身份系统、审计合规认证、加密密钥管理、�
 - [x] 无证据、无权限和证据不足时均返回标准化拒答。
 - [x] 新版本激活后默认检索不返回被替代版本。
 - [x] 删除或撤回文档后默认检索不返回相关内容。
-- [x] 冻结 `pytest` 测试覆盖授权、越权、版本更新、删除、引用与拒答(57 项)。
+- [x] 冻结 `pytest` 测试覆盖授权、越权、版本更新、删除、引用、拒答及策略版本比较安全边界。
 - [x] 测试默认不依赖真实 DeepSeek API 返回值(全部经 FakeAnswerModel)。
 - [x] API 密钥、真实私密文档和本地向量数据均未提交到 Git。
 - [x] 演示可按固定步骤重复完成（`scripts/demo.py`，开头自动重置 collection，2026-08-07 全流程实测通过），且没有临时手工修改数据。
@@ -512,4 +548,4 @@ MVP 没有真实企业身份系统、审计合规认证、加密密钥管理、�
 
 ## 16. 下一次讨论的起点
 
-MVP 全部阶段已完成（2026-08-07）。固定演示脚本 `scripts/demo.py` 全流程实测通过（8 步含泄露与版本断言）；启动脚本 `scripts/start_api.ps1` 固化 `PYTHONUTF8=1`（中文 Windows 下 Docling 读取模型文件的 GBK 编码问题，2026-08-07 实测排障）；57 项冻结测试全绿。后续方向按第 15 节触发器评估：补充编号/术语类冻结用例检验 dense 检索盲区（决定是否引入 hybrid）、真实演示录像与面试讲稿、或按需求引入 Langfuse 追踪与 Ragas 评测。
+MVP 全部阶段已完成（2026-08-07），并新增一个安全收敛的策略版本比较 Agent 工作流。固定演示脚本 `scripts/demo.py` 全流程实测通过（8 步含泄露与版本断言）；启动脚本 `scripts/start_api.ps1` 固化 `PYTHONUTF8=1`（中文 Windows 下 Docling 读取模型文件的 GBK 编码问题，2026-08-07 实测排障）。策略比较的基准结果只由命令实际运行后写入被忽略的 `data/local/benchmarks/`，不在文档中预填数字。后续方向按第 15 节触发器评估：补充编号/术语类冻结用例检验 dense 检索盲区、真实演示录像与面试讲稿；不把该工作流表述为通用自治 Agent 或生产级身份系统。
