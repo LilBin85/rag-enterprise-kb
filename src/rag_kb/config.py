@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     agent_max_tool_calls: int = Field(default=3, ge=1, le=10)
     agent_timeout_seconds: int = Field(default=20, ge=1, le=120)
 
+    # 策略落地规划的本地恢复状态；SQLite 不承载知识证据正文。
+    policy_rollout_db_path: Path = ROOT_DIR / "data" / "local" / "policy_rollout_tasks.sqlite3"
+
     # bge-m3 dense 向量维度(工作单元 3 使用)
     embedding_dim: int = 1024
 
