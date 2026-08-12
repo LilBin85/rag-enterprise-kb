@@ -1,6 +1,6 @@
 ---
 title: RAG 企业知识库智能体项目蓝图
-status: MVP + 受限策略比较工作流——原有问答路径保持兼容，比较路径由聚焦测试与 manifest 基准验证
+status: MVP + 受限策略比较与策略落地规划工作流——原有问答路径保持兼容，两条 Agent 路径均由聚焦测试验证
 project_type: 应届生求职作品集
 ---
 
@@ -22,6 +22,7 @@ project_type: 应届生求职作品集
 - 无证据、无权限和证据不足均是可验证的拒答场景。
 - 冻结测试数据与 `pytest` 回归测试使关键行为可以重复验证。
 - 新增的策略比较不是开放式自治 Agent：它只在服务端 ACL 后读取两个明确版本，并把 diff、引用和拒答留在应用层。
+- 新增的策略落地规划是加法式 v1：它只动态检索当前角色可见的 `active` 证据，持久化任务目标、角色、状态、澄清和只读计划版本，但不执行 Todo。
 
 ### 1.3 不应使用的表述
 
@@ -61,6 +62,7 @@ project_type: 应届生求职作品集
 6. 更新、撤回或删除文档后，默认检索不再返回失效版本。
 7. 使用冻结样本通过 `pytest` 验证上述行为。
 8. 提供 `POST /policy-comparisons`，在有界只读工具循环中比较两个请求版本。
+9. 提供认证的 `/policy-rollout-tasks` 规划工作流，保存可继续的任务和不可变计划版本，不触发外部写入或任务执行。
 
 ## 3. MVP 范围与明确边界
 
@@ -87,7 +89,7 @@ project_type: 应届生求职作品集
 - 混合检索、BM25、稀疏向量、RRF 融合、查询改写。
 - reranker、ColBERT、多向量检索。
 - LangGraph、Langfuse、Ragas。
-- PostgreSQL、Redis、MinIO、异步任务队列。
+- PostgreSQL、Redis、MinIO、异步任务队列；策略落地规划 v1 仅使用本地 SQLite 保存最小业务状态。
 - vLLM、Ollama、本地大模型与 GPU 依赖。
 - SSO、SAML、SCIM、真实企业身份系统与复杂多租户。
 - 云部署、Kubernetes、对象存储、监控告警平台。
@@ -236,7 +238,25 @@ Qdrant 按 document_id + version 完整读取；应用层校验 status(active/su
 
 该路径使用 `langchain.agents.create_agent`，循环最多 4 步、最多 3 次工具调用，不提供文件、HTTP、网络、写入、删除、上传、MCP、Memory 或任意 Qdrant 工具。真实 `ChatDeepSeek` 仅在运行时懒加载；`/questions` 仍保持原有线性流程与响应契约。
 
-### 5.3 摄取数据流
+### 5.4 受限策略落地规划数据流（v1）
+
+```text
+POST /policy-rollout-tasks
+  → X-Demo-Role-Token 解析并绑定 Role，body.role 必须一致
+  → SQLite 先创建 planning 任务
+  → Retriever 动态检索当前 role 可见的 active 文档
+  → Agent 只能调用 search_authorized_evidence 这一个只读工具
+  → 应用层校验 Todo、依赖关系和检索候选，并构造 Citation
+  → SQLite 更新为 planned/clarification/failed
+GET /policy-rollout-tasks/{task_id}
+  → 按 task_id + role 读取，并重新校验引用当前仍为 active 且角色有权访问
+POST /policy-rollout-tasks/{task_id}/continue
+  → CAS 领取 clarification，再追加下一条不可变计划版本
+```
+
+该工作流沿用 `agent_max_steps=4`、`agent_max_tool_calls=3` 的当前配置上限，且只读检索通过 `Retriever` 动态应用 `active` 与 `allowed_roles`。SQLite 只保存任务目标、绑定角色、状态、澄清和追加式计划版本，不保存证据正文或模型原始输出；Citation 由应用层根据本次检索候选构造。它不执行 Todo，不写外部系统，也没有 Agent graph 的 durable execution、checkpointer 或断点续跑能力。同步规划期间若进程被强制终止，任务可能停留在 `planning` 状态，这是 v1 的窄化崩溃边界。
+
+### 5.5 摄取数据流
 
 ```text
 管理员上传或更新文档
@@ -364,12 +384,17 @@ DeepSeek 输出不能单独作为可信来源。最终响应中的引用必须�
 | `DELETE /documents/{document_id}` | `admin` | 删除或撤回文档 | 后续默认检索不得返回相关块 |
 | `POST /questions` | 所有模拟角色 | 原有提问并检索 | 返回回答或拒答及引用，契约保持不变 |
 | `POST /policy-comparisons` | 所有模拟角色 | 比较两个明确策略版本 | 返回确定性章节 diff、授权引用或通用拒答 |
+| `POST /policy-rollout-tasks` | 令牌绑定角色 | 创建策略落地规划任务 | 返回计划、澄清或失败状态；只读、不执行 Todo |
+| `GET /policy-rollout-tasks/{task_id}` | 任务绑定角色 | 读取已持久化任务 | 返回任务与计划版本；当前引用失效或失权时不可访问 |
+| `POST /policy-rollout-tasks/{task_id}/continue` | 任务绑定角色 | 提交澄清答案并继续规划 | CAS 成功后追加不可变计划版本 |
 | `GET /documents/{document_id}/versions` | `admin` | 查看版本状态 | 仅用于调试与演示版本生命周期 |
 | `GET /health` | 任意 | 健康检查 | Qdrant 正常返回 200；不可达返回 503 |
 
 `POST /questions` 的请求必须显式传入用于演示的用户身份或角色。首版的角色身份可以是固定测试身份，不把模拟身份认证误称为真实企业认证。
 
-`POST /policy-comparisons` 请求体为 `document_id`、正整数 `from_version`、正整数 `to_version` 和 `role`，同时要求服务端配置的 `X-Demo-Role-Token` 与请求角色匹配。服务端绑定文档、角色、集合、生命周期与 ACL；Agent 只能调用授权版本证据读取和确定性比较两个工具。仅允许 `active`/`superseded`，撤回、删除、缺失、未授权、令牌不匹配、反向/相同版本和模型/工具错误全部失败关闭，拒答不回显文档、版本、文件、块或正文。
+`POST /policy-comparisons` 请求体为 `document_id`、正整数 `from_version`、正整数 `to_version` 和 `role`，同时要求服务端配置的 `X-Demo-Role-Token` 与请求角色匹配。服务端绑定文档、角色、集合、生命周期与 ACL；Agent 只能调用授权版本证据读取和确定性比较两个工具。仅允许 `active`/`superseded`，撤回、删除、缺失、未授权、令牌不匹配、反向/相同版本和模型/工具错误全部失败关闭，拒答不回显文档、版本、文件、块或正文。该比较路径没有持久化 Agent run 或 checkpointer。
+
+策略落地规划的创建请求包含 `goal` 和 `role`，角色由 `X-Demo-Role-Token` 服务端解析，并要求 body 中角色一致；读取和继续请求不从 body 接收角色。规划 Agent 只能使用 `search_authorized_evidence` 一个只读工具，工具内部绑定 `Retriever` 和角色，当前上限为 4 步、3 次工具调用。计划依赖关系、候选块归属和 Citation 由应用层校验与构造。SQLite 持久化任务业务状态和 append-only 计划版本，但不保存证据正文或模型原始输出；GET 和 continue 都会重新校验已保存引用当前仍为 `active` 且对角色授权。continue 使用 CAS，只有一个请求能领取澄清状态；v1 不执行 Todo、不接外部系统，也不提供 Agent graph 的 durable execution。
 
 ## 9. 测试优先的实施阶段
 
@@ -503,7 +528,7 @@ MVP 没有真实企业身份系统、审计合规认证、加密密钥管理、�
 | 为什么不直接让模型判断权限？ | 模型不是访问控制系统；权限必须约束检索候选，避免敏感内容先进入上下文。 |
 | 为什么要引用？ | 引用让回答可审查、可定位；它也能帮助发现过期或不支持结论的内容。 |
 | 为什么需要拒答？ | 检索不到或证据不足时继续回答会把猜测伪装为企业事实。 |
-| 为什么不把整个项目改成 `create_agent`、LangGraph 或多 Agent？ | 原有 `/questions` 是稳定的线性 RAG，不需要开放式工具循环；新增的 `/policy-comparisons` 单独使用 `create_agent`，但只允许两个服务端绑定的只读工具。LangGraph、多 Agent 和 Memory 仍未引入，因为当前没有持久状态、人工审批或多角色协作需求；ACL、diff、引用和拒答仍由应用层控制。 |
+| 为什么不把整个项目改成 `create_agent`、LangGraph 或多 Agent？ | 原有 `/questions` 是稳定的线性 RAG，不需要开放式工具循环；新增的 `/policy-comparisons` 单独使用 `create_agent`，但只允许两个服务端绑定的只读工具，且没有持久 Agent run 或 checkpointer。`/policy-rollout-tasks` 另有持久化业务任务和计划版本，但不持久化 Agent 图执行；多 Agent 和 Memory 仍未引入，ACL、diff、引用和拒答仍由应用层控制。 |
 | 为什么不做混合检索和 reranker？ | 它们是质量优化手段，不是 ACL、版本、引用与拒答的前提；应由冻结评测证明需要后再加入。 |
 | 如何避免旧文档继续被引用？ | 向量 payload 有版本与状态；更新后旧版本标为失效，检索始终限定 `status=active`。 |
 
