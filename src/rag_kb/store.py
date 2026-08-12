@@ -10,7 +10,7 @@ import uuid
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
-from rag_kb.models import ChunkRecord, ChunkStatus, Role
+from rag_kb.models import ChunkRecord, ChunkStatus, Role, TodoCitation
 
 _POINT_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "rag-enterprise-kb")
 _PAYLOAD_INDEXES = (
@@ -98,6 +98,38 @@ class ChunkStore:
             and {p.get("chunk_id") for p in payloads} == {p.get("chunk_id") for p in all_payloads}
             else []
         )
+
+    def citations_currently_authorized(self, citations: list[TodoCitation], role: Role) -> bool:
+        """仅以当前 payload 校验已持久化引用，不读取正文或向模型暴露任何数据。"""
+        unique = {citation.chunk_id: citation for citation in citations}
+        if not unique:
+            return True
+        points = self.client.retrieve(
+            collection_name=self.collection,
+            ids=[self.point_id(chunk_id) for chunk_id in unique],
+            with_payload=[
+                "chunk_id", "document_id", "document_version", "source_file_name",
+                "source_locator", "status", "allowed_roles",
+            ],
+            with_vectors=False,
+        )
+        if len(points) != len(unique):
+            return False
+        payloads = {str((point.payload or {}).get("chunk_id")): point.payload or {} for point in points}
+        for chunk_id, citation in unique.items():
+            payload = payloads.get(chunk_id)
+            if payload is None or payload.get("status") != str(ChunkStatus.ACTIVE):
+                return False
+            if str(role) not in {str(value) for value in payload.get("allowed_roles", [])}:
+                return False
+            if (
+                payload.get("document_id") != citation.document_id
+                or payload.get("document_version") != citation.document_version
+                or payload.get("source_file_name") != citation.source_file_name
+                or payload.get("source_locator") != citation.source_locator
+            ):
+                return False
+        return True
 
     def _scroll_all(self, scroll_filter: models.Filter) -> list[dict]:
         """完整消费 Qdrant 游标;分页异常时抛错,调用方统一失败关闭。"""

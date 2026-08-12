@@ -30,10 +30,15 @@ from rag_kb.models import (
     DocumentSpec,
     PolicyComparisonRequest,
     PolicyComparisonResponse,
+    PolicyRolloutTaskContinueRequest,
+    PolicyRolloutTaskCreateRequest,
+    PolicyRolloutTaskResponse,
     QuestionResponse,
     Role,
 )
 from rag_kb.policy_compare import DeepSeekPolicyAgentModel, PolicyComparisonService
+from rag_kb.policy_rollout_planning import PolicyRolloutPlanningService
+from rag_kb.policy_rollout_store import PolicyRolloutTaskStore
 from rag_kb.retriever import Retriever
 from rag_kb.store import ChunkStore
 
@@ -46,6 +51,12 @@ def _build_store() -> ChunkStore:
     store = ChunkStore(settings.qdrant_url, settings.qdrant_collection)
     store.ensure_collection(settings.embedding_dim)
     return store
+
+
+def _build_read_store() -> ChunkStore:
+    """只读工作流专用：绝不创建 collection 或 payload index。"""
+    settings = get_settings()
+    return ChunkStore(settings.qdrant_url, settings.qdrant_collection)
 
 
 class DocumentMetadata(BaseModel):
@@ -247,3 +258,75 @@ def compare_policy_versions(
 ) -> PolicyComparisonResponse:
     """在服务端 ACL 下比较两个明确请求的策略版本。"""
     return service.compare(req.document_id, req.from_version, req.to_version, role)
+
+
+# ---------- 策略落地规划（v1：持久化只读规划） ----------
+
+@lru_cache
+def build_policy_rollout_planning_service() -> PolicyRolloutPlanningService:
+    settings = get_settings()
+    try:
+        model = DeepSeekPolicyAgentModel(settings)
+    except Exception:
+        logger.warning("策略落地规划 Agent 初始化失败(error_code=agent_runtime_unavailable)", exc_info=True)
+        model = None
+    store = _build_read_store()
+    retriever = Retriever(
+        store, BgeM3Embedder(), top_k=settings.retrieval_top_k,
+        score_threshold=settings.retrieval_score_threshold,
+    )
+    return PolicyRolloutPlanningService(
+        PolicyRolloutTaskStore(settings.policy_rollout_db_path), retriever, model,
+        citation_checker=store.citations_currently_authorized,
+        max_steps=settings.agent_max_steps, max_tool_calls=settings.agent_max_tool_calls,
+    )
+
+
+def resolve_policy_rollout_role(
+    demo_role_token: Annotated[str | None, Header(alias="X-Demo-Role-Token")] = None,
+) -> Role:
+    """从令牌解析服务端身份；续作和读取没有可被伪造的 body role。"""
+    if demo_role_token:
+        for raw_role, expected in get_settings().demo_role_tokens.items():
+            if secrets.compare_digest(demo_role_token, expected):
+                try:
+                    return Role(raw_role)
+                except ValueError:
+                    continue
+    raise HTTPException(status_code=403, detail="身份验证失败")
+
+
+@app.post("/policy-rollout-tasks", response_model=PolicyRolloutTaskResponse)
+def create_policy_rollout_task(
+    req: PolicyRolloutTaskCreateRequest,
+    role: Annotated[Role, Depends(resolve_policy_rollout_role)],
+    service: Annotated[PolicyRolloutPlanningService, Depends(build_policy_rollout_planning_service)],
+) -> PolicyRolloutTaskResponse:
+    if req.role != role:
+        raise HTTPException(status_code=403, detail="身份验证失败")
+    return service.create(req.goal, role)
+
+
+@app.post("/policy-rollout-tasks/{task_id}/continue", response_model=PolicyRolloutTaskResponse)
+def continue_policy_rollout_task(
+    task_id: str,
+    req: PolicyRolloutTaskContinueRequest,
+    role: Annotated[Role, Depends(resolve_policy_rollout_role)],
+    service: Annotated[PolicyRolloutPlanningService, Depends(build_policy_rollout_planning_service)],
+) -> PolicyRolloutTaskResponse:
+    result = service.continue_task(task_id, role, req.clarification_answers)
+    if result is None:
+        raise HTTPException(status_code=403, detail="任务不可访问")
+    return result
+
+
+@app.get("/policy-rollout-tasks/{task_id}", response_model=PolicyRolloutTaskResponse)
+def get_policy_rollout_task(
+    task_id: str,
+    role: Annotated[Role, Depends(resolve_policy_rollout_role)],
+    service: Annotated[PolicyRolloutPlanningService, Depends(build_policy_rollout_planning_service)],
+) -> PolicyRolloutTaskResponse:
+    result = service.get(task_id, role)
+    if result is None:
+        raise HTTPException(status_code=403, detail="任务不可访问")
+    return result
