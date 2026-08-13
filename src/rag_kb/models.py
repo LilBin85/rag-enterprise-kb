@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field, StrictInt
+from pydantic import BaseModel, Field, StrictInt, field_validator
 
 
 class Role(StrEnum):
@@ -178,3 +178,51 @@ class PolicyRolloutTaskResponse(BaseModel):
     plan_versions: list[PolicyRolloutPlanVersion] = Field(default_factory=list)
     clarification: PolicyRolloutClarification | None = None
     run_id: str
+
+
+# ---------- 策略落地批准与本地草稿执行（v2：无外部副作用） ----------
+
+class ExecutionStatus(StrEnum):
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+
+
+class PolicyRolloutApprovalRequest(BaseModel):
+    version: StrictInt
+
+
+class PolicyRolloutApprovalResponse(BaseModel):
+    task_id: str
+    version: StrictInt
+    role: Role
+    digest: str
+    approved_at: datetime
+
+
+class PolicyRolloutExecutionRequest(BaseModel):
+    version: StrictInt
+    idempotency_key: str = Field(min_length=1, max_length=256)
+    action: Literal["create_local_draft_work_item"]
+
+
+class PolicyRolloutExecutionResponse(BaseModel):
+    execution_id: str
+    task_id: str
+    version: StrictInt
+    role: Role
+    idempotency_key: str
+    action: Literal["create_local_draft_work_item"]
+    status: ExecutionStatus
+    digest: str
+    work_item_id: str
+    draft_path: str  # 兼容既有响应字段名；值仅为服务端草稿目录下的安全文件名。
+    created_at: datetime
+
+    @field_validator("draft_path")
+    @classmethod
+    def draft_path_must_be_safe_filename(cls, value: str) -> str:
+        if not value or value in {".", ".."} or any(separator in value for separator in ("/", "\\", ":")):
+            raise ValueError("draft_path 必须是安全的相对文件名")
+        return value

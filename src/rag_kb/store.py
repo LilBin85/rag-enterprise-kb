@@ -101,35 +101,41 @@ class ChunkStore:
 
     def citations_currently_authorized(self, citations: list[TodoCitation], role: Role) -> bool:
         """仅以当前 payload 校验已持久化引用，不读取正文或向模型暴露任何数据。"""
+        return self.current_citation_hashes(citations, role) is not None
+
+    def current_citation_hashes(self, citations: list[TodoCitation], role: Role) -> list[tuple[str, str]] | None:
+        """返回当前有效引用的稳定哈希；任一授权或来源元数据不匹配即失败关闭。"""
         unique = {citation.chunk_id: citation for citation in citations}
         if not unique:
-            return True
+            return []
         points = self.client.retrieve(
             collection_name=self.collection,
             ids=[self.point_id(chunk_id) for chunk_id in unique],
             with_payload=[
                 "chunk_id", "document_id", "document_version", "source_file_name",
-                "source_locator", "status", "allowed_roles",
+                "source_locator", "status", "allowed_roles", "content_hash",
             ],
             with_vectors=False,
         )
         if len(points) != len(unique):
-            return False
+            return None
         payloads = {str((point.payload or {}).get("chunk_id")): point.payload or {} for point in points}
         for chunk_id, citation in unique.items():
             payload = payloads.get(chunk_id)
             if payload is None or payload.get("status") != str(ChunkStatus.ACTIVE):
-                return False
+                return None
             if str(role) not in {str(value) for value in payload.get("allowed_roles", [])}:
-                return False
+                return None
             if (
                 payload.get("document_id") != citation.document_id
                 or payload.get("document_version") != citation.document_version
                 or payload.get("source_file_name") != citation.source_file_name
                 or payload.get("source_locator") != citation.source_locator
             ):
-                return False
-        return True
+                return None
+            if not isinstance(payload.get("content_hash"), str) or not payload["content_hash"]:
+                return None
+        return sorted((chunk_id, str(payloads[chunk_id]["content_hash"])) for chunk_id in unique)
 
     def _scroll_all(self, scroll_filter: models.Filter) -> list[dict]:
         """完整消费 Qdrant 游标;分页异常时抛错,调用方统一失败关闭。"""
