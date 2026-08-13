@@ -143,8 +143,9 @@ def test_store_claim_allows_only_one_continuation_and_one_version(tmp_path) -> N
     store = PolicyRolloutTaskStore(tmp_path / "tasks.sqlite3")
     store.create("task", Role.HR, "目标", PlanStatus.CLARIFICATION, None)
     clarification = PolicyRolloutClarification(questions=["范围？"], answers=["全员"])
-    assert store.claim_clarification("task", Role.HR, clarification)
-    assert not store.claim_clarification("task", Role.HR, clarification)
+    claim_token = "claim-one"
+    assert store.claim_clarification("task", Role.HR, clarification, claim_token=claim_token)
+    assert not store.claim_clarification("task", Role.HR, clarification, claim_token="claim-two")
     plan = PolicyRolloutPlanVersion(
         version=0,
         todos=[PolicyRolloutTodo(
@@ -156,12 +157,38 @@ def test_store_claim_allows_only_one_continuation_and_one_version(tmp_path) -> N
         )],
         created_at=task_time(),
     )
-    completed = store.complete_claim_and_append_plan("task", Role.HR, plan, clarification)
+    completed = store.complete_claim_and_append_plan("task", Role.HR, plan, clarification, claim_token)
     assert completed is not None and completed.version == 1
-    assert store.complete_claim_and_append_plan("task", Role.HR, plan, clarification) is None
+    assert store.complete_claim_and_append_plan("task", Role.HR, plan, clarification, claim_token) is None
+
+
+def test_stale_claim_token_cannot_complete_new_claim(tmp_path) -> None:
+    store = PolicyRolloutTaskStore(tmp_path / "tasks.sqlite3")
+    now = task_time()
+    clarification = PolicyRolloutClarification(questions=["范围？"], answers=["全员"])
+    old_token = "old-claim"
+    store.create("task", Role.HR, "目标", PlanStatus.PLANNING, clarification, claim_token=old_token, now=now)
+    assert store.reclaim_stale_planning("task", Role.HR, 1, now=now.replace(year=now.year + 1))
+    new_token = "new-claim"
+    assert store.claim_clarification("task", Role.HR, clarification, claim_token=new_token)
+    plan = PolicyRolloutPlanVersion(version=0, todos=[PolicyRolloutTodo(todo_id="review", title="核对", detail="核对规则。", citations=[TodoCitation(chunk_id="leave:v2:chunk-01", document_id="leave", document_version=2, source_file_name="leave-v2.md", source_locator="年假")])], created_at=task_time())
+    assert store.complete_claim_and_append_plan("task", Role.HR, plan, clarification, old_token) is None
+    assert not store.release_claim("task", Role.HR, clarification, old_token)
+    assert store.complete_claim_and_append_plan("task", Role.HR, plan, clarification, new_token) is not None
     reopened = store.get("task", Role.HR, "reopen")
     assert reopened is not None and reopened.status == PlanStatus.PLANNED
     assert [version.version for version in reopened.plan_versions] == [1]
+
+
+def test_stale_planning_with_invalid_clarification_fails(tmp_path) -> None:
+    store = PolicyRolloutTaskStore(tmp_path / "tasks.sqlite3")
+    now = task_time()
+    store.create("task", Role.HR, "目标", PlanStatus.PLANNING, None, claim_token="expired", now=now)
+    with store._connection() as connection:
+        connection.execute("UPDATE policy_rollout_tasks SET clarification_json = ? WHERE task_id = ?", ("{}", "task"))
+    assert store.reclaim_stale_planning("task", Role.HR, 1, now=now.replace(year=now.year + 1))
+    recovered = store.get("task", Role.HR, "reopen")
+    assert recovered is not None and recovered.status == PlanStatus.FAILED
 
 
 def task_time():

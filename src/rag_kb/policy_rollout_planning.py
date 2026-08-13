@@ -77,16 +77,19 @@ class PolicyRolloutPlanningService:
     def __init__(
         self, store: PolicyRolloutTaskStore, retriever: Retriever, model: ToolBindable | None,
         *, citation_checker: Callable[[list[TodoCitation], Role], bool] | None = None,
-        max_steps: int = 4, max_tool_calls: int = 3,
+        max_steps: int = 4, max_tool_calls: int = 3, claim_ttl_seconds: int = 300,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         self.store, self.retriever, self.model = store, retriever, model
         self.citation_checker = citation_checker or (lambda citations, _role: not citations)
         self.max_steps, self.max_tool_calls = max_steps, max_tool_calls
+        self.claim_ttl_seconds, self.now = claim_ttl_seconds, now or (lambda: datetime.now(UTC))
 
     def create(self, goal: str, role: Role) -> PolicyRolloutTaskResponse:
         task_id = str(uuid.uuid4())
-        self.store.create(task_id, role, goal, PlanStatus.PLANNING, None)
-        return self._plan(task_id, role, goal, [], None)
+        claim_token = str(uuid.uuid4())
+        self.store.create(task_id, role, goal, PlanStatus.PLANNING, None, claim_token=claim_token)
+        return self._plan(task_id, role, goal, [], None, claim_token)
 
     def continue_task(self, task_id: str, role: Role, answers: list[str]) -> PolicyRolloutTaskResponse | None:
         previous = self.get(task_id, role)
@@ -94,11 +97,13 @@ class PolicyRolloutPlanningService:
             return None
         questions = previous.clarification.questions if previous.clarification else []
         clarification = PolicyRolloutClarification(questions=questions, answers=answers)
-        if not self.store.claim_clarification(task_id, role, clarification):
+        claim_token = str(uuid.uuid4())
+        if not self.store.claim_clarification(task_id, role, clarification, claim_token=claim_token):
             return None
-        return self._plan(task_id, role, previous.goal, answers, clarification)
+        return self._plan(task_id, role, previous.goal, answers, clarification, claim_token)
 
     def get(self, task_id: str, role: Role) -> PolicyRolloutTaskResponse | None:
+        self.store.reclaim_stale_planning(task_id, role, self.claim_ttl_seconds, now=self.now())
         result = self.store.get(task_id, role, str(uuid.uuid4()))
         if result is None or not self._citations_currently_authorized(result, role):
             return None
@@ -106,7 +111,7 @@ class PolicyRolloutPlanningService:
 
     def _plan(
         self, task_id: str, role: Role, goal: str, answers: list[str],
-        claimed_clarification: PolicyRolloutClarification | None,
+        claimed_clarification: PolicyRolloutClarification | None, claim_token: str,
     ) -> PolicyRolloutTaskResponse:
         observer, started = RunObserver(str(role), task_id), time.perf_counter()
         tools = BoundPlanningTools(self.retriever, role, self.max_tool_calls)
@@ -119,19 +124,20 @@ class PolicyRolloutPlanningService:
                 if draft.todos or not draft.clarification_questions:
                     raise PlanningError("invalid_model_output")
                 clarification = PolicyRolloutClarification(questions=draft.clarification_questions, answers=answers)
-                self.store.update_state(task_id, role, PlanStatus.CLARIFICATION, clarification)
+                if not self.store.update_state(task_id, role, PlanStatus.CLARIFICATION, clarification, claim_token=claim_token):
+                    raise PlanningError("planning_claim_lost")
             elif draft.status == PlanStatus.PLANNED:
                 plan = self._validated_plan(draft, tools)
-                if self.store.complete_claim_and_append_plan(task_id, role, plan, current.clarification) is None:
+                if self.store.complete_claim_and_append_plan(task_id, role, plan, current.clarification, claim_token) is None:
                     raise PlanningError("planning_claim_lost")
             else:
                 raise PlanningError("invalid_model_output")
         except Exception as exc:
             logger.error("策略落地规划失败(error_code=policy_rollout_planning_failed)", exc_info=True)
             if claimed_clarification is None:
-                self.store.update_state(task_id, role, PlanStatus.FAILED, None)
+                self.store.update_state(task_id, role, PlanStatus.FAILED, None, claim_token=claim_token)
             else:
-                self.store.release_claim(task_id, role, claimed_clarification)
+                self.store.release_claim(task_id, role, claimed_clarification, claim_token)
             observer.emit("policy_rollout_planning", "completed", status="refusal", error_code="planning_refused", started_at=started)
             return self._stored(task_id, role, observer.run_id)
         observer.emit("policy_rollout_planning", "completed", status="success", counts={"candidates": len(tools.candidates)}, started_at=started)
