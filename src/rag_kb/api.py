@@ -30,6 +30,10 @@ from rag_kb.models import (
     DocumentSpec,
     PolicyComparisonRequest,
     PolicyComparisonResponse,
+    PolicyRolloutApprovalRequest,
+    PolicyRolloutApprovalResponse,
+    PolicyRolloutExecutionRequest,
+    PolicyRolloutExecutionResponse,
     PolicyRolloutTaskContinueRequest,
     PolicyRolloutTaskCreateRequest,
     PolicyRolloutTaskResponse,
@@ -38,6 +42,7 @@ from rag_kb.models import (
 )
 from rag_kb.policy_compare import DeepSeekPolicyAgentModel, PolicyComparisonService
 from rag_kb.policy_rollout_planning import PolicyRolloutPlanningService
+from rag_kb.policy_rollout_execution import ApprovalConflict, ExecutionConflict, PolicyRolloutExecutionService
 from rag_kb.policy_rollout_store import PolicyRolloutTaskStore
 from rag_kb.retriever import Retriever
 from rag_kb.store import ChunkStore
@@ -279,6 +284,17 @@ def build_policy_rollout_planning_service() -> PolicyRolloutPlanningService:
         PolicyRolloutTaskStore(settings.policy_rollout_db_path), retriever, model,
         citation_checker=store.citations_currently_authorized,
         max_steps=settings.agent_max_steps, max_tool_calls=settings.agent_max_tool_calls,
+        claim_ttl_seconds=settings.policy_rollout_claim_ttl_seconds,
+    )
+
+
+@lru_cache
+def build_policy_rollout_execution_service() -> PolicyRolloutExecutionService:
+    settings = get_settings()
+    read_store = _build_read_store()
+    return PolicyRolloutExecutionService(
+        PolicyRolloutTaskStore(settings.policy_rollout_db_path), settings.policy_rollout_draft_dir,
+        read_store.current_citation_hashes,
     )
 
 
@@ -329,4 +345,53 @@ def get_policy_rollout_task(
     result = service.get(task_id, role)
     if result is None:
         raise HTTPException(status_code=403, detail="任务不可访问")
+    return result
+
+
+@app.post("/policy-rollout-tasks/{task_id}/versions/{version}/approval", response_model=PolicyRolloutApprovalResponse)
+def approve_policy_rollout_plan(
+    task_id: str, version: int, req: PolicyRolloutApprovalRequest,
+    role: Annotated[Role, Depends(resolve_policy_rollout_role)],
+    service: Annotated[PolicyRolloutExecutionService, Depends(build_policy_rollout_execution_service)],
+) -> PolicyRolloutApprovalResponse:
+    if req.version != version:
+        raise HTTPException(status_code=409, detail="版本不匹配")
+    try:
+        result = service.approve(task_id, version, role)
+    except ApprovalConflict as exc:
+        raise HTTPException(status_code=409, detail="批准状态冲突") from exc
+    if result is None:
+        raise HTTPException(status_code=403, detail="任务不可访问")
+    return result
+
+
+@app.post("/policy-rollout-tasks/{task_id}/versions/{version}/executions", response_model=PolicyRolloutExecutionResponse)
+def execute_policy_rollout_plan(
+    task_id: str, version: int, req: PolicyRolloutExecutionRequest,
+    role: Annotated[Role, Depends(resolve_policy_rollout_role)],
+    service: Annotated[PolicyRolloutExecutionService, Depends(build_policy_rollout_execution_service)],
+) -> PolicyRolloutExecutionResponse:
+    if req.version != version:
+        raise HTTPException(status_code=409, detail="版本不匹配")
+    try:
+        result = service.execute(task_id, version, role, req.idempotency_key, req.action)
+    except ExecutionConflict as exc:
+        raise HTTPException(status_code=409, detail="执行状态冲突") from exc
+    if result is None:
+        raise HTTPException(status_code=403, detail="任务不可访问")
+    return result
+
+
+@app.get("/policy-rollout-tasks/{task_id}/executions", response_model=PolicyRolloutExecutionResponse)
+def get_policy_rollout_execution(
+    task_id: str, role: Annotated[Role, Depends(resolve_policy_rollout_role)],
+    service: Annotated[PolicyRolloutExecutionService, Depends(build_policy_rollout_execution_service)],
+    idempotency_key: str | None = None, execution_id: str | None = None,
+) -> PolicyRolloutExecutionResponse:
+    try:
+        result = service.get_execution(task_id, role, idempotency_key=idempotency_key, execution_id=execution_id)
+    except ExecutionConflict as exc:
+        raise HTTPException(status_code=409, detail="执行状态冲突") from exc
+    if result is None:
+        raise HTTPException(status_code=403, detail="执行不可访问")
     return result
