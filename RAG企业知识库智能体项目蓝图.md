@@ -244,9 +244,8 @@ Qdrant 按 document_id + version 完整读取；应用层校验 status(active/su
 POST /policy-rollout-tasks
   → X-Demo-Role-Token 解析并绑定 Role，body.role 必须一致
   → SQLite 先创建 planning 任务
-  → Retriever 动态检索当前 role 可见的 active 文档
-  → Agent 只能调用 search_authorized_evidence 这一个只读工具
-  → 应用层校验 Todo、依赖关系和检索候选，并构造 Citation
+  → ChatDeepSeek.with_structured_output(PlannerDecision) 输出 search/clarify/propose/refuse 之一
+  → 应用层按决策执行绑定角色的 Retriever，校验 Todo、依赖关系和检索候选，并构造 Citation
   → SQLite 更新为 planned/clarification/failed
 GET /policy-rollout-tasks/{task_id}
   → 按 task_id + role 读取，并重新校验引用当前仍为 active 且角色有权访问
@@ -254,7 +253,7 @@ POST /policy-rollout-tasks/{task_id}/continue
   → CAS 领取 clarification，再追加下一条不可变计划版本
 ```
 
-该工作流沿用 `agent_max_steps=4`、`agent_max_tool_calls=3` 的当前配置上限，且只读检索通过 `Retriever` 动态应用 `active` 与 `allowed_roles`。SQLite 只保存任务目标、绑定角色、状态、澄清和追加式计划版本，不保存证据正文或模型原始输出；Citation 由应用层根据本次检索候选构造。它不执行 Todo，不写外部系统，也没有 Agent graph 的 durable execution、checkpointer 或断点续跑能力。同步规划期间若进程被强制终止，任务可能停留在 `planning` 状态，这是 v1 的窄化崩溃边界。
+该工作流使用显式结构化 `PlannerDecision`，每次决策只能是 `search`、`clarify`、`propose` 或 `refuse`。应用层控制最多 6 次模型决策、3 次检索和 2 次修复；重复查询反馈会先归一化去重。只读检索通过绑定角色的 `Retriever` 动态应用 `active` 与 `allowed_roles`，CAS 保护澄清领取和计划追加。SQLite 只保存任务目标、绑定角色、状态、澄清和追加式计划版本，不保存证据正文或模型原始输出；Citation 由应用层根据本次检索候选构造。它不执行 Todo，不写外部系统，也没有 Agent graph 的 durable execution、checkpointer 或断点续跑能力。同步规划期间若进程被强制终止，任务可能停留在 `planning` 状态，这是 v1 的窄化崩溃边界。
 
 ### 5.5 摄取数据流
 
@@ -326,7 +325,7 @@ MVP 不做复杂审批、协同编辑、历史版本浏览或外部系统同步�
 
 ### 7.1 检索基线
 
-首版只实现 `bge-m3` dense embedding 与 Qdrant 向量相似度检索。设置固定的 Top-K 候选数量，并对候选结果应用相似度阈值或等价的“证据是否充足”判定。
+首版只实现 `bge-m3` dense embedding 与 Qdrant 向量相似度检索。设置固定的 Top-K 候选数量，并对候选结果应用相似度阈值或等价的“证据是否充足”判定。2026-08-14 的真实检索评测使用 15 个 calibration 样本选择了 `0.5625275`，在独立 47 个 test 样本上得到 Recall@5 1.0、MRR 0.9861、nDCG@5 0.9897，精确术语、正确版本、ACL 过滤与无答案指标均为 1.0，ACL 泄漏率为 0。生产默认仍为 `None`；冻结模拟语料上的校准结果必须经灰度验证后才能发布。
 
 不在首版中同时实现 sparse、hybrid、RRF、reranker 或查询改写。这样能够先分离并验证“权限过滤是否正确”“版本过滤是否正确”“引用是否完整”这些更重要的问题。
 
@@ -394,7 +393,7 @@ DeepSeek 输出不能单独作为可信来源。最终响应中的引用必须�
 
 `POST /policy-comparisons` 请求体为 `document_id`、正整数 `from_version`、正整数 `to_version` 和 `role`，同时要求服务端配置的 `X-Demo-Role-Token` 与请求角色匹配。服务端绑定文档、角色、集合、生命周期与 ACL；Agent 只能调用授权版本证据读取和确定性比较两个工具。仅允许 `active`/`superseded`，撤回、删除、缺失、未授权、令牌不匹配、反向/相同版本和模型/工具错误全部失败关闭，拒答不回显文档、版本、文件、块或正文。该比较路径没有持久化 Agent run 或 checkpointer。
 
-策略落地规划的创建请求包含 `goal` 和 `role`，角色由 `X-Demo-Role-Token` 服务端解析，并要求 body 中角色一致；读取和继续请求不从 body 接收角色。规划 Agent 只能使用 `search_authorized_evidence` 一个只读工具，工具内部绑定 `Retriever` 和角色，当前上限为 4 步、3 次工具调用。计划依赖关系、候选块归属和 Citation 由应用层校验与构造。SQLite 持久化任务业务状态和 append-only 计划版本，但不保存证据正文或模型原始输出；GET 和 continue 都会重新校验已保存引用当前仍为 `active` 且对角色授权。continue 使用 CAS，只有一个请求能领取澄清状态；v1 不执行 Todo、不接外部系统，也不提供 Agent graph 的 durable execution。
+策略落地规划的创建请求包含 `goal` 和 `role`，角色由 `X-Demo-Role-Token` 服务端解析，并要求 body 中角色一致；读取和继续请求不从 body 接收角色。规划模型通过 `ChatDeepSeek.with_structured_output(PlannerDecision)` 输出 `search`、`clarify`、`propose` 或 `refuse`，由应用层执行绑定角色的 `Retriever`，并限制最多 6 次模型决策、3 次检索和 2 次修复。计划依赖关系、候选块归属和 Citation 由应用层校验与构造；澄清答案项最多 20 个，每项最多 2000 字符。SQLite 持久化任务业务状态和 append-only 计划版本，但不保存证据正文或模型原始输出；GET 和 continue 都会重新校验已保存引用当前仍为 `active` 且对角色授权。continue 使用 CAS，只有一个请求能领取澄清状态；v1 不执行 Todo、不接外部系统，也不提供 Agent graph 的 durable execution。
 
 ## 9. 测试优先的实施阶段
 
@@ -402,7 +401,7 @@ DeepSeek 输出不能单独作为可信来源。最终响应中的引用必须�
 
 ### 阶段 0：环境可用性
 
-目标：确认 Docker Desktop Engine、Docker Compose、Qdrant 容器、Conda Python 和 DeepSeek API 配置都可用。当前 Docker Engine、Docker Compose、Qdrant、Conda 环境和项目测试链路已验证；真实 DeepSeek 调用仍依赖本地密钥与网络。
+目标：确认 Docker Desktop Engine、Docker Compose、Qdrant 容器、Conda Python 和 DeepSeek API 配置都可用。当前 Docker Engine、Docker Compose、Qdrant、Conda 环境和项目测试链路已验证。2026-08-14 已在用户明确授权的冻结 fixture 上完成真实 DeepSeek Planner 4×1 与 11×3：分别 4/4、33/33 通过，安全、质量和成本门均通过；复现仍依赖本地密钥、网络和 Provider 可用性。
 
 完成条件：Docker 能启动 Qdrant；应用能够从本机连接 Qdrant；DeepSeek 密钥只从环境变量读取。
 
@@ -462,7 +461,7 @@ DeepSeek 输出不能单独作为可信来源。最终响应中的引用必须�
 
 ### 10.3 测试边界
 
-确定性的摄取、状态、ACL 和引用验证必须完全脱离真实 LLM 输出。大多数单元测试应 mock DeepSeek API；仅保留少量手工演示调用真实 API。这样可避免模型随机性、网络问题和 API 成本破坏回归稳定性。
+确定性的摄取、状态、ACL 和引用验证必须完全脱离真实 LLM 输出。大多数单元测试应 mock DeepSeek API；真实模型只用于显式授权、调用预算受控且与默认回归分离的验收。这样可避免模型随机性、网络问题和 API 成本破坏回归稳定性。2026-08-14 最新冻结回归为 202 项通过；真实 Planner 11×3 共 33 次均通过终态、任务结果、计划约束、澄清利用、Todo、依赖、引用、安全和成本门。精确轨迹匹配仅保留为诊断指标，外部 Provider 内部重试及部分 Token 元数据仍不可观测。
 
 策略比较另有 `tests/test_policy_compare.py` 聚焦测试：授权比较、added/modified 章节、越权、withdrawn/deleted/missing、非法/反向/相同版本、工具绑定、步数/工具次数、模型和工具失败、引用完整性、只读约束及端点契约。基准脚本 `scripts/benchmark_policy_comparisons.py` 读取 manifest 的 `policy_comparisons` 和固定语料 fixture，不依赖运行态 Qdrant 数据；它将实际 case pass/fail、ACL 泄漏、版本不匹配、引用完整性、护栏违规、拒答错误计数与耗时写入 `data/local/benchmarks/`；报告结构由 `schemas/policy-comparison-report.schema.json` 固定，不预填结果。
 
@@ -550,6 +549,7 @@ MVP 没有真实企业身份系统、审计合规认证、加密密钥管理、�
 - [x] 删除或撤回文档后默认检索不返回相关内容。
 - [x] 冻结 `pytest` 测试覆盖授权、越权、版本更新、删除、引用、拒答及策略版本比较安全边界。
 - [x] 测试默认不依赖真实 DeepSeek API 返回值(全部经 FakeAnswerModel)。
+- [x] 2026-08-14 最新冻结回归 269 项通过；真实 Planner 4×1 与 11×3、真实 `bge-m3 + Qdrant` 独立检索测试均通过各自验收门，结果只适用于冻结模拟语料。
 - [x] API 密钥、真实私密文档和本地向量数据均未提交到 Git。
 - [x] 演示可按固定步骤重复完成（`scripts/demo.py`，开头自动重置 collection，2026-08-07 全流程实测通过），且没有临时手工修改数据。
 

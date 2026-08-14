@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 from qdrant_client import QdrantClient
 
-from rag_kb.config import ROOT_DIR, get_settings
+from rag_kb.config import ROOT_DIR, get_settings, resolve_retrieval_limits
 from rag_kb.answerer import AnswerService, DeepSeekAnswerModel
 from rag_kb.embedder import BgeM3Embedder
 from rag_kb.ingestion import UploadValidationError, validate_upload
@@ -41,7 +41,7 @@ from rag_kb.models import (
     Role,
 )
 from rag_kb.policy_compare import DeepSeekPolicyAgentModel, PolicyComparisonService
-from rag_kb.policy_rollout_planning import PolicyRolloutPlanningService
+from rag_kb.policy_rollout_planning import DeepSeekPlannerDecisionModel, PolicyRolloutPlanningService
 from rag_kb.policy_rollout_execution import ApprovalConflict, ExecutionConflict, PolicyRolloutExecutionService
 from rag_kb.policy_rollout_store import PolicyRolloutTaskStore
 from rag_kb.retriever import Retriever
@@ -205,10 +205,13 @@ class QuestionRequest(BaseModel):
 def build_answer_service() -> AnswerService:
     """生产问答服务单例;模型懒加载,不会在健康检查或非问答路径触发。"""
     settings = get_settings()
+    candidate_k, context_k = resolve_retrieval_limits(settings)
     retriever = Retriever(
         _build_store(),
         BgeM3Embedder(),
         top_k=settings.retrieval_top_k,
+        candidate_k=candidate_k,
+        context_k=context_k,
         score_threshold=settings.retrieval_score_threshold,
     )
     return AnswerService(retriever, DeepSeekAnswerModel(settings))
@@ -270,21 +273,28 @@ def compare_policy_versions(
 @lru_cache
 def build_policy_rollout_planning_service() -> PolicyRolloutPlanningService:
     settings = get_settings()
+    candidate_k, context_k = resolve_retrieval_limits(settings)
     try:
-        model = DeepSeekPolicyAgentModel(settings)
+        model = DeepSeekPlannerDecisionModel(settings)
     except Exception:
-        logger.warning("策略落地规划 Agent 初始化失败(error_code=agent_runtime_unavailable)", exc_info=True)
+        logger.warning("策略落地规划 Agent 初始化失败(error_code=agent_runtime_unavailable)")
         model = None
     store = _build_read_store()
     retriever = Retriever(
         store, BgeM3Embedder(), top_k=settings.retrieval_top_k,
+        candidate_k=candidate_k, context_k=context_k,
         score_threshold=settings.retrieval_score_threshold,
     )
     return PolicyRolloutPlanningService(
         PolicyRolloutTaskStore(settings.policy_rollout_db_path), retriever, model,
         citation_checker=store.citations_currently_authorized,
-        max_steps=settings.agent_max_steps, max_tool_calls=settings.agent_max_tool_calls,
+        max_tool_calls=settings.agent_max_tool_calls,
+        max_model_decisions=settings.planner_max_model_decisions,
+        max_repairs=settings.planner_max_repairs,
         claim_ttl_seconds=settings.policy_rollout_claim_ttl_seconds,
+        preflight_named_policy_search=getattr(
+            settings, "planner_preflight_named_policy_search", True
+        ),
     )
 
 

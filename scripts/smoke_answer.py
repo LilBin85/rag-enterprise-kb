@@ -10,7 +10,7 @@
 import uuid
 
 from rag_kb.answerer import AnswerService, DeepSeekAnswerModel
-from rag_kb.config import ROOT_DIR, get_settings
+from rag_kb.config import ROOT_DIR, get_settings, resolve_retrieval_limits
 from rag_kb.embedder import BgeM3Embedder
 from rag_kb.lifecycle import DocumentLifecycle
 from rag_kb.models import DocumentSpec, Role
@@ -42,9 +42,11 @@ def main() -> None:
         ROOT_DIR / "data" / "corpus" / "员工休假制度-v2.pdf",
     )
 
+    candidate_k, context_k = resolve_retrieval_limits(settings)
     retriever = Retriever(
         store, embedder,
-        top_k=settings.retrieval_top_k, score_threshold=settings.retrieval_score_threshold,
+        top_k=settings.retrieval_top_k, candidate_k=candidate_k, context_k=context_k,
+        score_threshold=settings.retrieval_score_threshold,
     )
     service = AnswerService(retriever, DeepSeekAnswerModel(settings))
 

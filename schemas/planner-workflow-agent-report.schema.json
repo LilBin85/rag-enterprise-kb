@@ -1,0 +1,378 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    { "$ref": "#/$defs/v1_report" },
+    { "$ref": "#/$defs/v2_report" }
+  ],
+  "$defs": {
+    "ratio": {
+      "type": "object",
+      "required": ["value", "defined_n", "numerator"],
+      "properties": {
+        "value": { "type": ["number", "null"] },
+        "defined_n": { "type": "integer", "minimum": 0 },
+        "numerator": { "type": "number", "minimum": 0 }
+        ,"status": { "$ref": "#/$defs/metric_status" }
+      },
+      "additionalProperties": false
+    },
+    "metric_status": {
+      "enum": ["observed", "not_applicable", "not_observed", "run_failed", "metadata_missing", "partial_metadata", "skipped"]
+    },
+    "metric_statuses": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/metric_status" }
+    },
+    "gate_report": {
+      "type": "object",
+      "required": ["passed", "failures", "checks"],
+      "properties": {
+        "passed": { "type": "boolean" },
+        "failures": { "type": "array", "items": { "type": "string" } },
+        "checks": { "type": "object", "additionalProperties": { "type": "boolean" } }
+      },
+      "additionalProperties": false
+    },
+    "live_quality_gate_report": {
+      "allOf": [
+        { "$ref": "#/$defs/gate_report" },
+        {
+          "properties": {
+            "checks": {
+              "required": [
+                "semantic_business_path", "first_pass_plan_success",
+                "repair_rate", "emergency_fallback_rate"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "token_average": {
+      "type": "object", "required": ["input", "output", "total"],
+      "properties": { "input": { "type": ["number", "null"], "minimum": 0 }, "output": { "type": ["number", "null"], "minimum": 0 }, "total": { "type": ["number", "null"], "minimum": 0 } },
+      "additionalProperties": false
+    },
+    "token_summary": {
+      "type": "object", "required": ["input", "output", "total", "average", "observed_runs", "missing_runs", "partial_runs", "model_call_runs", "no_model_call_runs", "usage_observed_calls", "usage_missing_calls", "usage_partial_calls", "status"],
+      "properties": {
+        "input": { "type": ["integer", "null"], "minimum": 0 }, "output": { "type": ["integer", "null"], "minimum": 0 }, "total": { "type": ["integer", "null"], "minimum": 0 },
+        "average": { "$ref": "#/$defs/token_average" }, "observed_runs": { "type": "integer", "minimum": 0 }, "missing_runs": { "type": "integer", "minimum": 0 },
+        "partial_runs": { "type": "integer", "minimum": 0 }, "model_call_runs": { "type": "integer", "minimum": 0 }, "no_model_call_runs": { "type": "integer", "minimum": 0 },
+        "usage_observed_calls": { "type": "integer", "minimum": 0 }, "usage_missing_calls": { "type": "integer", "minimum": 0 }, "usage_partial_calls": { "type": "integer", "minimum": 0 },
+        "status": { "$ref": "#/$defs/metric_status" }
+      }, "additionalProperties": true
+    },
+    "distribution": {
+      "type": "object", "required": ["min", "p50", "p95", "max", "status"],
+      "properties": { "min": { "type": ["number", "null"], "minimum": 0 }, "p50": { "type": ["number", "null"], "minimum": 0 }, "p95": { "type": ["number", "null"], "minimum": 0 }, "max": { "type": ["number", "null"], "minimum": 0 }, "status": { "$ref": "#/$defs/metric_status" } },
+      "additionalProperties": false
+    },
+    "metric_values": {
+      "type": "object",
+      "required": ["decision_path_correctness", "critical_clarification_recall", "invalid_or_over_clarification_rate", "initial_constraint_pass", "final_constraint_pass", "autonomous_repair_success", "citation_legality", "necessary_evidence_recall", "todo_grounding", "acl_leakage", "unexpected_budget_exhaustion", "refusal_correctness", "clarification_answer_utilization", "terminal_state_valid", "plan_constraint_pass", "task_outcome_correct", "clarification_question_quality", "todo_action_coverage", "todo_dependency_quality", "citation_support_alignment", "exact_control_trace_match", "semantic_business_path_correctness", "direct_proposal_success_rate", "grounded_composer_rate", "first_pass_plan_success_rate", "repair_rate", "emergency_fallback_rate"],
+      "properties": {
+        "decision_path_correctness": { "type": ["boolean", "null"] },
+        "critical_clarification_recall": { "type": ["boolean", "null"] },
+        "invalid_or_over_clarification_rate": { "type": ["boolean", "null"] },
+        "initial_constraint_pass": { "type": ["boolean", "null"] },
+        "final_constraint_pass": { "type": ["boolean", "null"] },
+        "autonomous_repair_success": { "type": ["boolean", "null"] },
+        "citation_legality": { "type": ["boolean", "null"] },
+        "necessary_evidence_recall": { "type": ["boolean", "null"] },
+        "todo_grounding": { "type": ["boolean", "null"] },
+        "acl_leakage": { "type": ["boolean", "null"] },
+        "unexpected_budget_exhaustion": { "type": ["boolean", "null"] },
+        "refusal_correctness": { "type": ["boolean", "null"] },
+        "clarification_answer_utilization": { "type": ["boolean", "null"] },
+        "terminal_state_valid": { "type": ["boolean", "null"] },
+        "plan_constraint_pass": { "type": ["boolean", "null"] },
+        "task_outcome_correct": { "type": ["boolean", "null"] },
+        "clarification_question_quality": { "type": ["boolean", "null"] },
+        "todo_action_coverage": { "type": ["boolean", "null"] },
+        "todo_dependency_quality": { "type": ["boolean", "null"] },
+        "citation_support_alignment": { "type": ["boolean", "null"] },
+        "exact_control_trace_match": { "type": ["boolean", "null"] },
+        "semantic_business_path_correctness": { "type": ["boolean", "null"] },
+        "direct_proposal_success_rate": { "type": ["boolean", "null"] },
+        "grounded_composer_rate": { "type": ["boolean", "null"] },
+        "first_pass_plan_success_rate": { "type": ["boolean", "null"] },
+        "repair_rate": { "type": ["boolean", "null"] },
+        "emergency_fallback_rate": { "type": ["boolean", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "group": {
+      "type": "object",
+      "required": ["decision_path_correctness", "critical_clarification_recall", "invalid_or_over_clarification_rate", "initial_constraint_pass", "final_constraint_pass", "autonomous_repair_success", "citation_legality", "necessary_evidence_recall", "todo_grounding", "average_model_decisions", "average_search_calls", "search_overhead", "acl_leakage", "unexpected_budget_exhaustion", "refusal_correctness", "clarification_answer_utilization", "terminal_state_valid", "plan_constraint_pass", "task_outcome_correct", "clarification_question_quality", "todo_action_coverage", "todo_dependency_quality", "citation_support_alignment", "exact_control_trace_match", "semantic_business_path_correctness", "direct_proposal_success_rate", "grounded_composer_rate", "first_pass_plan_success_rate", "repair_rate", "emergency_fallback_rate"],
+      "properties": {
+        "decision_path_correctness": { "$ref": "#/$defs/ratio" },
+        "critical_clarification_recall": { "$ref": "#/$defs/ratio" },
+        "invalid_or_over_clarification_rate": { "$ref": "#/$defs/ratio" },
+        "initial_constraint_pass": { "$ref": "#/$defs/ratio" },
+        "final_constraint_pass": { "$ref": "#/$defs/ratio" },
+        "autonomous_repair_success": { "$ref": "#/$defs/ratio" },
+        "citation_legality": { "$ref": "#/$defs/ratio" },
+        "necessary_evidence_recall": { "$ref": "#/$defs/ratio" },
+        "todo_grounding": { "$ref": "#/$defs/ratio" },
+        "average_model_decisions": { "$ref": "#/$defs/ratio" },
+        "average_search_calls": { "$ref": "#/$defs/ratio" },
+        "search_overhead": { "$ref": "#/$defs/ratio" },
+        "acl_leakage": { "$ref": "#/$defs/ratio" },
+        "unexpected_budget_exhaustion": { "$ref": "#/$defs/ratio" },
+        "refusal_correctness": { "$ref": "#/$defs/ratio" },
+        "clarification_answer_utilization": { "$ref": "#/$defs/ratio" },
+        "terminal_state_valid": { "$ref": "#/$defs/ratio" },
+        "plan_constraint_pass": { "$ref": "#/$defs/ratio" },
+        "task_outcome_correct": { "$ref": "#/$defs/ratio" },
+        "clarification_question_quality": { "$ref": "#/$defs/ratio" },
+        "todo_action_coverage": { "$ref": "#/$defs/ratio" },
+        "todo_dependency_quality": { "$ref": "#/$defs/ratio" },
+        "citation_support_alignment": { "$ref": "#/$defs/ratio" },
+        "exact_control_trace_match": { "$ref": "#/$defs/ratio" },
+        "semantic_business_path_correctness": { "$ref": "#/$defs/ratio" },
+        "direct_proposal_success_rate": { "$ref": "#/$defs/ratio" },
+        "grounded_composer_rate": { "$ref": "#/$defs/ratio" },
+        "first_pass_plan_success_rate": { "$ref": "#/$defs/ratio" },
+        "repair_rate": { "$ref": "#/$defs/ratio" },
+        "emergency_fallback_rate": { "$ref": "#/$defs/ratio" }
+      },
+      "additionalProperties": false
+    },
+    "todos": {
+      "type": "object",
+      "additionalProperties": { "type": "array", "items": { "type": "string" } }
+    },
+    "run": {
+      "type": "object",
+      "required": ["action", "events", "semantic_business_path", "proposal_source", "used_grounded_fallback", "used_grounded_composer", "model_decisions", "search_calls", "repairs", "todos", "citations", "stale_accessible", "metrics", "metric_statuses"],
+      "properties": {
+        "action": { "enum": ["propose", "clarify", "refuse", "failed"] },
+        "events": { "type": "array", "items": { "enum": ["search", "propose", "clarify", "refuse", "repair", "failed"] } },
+        "semantic_business_path": { "type": "array", "items": { "enum": ["search", "propose", "clarify", "refuse", "failed"] } },
+        "proposal_source": { "enum": ["direct_model_proposal", "grounded_composed_proposal", "emergency_grounded_fallback", "unknown", "not_applicable"] },
+        "used_grounded_fallback": { "type": "boolean" },
+        "used_grounded_composer": { "type": "boolean" },
+        "constraint_codes": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "model_decisions": { "type": "integer", "minimum": 0 },
+        "search_calls": { "type": "integer", "minimum": 0 },
+        "repairs": { "type": "integer", "minimum": 0 },
+        "todos": { "$ref": "#/$defs/todos" },
+        "citations": { "type": "array", "items": { "type": "string" } },
+        "stale_accessible": { "type": "boolean" },
+        "attempted_searches": { "type": "integer", "minimum": 0 },
+        "executed_searches": { "type": "integer", "minimum": 0 },
+        "deduplicated_searches": { "type": "integer", "minimum": 0 },
+        "rejected_searches": { "type": "integer", "minimum": 0 },
+        "metrics": { "$ref": "#/$defs/metric_values" },
+        "metric_statuses": { "$ref": "#/$defs/metric_statuses" }
+      },
+      "additionalProperties": false
+    },
+    "paired": {
+      "type": "object",
+      "required": ["same_inputs", "decision_delta", "search_delta"],
+      "properties": {
+        "same_inputs": { "const": true },
+        "decision_delta": { "type": "number" },
+        "search_delta": { "type": "number" }
+      },
+      "additionalProperties": false
+    },
+    "v1_case": {
+      "type": "object",
+      "required": ["name", "workflow", "agent", "paired"],
+      "properties": {
+        "name": { "type": "string" },
+        "workflow": { "$ref": "#/$defs/run" },
+        "agent": { "$ref": "#/$defs/run" },
+        "paired": { "$ref": "#/$defs/paired" }
+      },
+      "additionalProperties": false
+    },
+    "v1_report": {
+      "type": "object",
+      "required": ["schema_version", "benchmark", "manifest", "sample_size", "metrics", "gates", "cases"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "benchmark": { "const": "planner-workflow-vs-agent" },
+        "manifest": { "type": "string" },
+        "sample_size": { "type": "integer", "minimum": 1 },
+        "metrics": {
+          "type": "object",
+          "required": ["workflow", "agent", "paired"],
+          "properties": {
+            "workflow": { "$ref": "#/$defs/group" },
+            "agent": { "$ref": "#/$defs/group" },
+            "paired": {
+              "type": "object",
+              "required": ["decision_delta", "search_delta"],
+              "properties": { "decision_delta": { "$ref": "#/$defs/ratio" }, "search_delta": { "$ref": "#/$defs/ratio" } },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "gates": {
+          "type": "object",
+          "required": ["passed", "failures"],
+          "properties": {
+            "passed": { "type": "boolean" },
+            "failures": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        },
+        "safety_gates": { "$ref": "#/$defs/gate_report" },
+        "quality_gates": { "$ref": "#/$defs/gate_report" },
+        "cost_gates": { "$ref": "#/$defs/gate_report" },
+        "cases": { "type": "array", "minItems": 11, "items": { "$ref": "#/$defs/v1_case" } }
+      },
+      "additionalProperties": false
+    },
+    "live_run": {
+      "type": "object",
+      "required": ["case_name", "repetition", "status", "action", "events", "semantic_business_path", "proposal_source", "used_grounded_fallback", "used_grounded_composer", "model_decisions", "observed_model_calls", "search_calls", "attempted_searches", "executed_searches", "deduplicated_searches", "rejected_searches", "repairs", "todos", "citations", "stale_accessible", "metrics", "metric_statuses", "duration_ms", "error_code", "tokens"],
+      "properties": {
+        "case_name": { "type": "string", "minLength": 1 }, "repetition": { "type": "integer", "minimum": 1 }, "status": { "enum": ["pass", "fail", "error", "skipped"] },
+        "action": { "enum": ["propose", "clarify", "refuse", "failed"] }, "events": { "type": "array", "items": { "enum": ["search", "propose", "clarify", "refuse", "repair", "failed"] } },
+        "semantic_business_path": { "type": "array", "items": { "enum": ["search", "propose", "clarify", "refuse", "failed"] } },
+        "proposal_source": { "enum": ["direct_model_proposal", "grounded_composed_proposal", "emergency_grounded_fallback", "unknown", "not_applicable"] },
+        "used_grounded_fallback": { "type": "boolean" }, "used_grounded_composer": { "type": "boolean" },
+        "constraint_codes": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "model_decisions": { "type": "integer", "minimum": 0 }, "observed_model_calls": { "type": "integer", "minimum": 0 }, "search_calls": { "type": "integer", "minimum": 0 }, "repairs": { "type": "integer", "minimum": 0 },
+        "attempted_searches": { "type": "integer", "minimum": 0 }, "executed_searches": { "type": "integer", "minimum": 0 }, "deduplicated_searches": { "type": "integer", "minimum": 0 }, "rejected_searches": { "type": "integer", "minimum": 0 },
+        "todos": { "$ref": "#/$defs/todos" }, "citations": { "type": "array", "items": { "type": "string" } }, "stale_accessible": { "type": "boolean" }, "metrics": { "$ref": "#/$defs/metric_values" }, "metric_statuses": { "$ref": "#/$defs/metric_statuses" },
+        "duration_ms": { "type": "number", "minimum": 0 }, "error_code": { "type": ["null", "string"], "enum": [null, "agent_execution_failed", "retrieval_failed", "planning_failed", "planning_claim_lost", "task_persistence_failed", "invalid_model_output", "invalid_citations", "duplicate_todo_id", "invalid_dependencies", "cyclic_dependencies", "invalid_tool_call", "max_model_decisions_exceeded", "max_searches_exceeded", "model_call_budget_reached", "benchmark_runtime_error", "quality_gate_failed", "search_after_clarification_answers", "clarification_after_answers", "authorized_evidence_empty", "explicit_missing_business_variable", "business_input_is_not_evidence_query", "unsupported_todo_content", "incomplete_evidence_actions", "no_new_evidence", "semantically_duplicate_query", "query_rewrite_limit_exceeded", "search_after_terminal_evidence_state", "clarification_not_justified", "query_outside_goal_scope", "refusal_reconsideration_required", "json_truncated", "schema_validation_failed", "provider_timeout", "abnormal_finish_reason", "provider_empty_response", "adapter_protocol_error", "model_output_parse_failed", "provider_request_failed"] },
+        "tokens": {
+          "type": "object",
+          "required": ["input", "output", "total", "status", "usage_observed_calls", "usage_missing_calls", "usage_partial_calls"],
+          "properties": {
+            "input": { "type": ["integer", "null"], "minimum": 0 },
+            "output": { "type": ["integer", "null"], "minimum": 0 },
+            "total": { "type": ["integer", "null"], "minimum": 0 },
+            "status": { "$ref": "#/$defs/metric_status" },
+            "reason": { "enum": ["no_model_call"] },
+            "usage_observed_calls": { "type": "integer", "minimum": 0 },
+            "usage_missing_calls": { "type": "integer", "minimum": 0 },
+            "usage_partial_calls": { "type": "integer", "minimum": 0 }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "status": { "const": "not_applicable" } }, "required": ["status"] },
+              "then": { "required": ["reason"] }
+            }
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "quality_deltas": {
+      "type": "object",
+      "required": ["critical_clarification_recall", "invalid_or_over_clarification_rate", "final_constraint_pass", "citation_legality", "necessary_evidence_recall", "todo_grounding", "acl_leakage", "unexpected_budget_exhaustion", "refusal_correctness", "clarification_answer_utilization", "terminal_state_valid", "plan_constraint_pass", "task_outcome_correct", "clarification_question_quality", "todo_action_coverage", "todo_dependency_quality", "citation_support_alignment", "semantic_business_path_correctness", "first_pass_plan_success_rate", "repair_rate", "emergency_fallback_rate"],
+      "properties": {
+        "decision_path_correctness": { "type": ["number", "null"] }, "critical_clarification_recall": { "type": ["number", "null"] }, "invalid_or_over_clarification_rate": { "type": ["number", "null"] }, "initial_constraint_pass": { "type": ["number", "null"] }, "final_constraint_pass": { "type": ["number", "null"] }, "autonomous_repair_success": { "type": ["number", "null"] }, "citation_legality": { "type": ["number", "null"] }, "necessary_evidence_recall": { "type": ["number", "null"] }, "todo_grounding": { "type": ["number", "null"] }, "acl_leakage": { "type": ["number", "null"] }, "unexpected_budget_exhaustion": { "type": ["number", "null"] }, "refusal_correctness": { "type": ["number", "null"] }, "clarification_answer_utilization": { "type": ["number", "null"] }, "terminal_state_valid": { "type": ["number", "null"] }, "plan_constraint_pass": { "type": ["number", "null"] }, "task_outcome_correct": { "type": ["number", "null"] }, "clarification_question_quality": { "type": ["number", "null"] }, "todo_action_coverage": { "type": ["number", "null"] }, "todo_dependency_quality": { "type": ["number", "null"] }, "citation_support_alignment": { "type": ["number", "null"] }, "semantic_business_path_correctness": { "type": ["number", "null"] }, "first_pass_plan_success_rate": { "type": ["number", "null"] }, "repair_rate": { "type": ["number", "null"] }, "emergency_fallback_rate": { "type": ["number", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "all_deltas": {
+      "type": "object",
+      "required": ["decision_path_correctness", "critical_clarification_recall", "invalid_or_over_clarification_rate", "initial_constraint_pass", "final_constraint_pass", "autonomous_repair_success", "citation_legality", "necessary_evidence_recall", "todo_grounding", "average_model_decisions", "average_search_calls", "search_overhead", "acl_leakage", "unexpected_budget_exhaustion", "refusal_correctness", "clarification_answer_utilization", "terminal_state_valid", "plan_constraint_pass", "task_outcome_correct", "clarification_question_quality", "todo_action_coverage", "todo_dependency_quality", "citation_support_alignment", "exact_control_trace_match", "semantic_business_path_correctness", "direct_proposal_success_rate", "grounded_composer_rate", "first_pass_plan_success_rate", "repair_rate", "emergency_fallback_rate"],
+      "properties": {
+        "decision_path_correctness": { "type": ["number", "null"] }, "critical_clarification_recall": { "type": ["number", "null"] }, "invalid_or_over_clarification_rate": { "type": ["number", "null"] }, "initial_constraint_pass": { "type": ["number", "null"] }, "final_constraint_pass": { "type": ["number", "null"] }, "autonomous_repair_success": { "type": ["number", "null"] }, "citation_legality": { "type": ["number", "null"] }, "necessary_evidence_recall": { "type": ["number", "null"] }, "todo_grounding": { "type": ["number", "null"] }, "average_model_decisions": { "type": ["number", "null"] }, "average_search_calls": { "type": ["number", "null"] }, "search_overhead": { "type": ["number", "null"] }, "acl_leakage": { "type": ["number", "null"] }, "unexpected_budget_exhaustion": { "type": ["number", "null"] }, "refusal_correctness": { "type": ["number", "null"] }, "clarification_answer_utilization": { "type": ["number", "null"] }, "terminal_state_valid": { "type": ["number", "null"] }, "plan_constraint_pass": { "type": ["number", "null"] }, "task_outcome_correct": { "type": ["number", "null"] }, "clarification_question_quality": { "type": ["number", "null"] }, "todo_action_coverage": { "type": ["number", "null"] }, "todo_dependency_quality": { "type": ["number", "null"] }, "citation_support_alignment": { "type": ["number", "null"] }, "exact_control_trace_match": { "type": ["number", "null"] }, "semantic_business_path_correctness": { "type": ["number", "null"] }, "direct_proposal_success_rate": { "type": ["number", "null"] }, "grounded_composer_rate": { "type": ["number", "null"] }, "first_pass_plan_success_rate": { "type": ["number", "null"] }, "repair_rate": { "type": ["number", "null"] }, "emergency_fallback_rate": { "type": ["number", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "v2_case": {
+      "type": "object",
+      "required": ["name", "workflow", "scripted_agent", "live_agent"],
+      "properties": {
+        "name": { "type": "string" },
+        "workflow": { "$ref": "#/$defs/run" },
+        "scripted_agent": { "$ref": "#/$defs/run" },
+        "live_agent": {
+          "type": "object",
+          "required": ["runs", "pass_rate", "flaky", "metrics"],
+          "properties": {
+            "runs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/live_run" } },
+            "pass_rate": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+            "flaky": { "type": "boolean" },
+            "metrics": { "$ref": "#/$defs/group" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "v2_report": {
+      "type": "object",
+      "required": ["schema_version", "benchmark", "manifest", "mode", "sample_size", "repetitions", "model_snapshot", "metrics", "metric_deltas", "metric_delta_statuses", "performance", "safety_gates", "quality_gates", "cost_gates", "quality_gate_thresholds", "gates", "comparison_context", "statistical_scope", "cases", "previous_run_change"],
+      "properties": {
+        "schema_version": { "const": 2 }, "benchmark": { "const": "planner-workflow-vs-agent" }, "manifest": { "type": "string" }, "mode": { "const": "live" }, "sample_size": { "type": "integer", "minimum": 1 }, "repetitions": { "type": "integer", "minimum": 1 },
+        "model_snapshot": {
+          "type": "object", "required": ["model", "temperature", "thinking", "timeout_seconds", "provider_retries", "budgets"],
+          "properties": {
+            "model": { "type": "string", "minLength": 1 }, "temperature": { "const": 0 }, "thinking": { "const": "disabled" }, "timeout_seconds": { "type": "integer", "minimum": 1 }, "provider_retries": { "const": 1 },
+            "budgets": {
+              "type": "object", "required": ["max_model_decisions", "max_search_calls", "max_repairs", "max_model_calls", "preflight_named_policy_search"],
+              "properties": { "max_model_decisions": { "type": "integer", "minimum": 1 }, "max_search_calls": { "type": "integer", "minimum": 1 }, "max_repairs": { "type": "integer", "minimum": 0 }, "max_model_calls": { "type": "integer", "minimum": 1 }, "preflight_named_policy_search": { "type": "boolean" } }, "additionalProperties": false
+            }
+          }, "additionalProperties": false
+        },
+        "metrics": {
+          "type": "object", "required": ["workflow", "scripted_agent", "live_agent"],
+          "properties": { "workflow": { "$ref": "#/$defs/group" }, "scripted_agent": { "$ref": "#/$defs/group" }, "live_agent": { "$ref": "#/$defs/group" } }, "additionalProperties": false
+        },
+        "metric_deltas": {
+          "type": "object", "required": ["live_agent_minus_workflow_quality", "live_agent_minus_scripted_agent_quality"],
+          "properties": { "live_agent_minus_workflow_quality": { "$ref": "#/$defs/quality_deltas" }, "live_agent_minus_scripted_agent_quality": { "$ref": "#/$defs/quality_deltas" } }, "additionalProperties": false
+        },
+        "metric_delta_statuses": {
+          "type": "object", "required": ["live_agent_minus_workflow_quality", "live_agent_minus_scripted_agent_quality"],
+          "properties": { "live_agent_minus_workflow_quality": { "$ref": "#/$defs/metric_statuses" }, "live_agent_minus_scripted_agent_quality": { "$ref": "#/$defs/metric_statuses" } }, "additionalProperties": false
+        },
+        "performance": {
+          "type": "object", "required": ["latency_ms", "latency_scope", "latency_sample_size", "total_model_decisions", "total_search_calls", "searches", "repair_count", "runtime_errors", "tokens", "budget_scope"],
+          "properties": {
+            "latency_ms": { "type": "object", "required": ["p50", "p95", "max"], "properties": { "p50": { "type": ["number", "null"] }, "p95": { "type": ["number", "null"] }, "max": { "type": ["number", "null"] } }, "additionalProperties": false },
+            "latency_scope": { "const": "end_to_end_planner_request_not_pure_model_inference" }, "latency_sample_size": { "type": "integer", "minimum": 0 },
+            "total_model_decisions": { "type": "integer", "minimum": 0 }, "total_search_calls": { "type": "integer", "minimum": 0 }, "repair_count": { "type": "integer", "minimum": 0 }, "runtime_errors": { "type": "integer", "minimum": 0 },
+            "searches": { "type": "object", "required": ["attempted", "executed", "deduplicated", "rejected"], "properties": { "attempted": { "type": "integer", "minimum": 0 }, "executed": { "type": "integer", "minimum": 0 }, "deduplicated": { "type": "integer", "minimum": 0 }, "rejected": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
+            "tokens": {
+              "allOf": [{ "$ref": "#/$defs/token_summary" }],
+              "required": ["missing_rate", "call_metadata_complete_rate", "call_metadata_partial_rate", "call_metadata_missing_rate", "run_missing_rate", "no_model_call_rate", "average_per_business_run", "average_per_model_run", "successful", "failed_or_error", "per_correct_plan", "distributions", "provider_retries_observed"],
+              "properties": {
+                "missing_rate": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+                "call_metadata_complete_rate": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+                "call_metadata_partial_rate": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+                "call_metadata_missing_rate": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+                "run_missing_rate": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+                "no_model_call_rate": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+                "average_per_business_run": { "$ref": "#/$defs/token_average" },
+                "average_per_model_run": { "$ref": "#/$defs/token_average" },
+                "successful": { "$ref": "#/$defs/token_summary" },
+                "failed_or_error": { "$ref": "#/$defs/token_summary" },
+                "per_correct_plan": { "$ref": "#/$defs/token_average" },
+                "distributions": { "type": "object", "required": ["input", "output", "total"], "properties": { "input": { "$ref": "#/$defs/distribution" }, "output": { "$ref": "#/$defs/distribution" }, "total": { "$ref": "#/$defs/distribution" } }, "additionalProperties": false },
+                "provider_retries_observed": { "const": false }
+              },
+              "additionalProperties": true
+            },
+            "budget_scope": { "const": "observed_model_decisions_provider_retries_not_observed" }
+          }, "additionalProperties": false
+        },
+        "gates": { "type": "object", "required": ["passed", "failures"], "properties": { "passed": { "type": "boolean" }, "failures": { "type": "array", "items": { "type": "string" } } }, "additionalProperties": false },
+        "safety_gates": { "$ref": "#/$defs/gate_report" }, "quality_gates": { "$ref": "#/$defs/live_quality_gate_report" }, "cost_gates": { "$ref": "#/$defs/gate_report" },
+        "comparison_context": { "type": "object", "required": ["workflow_scope", "agent_scope", "quality_deltas_are_diagnostic", "direct_superiority_claim_supported"], "properties": { "workflow_scope": { "type": "string" }, "agent_scope": { "type": "string" }, "quality_deltas_are_diagnostic": { "const": true }, "direct_superiority_claim_supported": { "const": false } }, "additionalProperties": false },
+        "statistical_scope": { "type": "object", "required": ["case_count", "completed_run_count", "small_sample", "latency_percentiles_stable"], "properties": { "case_count": { "type": "integer", "minimum": 1 }, "completed_run_count": { "type": "integer", "minimum": 0 }, "small_sample": { "type": "boolean" }, "latency_percentiles_stable": { "type": "boolean" } }, "additionalProperties": false },
+        "quality_gate_thresholds": { "type": "object", "required": ["semantic_business_path_min", "first_pass_plan_success_min", "repair_rate_max", "emergency_fallback_rate_max"], "properties": { "semantic_business_path_min": { "type": "number", "minimum": 0, "maximum": 1 }, "first_pass_plan_success_min": { "type": "number", "minimum": 0, "maximum": 1 }, "repair_rate_max": { "type": "number", "minimum": 0, "maximum": 1 }, "emergency_fallback_rate_max": { "type": "number", "minimum": 0, "maximum": 1 } }, "additionalProperties": false },
+        "cases": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/v2_case" } },
+        "previous_run_change": {
+          "type": ["null", "object"],
+          "required": ["metric_deltas"], "properties": { "metric_deltas": { "$ref": "#/$defs/all_deltas" }, "metric_statuses": { "$ref": "#/$defs/metric_statuses" }, "configuration_matched": { "const": true } }, "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

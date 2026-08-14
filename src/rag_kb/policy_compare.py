@@ -11,7 +11,7 @@ import importlib
 import logging
 import time
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -203,23 +203,63 @@ class BoundPolicyTools:
 class DeepSeekPolicyAgentModel:
     """ChatDeepSeek 的可选运行时适配;构造失败不会影响项目其它导入。"""
 
-    def __init__(self, settings) -> None:
+    def __init__(
+        self,
+        settings,
+        *,
+        max_retries: int | None = None,
+        tool_choice: str = "any",
+        single_tool_call: bool = False,
+    ) -> None:
         ChatDeepSeek = importlib.import_module("langchain_deepseek").ChatDeepSeek
+        options = {
+            "model": settings.deepseek_model,
+            "api_key": settings.deepseek_api_key,
+            "base_url": settings.deepseek_base_url,
+            "temperature": 0,
+            "timeout": getattr(settings, "agent_timeout_seconds", 20),
+            "extra_body": {"thinking": {"type": "disabled"}},
+        }
+        if max_retries is not None:
+            options["max_retries"] = max_retries
+        self._llm = ChatDeepSeek(**options)
+        self._tool_choice = tool_choice
+        self._single_tool_call = single_tool_call
 
-        self._llm = ChatDeepSeek(
-            model=settings.deepseek_model,
-            api_key=settings.deepseek_api_key,
-            base_url=settings.deepseek_base_url,
-            temperature=0,
-            timeout=getattr(settings, "agent_timeout_seconds", 20),
-            extra_body={"thinking": {"type": "disabled"}},
-        )
-
-    def bind_tools(self, tools: list, **kwargs):
+    def bind_tools(self, tools: list, **kwargs) -> Any:
         """兼容 create_agent 的 tool_choice,同时禁止并行工具调用。"""
         kwargs["parallel_tool_calls"] = False
-        kwargs.setdefault("tool_choice", "any")
-        return self._llm.bind_tools(tools, **kwargs)
+        kwargs["tool_choice"] = self._tool_choice
+        model = self._llm.bind_tools(tools, **kwargs)
+        return _SingleToolCallBoundModel(model, {tool.name for tool in tools}) if getattr(self, "_single_tool_call", False) else model
+
+
+class _SingleToolCallBoundModel:
+    """Provider 忽略并行禁令时，只保留该轮第一个已解析工具调用。"""
+
+    def __init__(self, model, tool_names: set[str]) -> None:
+        self._model, self._tool_names = model, tool_names
+
+    def invoke(self, *args, **kwargs):
+        result = self._model.invoke(*args, **kwargs)
+        tool_calls = getattr(result, "tool_calls", None)
+        if isinstance(tool_calls, list) and len(tool_calls) > 1:
+            valid_calls = [call for call in tool_calls if self._valid_call(call)]
+            valid = valid_calls[0] if valid_calls else None
+            return result.model_copy(update={"tool_calls": [valid] if valid else []})
+        return result
+
+    def _valid_call(self, call) -> bool:
+        return bool(
+            isinstance(call, dict)
+            and call.get("name") in self._tool_names
+            and isinstance(call.get("args"), dict)
+            and isinstance(call.get("id"), str)
+            and call["id"]
+        )
+
+    def __getattr__(self, name):
+        return getattr(self._model, name)
 
 
 class PolicyComparisonService:

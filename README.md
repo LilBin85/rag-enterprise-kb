@@ -16,8 +16,8 @@
 - Docling：Markdown / PDF 文档解析
 - bge-m3（FlagEmbedding，CPU）：dense 向量检索基线
 - Qdrant（Docker Compose）：向量数据库，payload 携带版本、ACL 与来源元数据
-- DeepSeek API：经 `ChatDeepSeek`（langchain-deepseek 组件级封装）生成回答，`with_structured_output` 约束拒答结构
-- 受限策略 Agent：使用已锁定的 `langchain==1.3.14` `create_agent`，仅运行服务端绑定的有界只读工具循环
+- DeepSeek API：问答使用 `ChatDeepSeek`（langchain-deepseek 组件级封装）生成回答；策略比较 Agent 使用 `create_agent` 和两个服务端绑定的只读工具
+- 策略落地规划 Planner：使用 `ChatDeepSeek.with_structured_output(PlannerDecision)` 输出结构化决策，由应用层控制有界检索循环
 - pytest：冻结语料回归测试（默认 mock DeepSeek 调用）
 
 ## 快速启动
@@ -69,10 +69,18 @@ python scripts/demo.py --skip-tests   # 仅演示 API 行为
 ```powershell
 python -m pytest tests/ -q            # 冻结测试(默认脱离真实模型与真实 API)
 python scripts/benchmark_policy_comparisons.py  # 使用 manifest/固定语料 fixture，结果写入 data/local/benchmarks/
+python scripts/benchmark_planner_workflow_agent.py --live --smoke --repetitions 1 --max-model-calls 30  # 真实 Planner 4x1 冒烟
+python scripts/benchmark_retrieval_acceptance.py  # 真实 bge-m3 + Qdrant 冻结检索评测
 python scripts/smoke_real_ingest.py   # 手动冒烟:真 bge-m3 + 真 Docling PDF 摄取
 python scripts/smoke_answer.py        # 手动冒烟:真 DeepSeek 端到端问答
 python scripts/download_bge_m3.py     # 预下载 bge-m3(经 hf-mirror 镜像)
 ```
+
+2026-08-14 验收结果：最新代码的冻结回归为 269 项通过；真实 Planner 的 4 个场景单次冒烟和 11 个场景各 3 次稳定性评测分别为 4/4、33/33 通过，安全、质量和成本门均通过，11×3 首稿成功率 91.67%、repair 与 emergency 均为 8.33%。真实 `BAAI/bge-m3 + Qdrant` 检索在独立的 47 个测试样本上得到 Recall@5 1.0、MRR 0.9861、nDCG@5 0.9897，精确术语、正确版本、ACL 过滤和无答案指标均为 1.0，ACL 泄漏率为 0。以上数字只适用于仓库内冻结模拟语料；Planner 的精确事件轨迹匹配率仅作为诊断指标，外部 Provider 内部重试仍不可观测。
+
+完整评分、证据等级、报告哈希与未关闭边界见 [项目验收报告.md](项目验收报告.md)。
+
+检索校准集选择的评测阈值为 `0.5625275`。应用的 `retrieval_score_threshold` 生产默认值仍为 `None`，该阈值需要经过灰度验证后才能发布，不能把评测选择直接描述为线上配置。
 
 ## 目录说明
 

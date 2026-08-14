@@ -52,17 +52,16 @@ class ChunkStore:
         self.client.upsert(collection_name=self.collection, points=points, wait=True)
 
     def scroll_document(self, document_id: str) -> list[dict]:
-        """取一个文档全部版本的块 payload(MVP 单页假设:单文档块数远小于 limit)。"""
-        results, _offset = self.client.scroll(
-            collection_name=self.collection,
-            scroll_filter=models.Filter(
-                must=[models.FieldCondition(key="document_id", match=models.MatchValue(value=document_id))]
-            ),
-            with_payload=True,
-            with_vectors=False,
-            limit=256,
+        """取一个文档全部版本的块 payload，并完整消费 Qdrant 游标。"""
+        return self._scroll_all(
+            models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="document_id", match=models.MatchValue(value=document_id)
+                    )
+                ]
+            )
         )
-        return [r.payload for r in results]
 
     def scroll_authorized_version(self, document_id: str, version: int, role: Role) -> list[dict]:
         """只读取指定文档版本中当前角色有权看到的 active/superseded 块。

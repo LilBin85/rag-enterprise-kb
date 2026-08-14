@@ -49,6 +49,17 @@ class PolicyRolloutTaskStore:
                     UNIQUE(task_id, idempotency_key),
                     FOREIGN KEY (task_id, version) REFERENCES policy_rollout_plan_versions(task_id, version) ON DELETE CASCADE
                 );
+                CREATE TABLE IF NOT EXISTS policy_rollout_decision_trace (
+                    trace_id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, action TEXT NOT NULL,
+                    outcome TEXT NOT NULL, model_decisions INTEGER NOT NULL, search_calls INTEGER NOT NULL,
+                    attempted_searches INTEGER NOT NULL DEFAULT 0,
+                    executed_searches INTEGER NOT NULL DEFAULT 0,
+                    deduplicated_searches INTEGER NOT NULL DEFAULT 0,
+                    rejected_searches INTEGER NOT NULL DEFAULT 0,
+                    repairs INTEGER NOT NULL, constraint_code TEXT, duration_ms REAL NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (task_id) REFERENCES policy_rollout_tasks(task_id) ON DELETE CASCADE
+                );
                 """
             )
             columns = {row[1] for row in connection.execute("PRAGMA table_info(policy_rollout_tasks)")}
@@ -56,6 +67,27 @@ class PolicyRolloutTaskStore:
                 connection.execute("ALTER TABLE policy_rollout_tasks ADD COLUMN claimed_at TEXT")
             if "claim_token" not in columns:
                 connection.execute("ALTER TABLE policy_rollout_tasks ADD COLUMN claim_token TEXT")
+            task_progress_columns = {
+                "model_decisions": "INTEGER NOT NULL DEFAULT 0",
+                "repairs": "INTEGER NOT NULL DEFAULT 0",
+                "attempted_searches": "INTEGER NOT NULL DEFAULT 0",
+                "executed_searches": "INTEGER NOT NULL DEFAULT 0",
+                "deduplicated_searches": "INTEGER NOT NULL DEFAULT 0",
+                "rejected_searches": "INTEGER NOT NULL DEFAULT 0",
+                "seen_query_hashes_json": "TEXT NOT NULL DEFAULT '[]'",
+                "seen_query_structures_json": "TEXT NOT NULL DEFAULT '[]'",
+                "seen_chunk_hashes_json": "TEXT NOT NULL DEFAULT '[]'",
+                "query_rewrites": "INTEGER NOT NULL DEFAULT 0",
+            }
+            for name, definition in task_progress_columns.items():
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE policy_rollout_tasks ADD COLUMN {name} {definition}")
+            trace_columns = {row[1] for row in connection.execute("PRAGMA table_info(policy_rollout_decision_trace)")}
+            for name in ("attempted_searches", "executed_searches", "deduplicated_searches", "rejected_searches"):
+                if name not in trace_columns:
+                    connection.execute(
+                        f"ALTER TABLE policy_rollout_decision_trace ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0"
+                    )
             for execution_id, work_item_id, draft_path in connection.execute(
                 "SELECT execution_id, work_item_id, draft_path FROM policy_rollout_executions"
             ):
@@ -91,14 +123,138 @@ class PolicyRolloutTaskStore:
                 (task_id, str(role), goal, str(status), self._json(clarification), timestamp, timestamp if status == PlanStatus.PLANNING else None, claim_token),
             )
 
-    def update_state(self, task_id: str, role: Role, status: PlanStatus, clarification: PolicyRolloutClarification | None, *, claim_token: str | None = None) -> bool:
-        token_clause = " AND claim_token = ?" if claim_token else ""
+    def update_state(self, task_id: str, role: Role, status: PlanStatus, clarification: PolicyRolloutClarification | None, *, claim_token: str | None = None, trace_event: dict | None = None) -> bool:
+        if status in {PlanStatus.CLARIFICATION, PlanStatus.FAILED, PlanStatus.REFUSED} and not claim_token:
+            raise ValueError("planning_claim_token_required")
+        token_clause = " AND status = ? AND claim_token = ?" if claim_token else ""
         with self._connection() as connection:
             cursor = connection.execute(
                 "UPDATE policy_rollout_tasks SET status = ?, clarification_json = ?, claimed_at = NULL, claim_token = NULL WHERE task_id = ? AND role = ?" + token_clause,
-                (str(status), self._json(clarification), task_id, str(role), *([claim_token] if claim_token else [])),
+                (str(status), self._json(clarification), task_id, str(role), *([str(PlanStatus.PLANNING), claim_token] if claim_token else [])),
+            )
+            if cursor.rowcount == 1 and trace_event:
+                self._insert_trace_event(connection, task_id, trace_event)
+        return cursor.rowcount == 1
+
+    def planning_progress(self, task_id: str, role: Role, claim_token: str) -> dict[str, int | set[str]] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT model_decisions, repairs, attempted_searches, executed_searches, "
+                "deduplicated_searches, rejected_searches, seen_query_hashes_json, "
+                "seen_query_structures_json, seen_chunk_hashes_json, query_rewrites "
+                "FROM policy_rollout_tasks WHERE task_id = ? AND role = ? AND status = ? AND claim_token = ?",
+                (task_id, str(role), str(PlanStatus.PLANNING), claim_token),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            query_hashes = {item for item in json.loads(row[6]) if isinstance(item, str)}
+        except (TypeError, ValueError):
+            query_hashes = set()
+        try:
+            query_structures = {item for item in json.loads(row[7]) if isinstance(item, str)}
+        except (TypeError, ValueError):
+            query_structures = set()
+        try:
+            chunk_hashes = {item for item in json.loads(row[8]) if isinstance(item, str)}
+        except (TypeError, ValueError):
+            chunk_hashes = set()
+        return {
+            "model_decisions": int(row[0]),
+            "repairs": int(row[1]),
+            "attempted_searches": int(row[2]),
+            "executed_searches": int(row[3]),
+            "deduplicated_searches": int(row[4]),
+            "rejected_searches": int(row[5]),
+            "seen_query_hashes": query_hashes,
+            "seen_query_structures": query_structures,
+            "seen_chunk_hashes": chunk_hashes,
+            "query_rewrites": int(row[9]),
+        }
+
+    def save_planning_progress(
+        self, task_id: str, role: Role, claim_token: str, *, model_decisions: int,
+        repairs: int, attempted_searches: int, executed_searches: int,
+        deduplicated_searches: int, rejected_searches: int,
+        seen_query_hashes: set[str], seen_query_structures: set[str] | None = None,
+        seen_chunk_hashes: set[str] | None = None, query_rewrites: int = 0,
+    ) -> bool:
+        """以 CAS 保存任务级预算；查询仅保存不可逆哈希。"""
+        with self._connection() as connection:
+            cursor = connection.execute(
+                "UPDATE policy_rollout_tasks SET model_decisions = ?, repairs = ?, attempted_searches = ?, "
+                "executed_searches = ?, deduplicated_searches = ?, rejected_searches = ?, "
+                "seen_query_hashes_json = ?, seen_query_structures_json = ?, "
+                "seen_chunk_hashes_json = ?, query_rewrites = ? "
+                "WHERE task_id = ? AND role = ? AND status = ? AND claim_token = ?",
+                (
+                    model_decisions, repairs, attempted_searches, executed_searches,
+                    deduplicated_searches, rejected_searches,
+                    json.dumps(sorted(seen_query_hashes), ensure_ascii=True),
+                    json.dumps(sorted(seen_query_structures or set()), ensure_ascii=True),
+                    json.dumps(sorted(seen_chunk_hashes or set()), ensure_ascii=True),
+                    query_rewrites,
+                    task_id, str(role), str(PlanStatus.PLANNING), claim_token,
+                ),
             )
         return cursor.rowcount == 1
+
+    def append_trace_event(
+        self, task_id: str, role: Role, claim_token: str, *, action: str, outcome: str,
+        model_decisions: int, search_calls: int, repairs: int,
+        constraint_code: str | None, duration_ms: float,
+        attempted_searches: int | None = None, executed_searches: int | None = None,
+        deduplicated_searches: int = 0, rejected_searches: int = 0,
+    ) -> bool:
+        """仅保存计数和代码，绝不保存目标、查询、正文、提示词或证据标识。"""
+        with self._connection() as connection:
+            active = connection.execute(
+                "SELECT 1 FROM policy_rollout_tasks WHERE task_id = ? AND role = ? AND status = ? AND claim_token = ?",
+                (task_id, str(role), str(PlanStatus.PLANNING), claim_token),
+            ).fetchone()
+            if active is None:
+                return False
+            self._insert_trace_event(connection, task_id, {
+                "action": action, "outcome": outcome, "model_decisions": model_decisions,
+                "search_calls": search_calls, "repairs": repairs,
+                "attempted_searches": search_calls if attempted_searches is None else attempted_searches,
+                "executed_searches": search_calls if executed_searches is None else executed_searches,
+                "deduplicated_searches": deduplicated_searches,
+                "rejected_searches": rejected_searches,
+                "constraint_code": constraint_code, "duration_ms": duration_ms,
+            })
+        return True
+
+    def _insert_trace_event(self, connection: sqlite3.Connection, task_id: str, event: dict) -> None:
+        connection.execute(
+            "INSERT INTO policy_rollout_decision_trace("
+            "task_id, action, outcome, model_decisions, search_calls, attempted_searches, "
+            "executed_searches, deduplicated_searches, rejected_searches, repairs, "
+            "constraint_code, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                task_id, event["action"], event["outcome"], event["model_decisions"],
+                event["search_calls"], event.get("attempted_searches", event["search_calls"]),
+                event.get("executed_searches", event["search_calls"]),
+                event.get("deduplicated_searches", 0), event.get("rejected_searches", 0),
+                event["repairs"], event["constraint_code"], event["duration_ms"], self._timestamp(),
+            ),
+        )
+
+    def decision_trace(self, task_id: str) -> list[dict[str, str | int | float | None]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT action, outcome, model_decisions, search_calls, attempted_searches, "
+                "executed_searches, deduplicated_searches, rejected_searches, repairs, "
+                "constraint_code, duration_ms FROM policy_rollout_decision_trace "
+                "WHERE task_id = ? ORDER BY trace_id",
+                (task_id,),
+            ).fetchall()
+        keys = (
+            "action", "outcome", "model_decisions", "search_calls", "attempted_searches",
+            "executed_searches", "deduplicated_searches", "rejected_searches", "repairs",
+            "constraint_code", "duration_ms",
+        )
+        return [dict(zip(keys, row, strict=True)) for row in rows]
 
     def claim_clarification(self, task_id: str, role: Role, clarification: PolicyRolloutClarification, *, claim_token: str, now: datetime | None = None, ttl_seconds: int = 300) -> bool:
         """CAS 领取澄清任务；只回收已过期的 planning 声明。"""
@@ -114,7 +270,7 @@ class PolicyRolloutTaskStore:
             )
         return cursor.rowcount == 1
 
-    def complete_claim_and_append_plan(self, task_id: str, role: Role, plan: PolicyRolloutPlanVersion, clarification: PolicyRolloutClarification | None, claim_token: str) -> PolicyRolloutPlanVersion | None:
+    def complete_claim_and_append_plan(self, task_id: str, role: Role, plan: PolicyRolloutPlanVersion, clarification: PolicyRolloutClarification | None, claim_token: str, *, trace_event: dict | None = None) -> PolicyRolloutPlanVersion | None:
         with self._connection() as connection:
             cursor = connection.execute(
                 "UPDATE policy_rollout_tasks SET status = ?, clarification_json = ?, claimed_at = NULL, claim_token = NULL WHERE task_id = ? AND role = ? AND status = ? AND claim_token = ?",
@@ -125,6 +281,8 @@ class PolicyRolloutTaskStore:
             row = connection.execute("SELECT COALESCE(MAX(version), 0) + 1 FROM policy_rollout_plan_versions WHERE task_id = ?", (task_id,)).fetchone()
             completed = plan.model_copy(update={"version": int(row[0])})
             connection.execute("INSERT INTO policy_rollout_plan_versions(task_id, version, plan_json, created_at) VALUES (?, ?, ?, ?)", (task_id, completed.version, completed.model_dump_json(), completed.created_at.isoformat()))
+            if trace_event:
+                self._insert_trace_event(connection, task_id, trace_event)
         return completed
 
     def release_claim(self, task_id: str, role: Role, clarification: PolicyRolloutClarification | None, claim_token: str) -> bool:

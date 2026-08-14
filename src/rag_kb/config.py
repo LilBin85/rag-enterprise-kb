@@ -39,14 +39,24 @@ class Settings(BaseSettings):
     # 切块上限(按字符数;结构化边界优先,超长章节再细分)
     chunk_max_chars: int = 800
 
-    # 检索(蓝图 7.1):Top-K 候选数;相似度阈值待冻结评测校准,None 表示不裁切
-    retrieval_top_k: int = 5
-    retrieval_score_threshold: float | None = None
+    # 检索(蓝图 7.1):retrieval_top_k 是兼容旧配置的共同默认值。灰度时可分别
+    # 覆盖候选池和最终上下文上限；未设置新变量时行为仍严格等同于旧版 Top-K=5。
+    retrieval_top_k: int = Field(default=5, ge=1, le=100)
+    retrieval_candidate_k: int | None = Field(default=None, ge=1, le=100)
+    retrieval_context_k: int | None = Field(default=None, ge=1, le=100)
+    retrieval_score_threshold: float | None = Field(default=None, allow_inf_nan=False)
 
     # 策略比较 Agent:只读工具循环的有界运行参数
     agent_max_steps: int = Field(default=4, ge=1, le=10)
     agent_max_tool_calls: int = Field(default=3, ge=1, le=10)
     agent_timeout_seconds: int = Field(default=20, ge=1, le=120)
+
+    # 规划复用检索 tool 上限；模型决策和结构修复另行有界，避免隐式循环。
+    planner_max_model_decisions: int = Field(default=6, ge=1, le=10)
+    planner_max_repairs: int = Field(default=2, ge=0, le=5)
+    # 已点名制度时先由服务端做一次 ACL 受权检索；空集直接拒绝，避免模型把
+    # 权限/证据问题误判成需要用户澄清。可在测试或灰度环境显式关闭。
+    planner_preflight_named_policy_search: bool = True
 
     # 策略落地规划的本地恢复状态；SQLite 不承载知识证据正文。
     policy_rollout_db_path: Path = ROOT_DIR / "data" / "local" / "policy_rollout_tasks.sqlite3"
@@ -94,3 +104,27 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def resolve_retrieval_limits(settings: object) -> tuple[int, int]:
+    """解析兼容的新旧检索 K 配置，并在服务构建前拒绝歧义配置。
+
+    ``RETRIEVAL_TOP_K`` 继续作为两者的默认值；只有显式提供
+    ``RETRIEVAL_CANDIDATE_K`` / ``RETRIEVAL_CONTEXT_K`` 时才覆盖。候选池小于
+    最终上下文没有明确语义，因此失败关闭，而不是静默放大候选池。
+    """
+    legacy_top_k = getattr(settings, "retrieval_top_k", 5)
+    candidate_value = getattr(settings, "retrieval_candidate_k", None)
+    context_value = getattr(settings, "retrieval_context_k", None)
+    candidate_k = legacy_top_k if candidate_value is None else candidate_value
+    context_k = legacy_top_k if context_value is None else context_value
+    if any(
+        isinstance(value, bool) or not isinstance(value, int)
+        for value in (legacy_top_k, candidate_k, context_k)
+    ):
+        raise ValueError("retrieval_limits_must_be_integers")
+    if candidate_k <= 0 or context_k <= 0:
+        raise ValueError("retrieval_limits_must_be_positive")
+    if context_k > candidate_k:
+        raise ValueError("retrieval_context_k_cannot_exceed_candidate_k")
+    return candidate_k, context_k

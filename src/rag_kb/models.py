@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, StrictInt, field_validator
 
@@ -136,6 +136,7 @@ class PlanStatus(StrEnum):
     PLANNING = "planning"  # v1 同步请求中的短暂 CAS 声明，不执行任何 Todo。
     PLANNED = "planned"
     FAILED = "failed"
+    REFUSED = "refused"
 
 
 class PolicyRolloutTaskCreateRequest(BaseModel):
@@ -144,7 +145,7 @@ class PolicyRolloutTaskCreateRequest(BaseModel):
 
 
 class PolicyRolloutTaskContinueRequest(BaseModel):
-    clarification_answers: list[str] = Field(default_factory=list, min_length=1, max_length=20)
+    clarification_answers: list[Annotated[str, Field(min_length=1, max_length=2000)]] = Field(default_factory=list, min_length=1, max_length=20)
 
 
 class TodoCitation(Citation):
@@ -167,7 +168,7 @@ class PolicyRolloutPlanVersion(BaseModel):
 
 class PolicyRolloutClarification(BaseModel):
     questions: list[str] = Field(default_factory=list, min_length=1, max_length=10)
-    answers: list[str] = Field(default_factory=list, max_length=20)
+    answers: list[Annotated[str, Field(min_length=1, max_length=2000)]] = Field(default_factory=list, max_length=20)
 
 
 class PolicyRolloutTaskResponse(BaseModel):

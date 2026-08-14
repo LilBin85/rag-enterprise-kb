@@ -144,8 +144,130 @@ def test_production_adapter_accepts_create_agent_tool_keywords() -> None:
 
     adapter = DeepSeekPolicyAgentModel.__new__(DeepSeekPolicyAgentModel)
     adapter._llm = FakeLLM()
-    _, kwargs = adapter.bind_tools([], tool_choice="any")
+    adapter._tool_choice = "any"
+    _, kwargs = adapter.bind_tools([], tool_choice="auto", parallel_tool_calls=True)
     assert kwargs == {"tool_choice": "any", "parallel_tool_calls": False}
+
+
+def test_production_adapter_can_allow_terminal_response_after_tool_calls() -> None:
+    from rag_kb.policy_compare import DeepSeekPolicyAgentModel
+
+    class FakeLLM:
+        def bind_tools(self, tools, **kwargs):
+            return tools, kwargs
+
+    adapter = DeepSeekPolicyAgentModel.__new__(DeepSeekPolicyAgentModel)
+    adapter._llm = FakeLLM()
+    adapter._tool_choice = "auto"
+    _, kwargs = adapter.bind_tools([], tool_choice="any", parallel_tool_calls=True)
+    assert kwargs == {"tool_choice": "auto", "parallel_tool_calls": False}
+
+
+def test_single_tool_call_guard_keeps_first_call_and_usage_metadata():
+    from rag_kb.policy_compare import DeepSeekPolicyAgentModel
+
+    class FakeBoundModel:
+        def invoke(self, _messages):
+            return AIMessage(
+                content="kept",
+                tool_calls=[
+                    {"name": "search_authorized_evidence", "args": {"query": "first"}, "id": "one"},
+                    {"name": "search_authorized_evidence", "args": {"query": "second"}, "id": "two"},
+                    {"name": "search_authorized_evidence", "args": {"query": "third"}, "id": "three"},
+                ],
+                usage_metadata={"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+                response_metadata={"request_id": "safe-id"},
+            )
+
+    class FakeLLM:
+        def bind_tools(self, _tools, **_kwargs):
+            return FakeBoundModel()
+
+    adapter = DeepSeekPolicyAgentModel.__new__(DeepSeekPolicyAgentModel)
+    adapter._llm = FakeLLM()
+    adapter._tool_choice = "auto"
+    adapter._single_tool_call = True
+    response = adapter.bind_tools([type("Tool", (), {"name": "search_authorized_evidence"})()]).invoke([])
+    assert [call["id"] for call in response.tool_calls] == ["one"]
+    assert response.content == "kept"
+    assert response.usage_metadata == {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}
+    assert response.response_metadata == {"request_id": "safe-id"}
+
+
+def test_single_tool_call_guard_skips_invalid_calls():
+    from rag_kb.policy_compare import _SingleToolCallBoundModel
+
+    class FakeBoundModel:
+        def invoke(self):
+            return AIMessage(content="", tool_calls=[
+                {"name": "unknown", "args": {}, "id": "bad"},
+                {"name": "search_authorized_evidence", "args": {"query": "kept"}, "id": "good"},
+            ])
+
+    response = _SingleToolCallBoundModel(FakeBoundModel(), {"search_authorized_evidence"}).invoke()
+    assert [call["id"] for call in response.tool_calls] == ["good"]
+
+
+def test_default_adapter_binding_does_not_wrap_policy_comparison_model():
+    from rag_kb.policy_compare import DeepSeekPolicyAgentModel
+
+    class FakeLLM:
+        def bind_tools(self, _tools, **_kwargs):
+            return self
+
+    adapter = DeepSeekPolicyAgentModel.__new__(DeepSeekPolicyAgentModel)
+    adapter._llm = FakeLLM()
+    adapter._tool_choice = "any"
+    adapter._single_tool_call = False
+    assert adapter.bind_tools([]) is adapter._llm
+
+
+def test_api_builders_separate_comparison_and_planner_models(monkeypatch):
+    import rag_kb.api as api
+
+    comparison_calls, planner_calls = [], []
+
+    class SettingsStub:
+        agent_max_steps = 4
+        agent_max_tool_calls = 3
+        planner_max_model_decisions = 6
+        planner_max_repairs = 2
+        policy_rollout_claim_ttl_seconds = 300
+        policy_rollout_db_path = "ignored.sqlite3"
+        retrieval_top_k = 5
+        retrieval_score_threshold = None
+
+    class FakeComparisonModel:
+        def __init__(self, _settings, **kwargs):
+            comparison_calls.append(kwargs)
+
+    class FakePlannerModel:
+        def __init__(self, settings, **kwargs):
+            planner_calls.append((settings, kwargs))
+
+    class FakeReadStore:
+        def citations_currently_authorized(self, *_args):
+            return True
+
+    settings = SettingsStub()
+    monkeypatch.setattr(api, "get_settings", lambda: settings)
+    monkeypatch.setattr(api, "DeepSeekPolicyAgentModel", FakeComparisonModel)
+    monkeypatch.setattr(api, "DeepSeekPlannerDecisionModel", FakePlannerModel)
+    monkeypatch.setattr(api, "_build_store", lambda: object())
+    monkeypatch.setattr(api, "_build_read_store", lambda: FakeReadStore())
+    monkeypatch.setattr(api, "BgeM3Embedder", lambda: object())
+    monkeypatch.setattr(api, "Retriever", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(api, "PolicyRolloutTaskStore", lambda _path: object())
+    api.build_policy_comparison_service.cache_clear()
+    api.build_policy_rollout_planning_service.cache_clear()
+    try:
+        api.build_policy_comparison_service()
+        api.build_policy_rollout_planning_service()
+    finally:
+        api.build_policy_comparison_service.cache_clear()
+        api.build_policy_rollout_planning_service.cache_clear()
+    assert comparison_calls == [{}]
+    assert planner_calls == [(settings, {})]
 
 
 def test_tool_calls_and_steps_are_bounded() -> None:
