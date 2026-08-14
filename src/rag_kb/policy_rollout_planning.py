@@ -704,6 +704,15 @@ class GroundedPlanComposer:
             ]
         else:
             raise PlanningError("invalid_citations")
+        referenced_chunks = {
+            chunk_id
+            for item in draft.action_intents
+            for chunk_id in item.chunk_ids
+        } if draft.action_intents else {
+            chunk_id
+            for _description, chunk_ids in intents
+            for chunk_id in chunk_ids
+        }
         covered_actions: dict[str, set[int]] = {
             chunk_id: set() for chunk_id in selected
         }
@@ -748,6 +757,8 @@ class GroundedPlanComposer:
             ))
             if not required_actions:
                 raise PlanningError("unsupported_todo_content")
+            if not covered_actions[chunk_id] and chunk_id in referenced_chunks:
+                continue
             if not covered_actions[chunk_id]:
                 raise PlanningError("incomplete_evidence_actions")
         return self._build_draft(selected, tools, goal, answers)

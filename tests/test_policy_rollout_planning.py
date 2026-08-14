@@ -901,6 +901,42 @@ def test_selected_evidence_only_is_composed_deterministically_without_free_text(
     assert "按既定范围形成清单" not in todo.detail
 
 
+def test_composer_fills_referenced_chunk_without_positive_intent(tmp_path) -> None:
+    from types import SimpleNamespace
+    from rag_kb.policy_rollout_planning import GroundedPlanComposer
+
+    candidates = {
+        "chunk-1": RetrievalCandidate(
+            "chunk-1", "leave", 2, "年假制度", "leave.md", "第3条", 0.9,
+            "先核对员工适用资格和年假余额",
+        ),
+        "chunk-2": RetrievalCandidate(
+            "chunk-2", "leave", 2, "年假制度", "leave.md", "实施附录", 0.9,
+            "配置审批流程并通知员工",
+        ),
+    }
+    proposal = PlanningDraft(
+        action="propose", used_chunk_ids=["chunk-1", "chunk-2"],
+        action_intents=[
+            {
+                "intent_id": "restricted", "description": "未完成核对前不得迁移数据",
+                "chunk_ids": ["chunk-1"],
+            },
+            {
+                "intent_id": "implement", "description": "配置审批流程并通知员工",
+                "chunk_ids": ["chunk-2"],
+            },
+        ],
+    )
+
+    draft = GroundedPlanComposer(QueryPolicy()).compose(
+        proposal, SimpleNamespace(candidates=candidates),
+        goal="请制定年假制度实施计划。", answers=[],
+    )
+
+    assert {chunk for todo in draft.todos for chunk in todo.chunk_ids} == {"chunk-1", "chunk-2"}
+
+
 @pytest.mark.parametrize(
     ("proposal", "expected_code"),
     [
