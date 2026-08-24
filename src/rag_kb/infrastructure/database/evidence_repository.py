@@ -4,7 +4,7 @@ import hashlib
 from datetime import UTC, datetime
 from uuid import NAMESPACE_URL, uuid5
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -51,15 +51,41 @@ class EvidenceLedgerRepository:
         if task is None:
             raise EvidenceLedgerConflict("evidence_task_binding_invalid")
         now = datetime.now(UTC)
-        records: list[EvidenceRecord] = []
         for candidate in candidates:
             if candidate.tenant_id != auth.tenant_id:
                 raise EvidenceLedgerConflict("cross_tenant_evidence_denied")
             candidate_hash = "sha256:" + hashlib.sha256(candidate.text.encode("utf-8")).hexdigest()
             if candidate_hash != candidate.content_hash:
                 raise EvidenceLedgerConflict("evidence_content_hash_mismatch")
-            version = session.scalar(
-                select(DocumentVersionRow)
+        if not candidates:
+            return ()
+
+        candidate_pairs = {
+            (candidate.version_id, candidate.chunk_id) for candidate in candidates
+        }
+        valid_bindings = {
+            tuple(row)
+            for row in session.execute(
+                select(
+                    ChunkMetadataRow.tenant_id,
+                    ChunkMetadataRow.version_id,
+                    ChunkMetadataRow.document_id,
+                    ChunkMetadataRow.document_version,
+                    ChunkMetadataRow.chunk_id,
+                    ChunkMetadataRow.content_hash,
+                    ChunkMetadataRow.source_locator,
+                    ChunkMetadataRow.source_file_name,
+                    DocumentVersionRow.applied_projection_generation,
+                )
+                .join(
+                    DocumentVersionRow,
+                    and_(
+                        DocumentVersionRow.tenant_id == ChunkMetadataRow.tenant_id,
+                        DocumentVersionRow.version_id == ChunkMetadataRow.version_id,
+                        DocumentVersionRow.document_id == ChunkMetadataRow.document_id,
+                        DocumentVersionRow.version == ChunkMetadataRow.document_version,
+                    ),
+                )
                 .join(
                     DocumentRow,
                     and_(
@@ -75,43 +101,55 @@ class EvidenceLedgerRepository:
                     ),
                 )
                 .where(
-                    DocumentVersionRow.tenant_id == auth.tenant_id,
-                    DocumentVersionRow.version_id == candidate.version_id,
-                    DocumentVersionRow.document_id == candidate.document_id,
-                    DocumentVersionRow.version == candidate.document_version,
-                    DocumentVersionRow.lifecycle_status == "active",
-                    DocumentVersionRow.applied_projection_generation
-                    == candidate.projection_generation,
-                    DocumentRow.applied_projection_version_id == candidate.version_id,
-                    DocumentRow.applied_projection_generation
-                    == candidate.projection_generation,
-                    IngestionJobRow.status == "succeeded",
-                    IngestionJobRow.projection_generation == candidate.projection_generation,
-                )
-            )
-            metadata = session.scalar(
-                select(ChunkMetadataRow).where(
                     ChunkMetadataRow.tenant_id == auth.tenant_id,
-                    ChunkMetadataRow.version_id == candidate.version_id,
-                    ChunkMetadataRow.document_id == candidate.document_id,
-                    ChunkMetadataRow.document_version == candidate.document_version,
-                    ChunkMetadataRow.chunk_id == candidate.chunk_id,
-                    ChunkMetadataRow.content_hash == candidate.content_hash,
-                    ChunkMetadataRow.source_locator == candidate.source_locator,
-                    ChunkMetadataRow.source_file_name == candidate.source_file_name,
+                    tuple_(ChunkMetadataRow.version_id, ChunkMetadataRow.chunk_id).in_(
+                        candidate_pairs
+                    ),
+                    DocumentVersionRow.lifecycle_status == "active",
+                    DocumentRow.applied_projection_version_id
+                    == DocumentVersionRow.version_id,
+                    DocumentRow.applied_projection_generation
+                    == DocumentVersionRow.applied_projection_generation,
+                    IngestionJobRow.status == "succeeded",
+                    IngestionJobRow.projection_generation
+                    == DocumentVersionRow.applied_projection_generation,
+                    IngestionJobRow.indexed_chunk_count.is_not(None),
+                    IngestionJobRow.index_manifest_digest.is_not(None),
+                    IngestionJobRow.index_completed_at.is_not(None),
                 )
             )
-            if (
-                version is None
-                or metadata is None
-                or not self._acl.document_is_allowed(
-                    session,
-                    auth=auth,
-                    document_id=candidate.document_id,
-                    permission=Permission.KNOWLEDGE_READ,
-                )
-            ):
+        }
+        candidate_bindings = {
+            (
+                candidate.tenant_id,
+                candidate.version_id,
+                candidate.document_id,
+                candidate.document_version,
+                candidate.chunk_id,
+                candidate.content_hash,
+                candidate.source_locator,
+                candidate.source_file_name,
+                candidate.projection_generation,
+            )
+            for candidate in candidates
+        }
+        if not candidate_bindings <= valid_bindings:
+            raise EvidenceLedgerConflict("evidence_authorization_stale")
+        allowed_document_ids = self._acl.authorized_document_ids(
+            session,
+            auth=auth,
+            document_ids=frozenset(
+                binding[2] for binding in valid_bindings if binding in candidate_bindings
+            ),
+            permission=Permission.KNOWLEDGE_READ,
+        )
+        for candidate in candidates:
+            if candidate.document_id not in allowed_document_ids:
                 raise EvidenceLedgerConflict("evidence_authorization_stale")
+
+        evidence_ids: list[str] = []
+        values_list: list[dict[str, object]] = []
+        for candidate in candidates:
             evidence_id = uuid5(
                 NAMESPACE_URL,
                 "|".join(
@@ -125,7 +163,8 @@ class EvidenceLedgerRepository:
                     )
                 ),
             ).hex
-            values = {
+            evidence_ids.append(evidence_id)
+            values_list.append({
                 "evidence_id": evidence_id,
                 "task_id": task_id,
                 "query_fingerprint": query_fingerprint,
@@ -139,20 +178,31 @@ class EvidenceLedgerRepository:
                 "permission_granted": True,
                 "supported_claim_ids": [],
                 "retrieved_at": now,
-            }
-            dialect = session.get_bind().dialect.name
-            if dialect == "postgresql":
-                statement = postgresql_insert(EvidenceRecordRow).values(**values)
-            elif dialect == "sqlite":
-                statement = sqlite_insert(EvidenceRecordRow).values(**values)
-            else:
-                raise RuntimeError("unsupported_database_dialect")
-            session.execute(
-                statement.on_conflict_do_nothing(
-                    index_elements=["evidence_id"],
+            })
+        dialect = session.get_bind().dialect.name
+        if dialect == "postgresql":
+            statement = postgresql_insert(EvidenceRecordRow).values(values_list)
+        elif dialect == "sqlite":
+            statement = sqlite_insert(EvidenceRecordRow).values(values_list)
+        else:
+            raise RuntimeError("unsupported_database_dialect")
+        session.execute(
+            statement.on_conflict_do_nothing(
+                index_elements=["evidence_id"],
+            )
+        )
+        persisted_by_id = {
+            row.evidence_id: row
+            for row in session.scalars(
+                select(EvidenceRecordRow).where(
+                    EvidenceRecordRow.evidence_id.in_(evidence_ids)
                 )
             )
-            persisted = session.get(EvidenceRecordRow, evidence_id)
+        }
+
+        records: list[EvidenceRecord] = []
+        for candidate, evidence_id in zip(candidates, evidence_ids, strict=True):
+            persisted = persisted_by_id.get(evidence_id)
             if persisted is None:
                 raise EvidenceLedgerConflict("evidence_insert_not_visible")
             immutable_binding = {
@@ -257,6 +307,9 @@ class EvidenceLedgerRepository:
                     IngestionJobRow.status == "succeeded",
                     IngestionJobRow.projection_generation
                     == DocumentVersionRow.applied_projection_generation,
+                    IngestionJobRow.indexed_chunk_count.is_not(None),
+                    IngestionJobRow.index_manifest_digest.is_not(None),
+                    IngestionJobRow.index_completed_at.is_not(None),
                 ),
             )
             .where(
@@ -269,15 +322,16 @@ class EvidenceLedgerRepository:
         by_id = {evidence.evidence_id: (evidence, metadata) for evidence, metadata in rows}
         if set(by_id) != set(evidence_ids):
             raise EvidenceLedgerConflict("evidence_ledger_binding_invalid")
+        allowed_document_ids = self._acl.authorized_document_ids(
+            session,
+            auth=auth,
+            document_ids=frozenset(evidence.document_id for evidence, _metadata in rows),
+            permission=Permission.KNOWLEDGE_READ,
+        )
         citations: list[Citation] = []
         for evidence_id in evidence_ids:
             evidence, metadata = by_id[evidence_id]
-            if not self._acl.document_is_allowed(
-                session,
-                auth=auth,
-                document_id=evidence.document_id,
-                permission=Permission.KNOWLEDGE_READ,
-            ):
+            if evidence.document_id not in allowed_document_ids:
                 raise EvidenceLedgerConflict("evidence_authorization_stale")
             citations.append(
                 Citation(

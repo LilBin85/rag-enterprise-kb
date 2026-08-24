@@ -13,11 +13,8 @@ from rag_kb.domain.indexing import (
     ParsedDocument,
     compute_chunk_manifest_digest,
 )
-from rag_kb.ingestion import ParsedItem, parse_document, parse_markdown
+from rag_kb.ingestion import ParsedItem, _split_long_paragraph, parse_document, parse_markdown
 from rag_kb.infrastructure.object_store import LocalObjectStore
-
-
-_SENTENCE_ENDINGS = "。!?\n"
 
 
 class DocumentParseError(RuntimeError):
@@ -30,38 +27,6 @@ class DocumentParseError(RuntimeError):
 
 def _content_hash(raw: bytes) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
-
-
-def _split_long_paragraph(paragraph: str, max_chars: int) -> list[str]:
-    if len(paragraph) <= max_chars:
-        return [paragraph]
-
-    sentences: list[str] = []
-    current = ""
-    for character in paragraph:
-        current += character
-        if character in _SENTENCE_ENDINGS:
-            sentences.append(current)
-            current = ""
-    if current:
-        sentences.append(current)
-
-    pieces: list[str] = []
-    current = ""
-    for sentence in sentences:
-        if len(sentence) > max_chars:
-            if current:
-                pieces.append(current)
-                current = ""
-            pieces.extend(sentence[index : index + max_chars] for index in range(0, len(sentence), max_chars))
-        elif current and len(current) + len(sentence) > max_chars:
-            pieces.append(current)
-            current = sentence
-        else:
-            current += sentence
-    if current:
-        pieces.append(current)
-    return pieces
 
 
 def _chunk_items(items: list[ParsedItem], *, version_id: str, max_chars: int) -> tuple[ParsedChunk, ...]:

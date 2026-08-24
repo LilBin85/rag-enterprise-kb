@@ -19,11 +19,8 @@ SCHEMA = ROOT / "schemas" / "project-acceptance-report.schema.json"
 def sha256_file(path: Path) -> str | None:
     if path is None or not path.is_file():
         return None
-    digest = hashlib.sha256()
     with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def status_object(status: str, values: dict[str, Any] | None = None, source: str | None = None) -> dict[str, Any]:

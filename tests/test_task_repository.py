@@ -101,6 +101,25 @@ def test_lease_generation_expiry_reclaim_fences_old_worker(database) -> None:
         )
 
 
+def test_generic_claim_skips_sync_query_but_explicit_recovery_remains_available(database) -> None:
+    repository = DatabaseTaskRepository(database)
+    repository.create_task(
+        auth=auth(),
+        goal="同步知识问答",
+        task_mode=TaskMode.KNOWLEDGE_QUERY,
+        task_id="query-task",
+    )
+
+    assert repository.claim_next(worker_id="generic-worker", lease_seconds=30) is None
+    recovered = repository.claim_task(
+        "query-task",
+        worker_id="recovery-worker",
+        lease_seconds=30,
+    )
+    assert recovered is not None
+    assert recovered.state.task_mode is TaskMode.KNOWLEDGE_QUERY
+
+
 def test_checkpoint_and_task_event_commit_atomically(database) -> None:
     repository = DatabaseTaskRepository(database)
     created(repository)

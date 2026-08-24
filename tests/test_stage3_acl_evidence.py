@@ -5,13 +5,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
 from rag_kb.application.document_service import DocumentService
 from rag_kb.domain.identity import AuthContext, Permission
 from rag_kb.domain.retrieval import RetrievalCandidate
 from rag_kb.infrastructure.database import Base, build_database
-from rag_kb.infrastructure.database.acl_repository import ACLRepository
+from rag_kb.infrastructure.database.acl_repository import (
+    ACLRepository,
+    DatabaseAuthorizationPort,
+)
 from rag_kb.infrastructure.database.evidence_repository import (
     EvidenceLedgerConflict,
     EvidenceLedgerRepository,
@@ -190,6 +193,16 @@ def fixture_db(tmp_path: Path) -> Database:
                     source_file_name="a.md", index_version="kb-v1",
                 ),
                 ChunkMetadataRow(
+                    chunk_id="chunk-a2", version_id="version-a1", tenant_id="tenant-a", document_id="same-name",
+                    document_version=1, content_hash=chunk_hash, source_locator="policy/chunk-a2",
+                    source_file_name="a.md", index_version="kb-v1",
+                ),
+                ChunkMetadataRow(
+                    chunk_id="chunk-a3", version_id="version-a1", tenant_id="tenant-a", document_id="same-name",
+                    document_version=1, content_hash=chunk_hash, source_locator="policy/chunk-a3",
+                    source_file_name="a.md", index_version="kb-v1",
+                ),
+                ChunkMetadataRow(
                     chunk_id="chunk-old", version_id="version-a-old", tenant_id="tenant-a", document_id="same-name",
                     document_version=2, content_hash=chunk_hash, source_locator="policy/old",
                     source_file_name="a.md", index_version="kb-v1",
@@ -300,6 +313,37 @@ def test_evidence_record_rejects_cross_tenant_or_stale_candidates(fixture_db: Da
             )
 
 
+def test_evidence_requires_complete_index_receipt(fixture_db: Database) -> None:
+    with fixture_db.sessions.begin() as session:
+        job = session.get(IngestionJobRow, "job-a1")
+        assert job is not None
+        job.indexed_chunk_count = None
+        job.index_manifest_digest = None
+        job.index_completed_at = None
+
+    with fixture_db.sessions.begin() as session:
+        with pytest.raises(EvidenceLedgerConflict, match="evidence_authorization_stale"):
+            EvidenceLedgerRepository().record_candidates(
+                session,
+                task_id="task-a",
+                query_fingerprint="query-without-receipt",
+                auth=auth("user-a"),
+                candidates=(candidate(),),
+            )
+
+
+def test_candidate_revalidation_rejects_conflicting_same_key(fixture_db: Database) -> None:
+    valid = candidate()
+    forged = valid.model_copy(update={"source_locator": "forged/source"})
+
+    accepted = DatabaseAuthorizationPort(fixture_db).revalidate_candidates(
+        auth("user-a"),
+        (valid, forged),
+    )
+
+    assert accepted == frozenset()
+
+
 def test_evidence_citations_require_same_task_tenant_and_current_acl(fixture_db: Database) -> None:
     repository = EvidenceLedgerRepository()
     with fixture_db.sessions.begin() as session:
@@ -347,3 +391,80 @@ def test_evidence_id_conflict_never_rewrites_immutable_binding(fixture_db: Datab
                 auth=auth("user-a"),
                 candidates=(candidate(),),
             )
+
+
+def test_candidate_revalidation_and_evidence_queries_are_batch_bounded(
+    fixture_db: Database,
+) -> None:
+    def count_statements(operation):
+        count = 0
+
+        def before_cursor_execute(*_args):
+            nonlocal count
+            count += 1
+
+        event.listen(fixture_db.engine, "before_cursor_execute", before_cursor_execute)
+        try:
+            result = operation()
+        finally:
+            event.remove(fixture_db.engine, "before_cursor_execute", before_cursor_execute)
+        return count, result
+
+    items = tuple(candidate(chunk_id=f"chunk-a{index}") for index in range(1, 4))
+    authorization = DatabaseAuthorizationPort(fixture_db)
+    one_acl_count, one_allowed = count_statements(
+        lambda: authorization.revalidate_candidates(auth("user-a"), items[:1])
+    )
+    many_acl_count, many_allowed = count_statements(
+        lambda: authorization.revalidate_candidates(auth("user-a"), items)
+    )
+    assert one_acl_count == many_acl_count
+    assert one_allowed == frozenset({("version-a1", "chunk-a1")})
+    assert many_allowed == frozenset(
+        ("version-a1", f"chunk-a{index}") for index in range(1, 4)
+    )
+    assert authorization.revalidate_candidates(
+        auth("user-a"),
+        (candidate(chunk_id="chunk-a2", source_locator="policy/forged"),),
+    ) == frozenset()
+
+    repository = EvidenceLedgerRepository()
+
+    def record(query_fingerprint, selected):
+        with fixture_db.sessions.begin() as session:
+            return repository.record_candidates(
+                session,
+                task_id="task-a",
+                query_fingerprint=query_fingerprint,
+                auth=auth("user-a"),
+                candidates=selected,
+            )
+
+    one_record_count, one_records = count_statements(
+        lambda: record("query-count-one", items[:1])
+    )
+    many_record_count, many_records = count_statements(
+        lambda: record("query-count-many", items)
+    )
+    assert one_record_count == many_record_count
+    assert [record.chunk_id for record in many_records] == [item.chunk_id for item in items]
+
+    def citations(evidence_ids):
+        with fixture_db.sessions() as session:
+            return repository.citations_from_ledger(
+                session,
+                task_id="task-a",
+                evidence_ids=evidence_ids,
+                auth=auth("user-a"),
+            )
+
+    one_citation_count, _ = count_statements(
+        lambda: citations((one_records[0].evidence_id,))
+    )
+    many_citation_count, many_citations = count_statements(
+        lambda: citations(tuple(record.evidence_id for record in many_records))
+    )
+    assert one_citation_count == many_citation_count
+    assert [citation.chunk_id for citation in many_citations] == [
+        item.chunk_id for item in items
+    ]

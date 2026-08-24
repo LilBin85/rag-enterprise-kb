@@ -6,10 +6,10 @@ import hashlib
 import json
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from rag_kb.application.tool_registry import ToolExecutionContext
-from rag_kb.infrastructure.database.models import ArtifactRow
+from rag_kb.infrastructure.database.models import ArtifactRow, ToolCallRow
 from rag_kb.infrastructure.database.session import Database
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
 from rag_kb.infrastructure.object_store.local import LocalObjectStore, ObjectConflictError
@@ -98,12 +98,34 @@ class LocalArtifactToolAdapter:
     def _mark(self, artifact_id: str, status: str) -> None:
         with UnitOfWork(self._database) as work:
             assert work.session is not None
-            row = work.session.scalar(
-                select(ArtifactRow).where(ArtifactRow.artifact_id == artifact_id).with_for_update()
+            artifact = work.session.scalar(
+                select(ArtifactRow).where(ArtifactRow.artifact_id == artifact_id)
             )
-            if row is None:
+            if artifact is None:
                 raise RuntimeError("artifact_state_missing")
-            row.status = status
+            call_status = work.session.scalar(
+                select(ToolCallRow.status)
+                .where(ToolCallRow.tool_call_id == artifact.tool_call_id)
+                .with_for_update()
+            )
+            if status == "ready" and call_status != "running":
+                work.session.execute(
+                    update(ArtifactRow)
+                    .where(
+                        ArtifactRow.artifact_id == artifact_id,
+                        ArtifactRow.status.in_(("creating", "ready")),
+                    )
+                    .values(status="unknown")
+                )
+                return
+            work.session.execute(
+                update(ArtifactRow)
+                .where(
+                    ArtifactRow.artifact_id == artifact_id,
+                    ArtifactRow.status == "creating",
+                )
+                .values(status=status)
+            )
 
     def _serialize(self, arguments: dict[str, object]) -> bytes:
         if self._artifact_type == "report" and arguments.get("format") == "markdown":

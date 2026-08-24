@@ -197,6 +197,7 @@ class DatabaseTaskRepository:
                     AgentTaskRow.status.in_(
                         (TaskStatus.PLANNING.value, TaskStatus.RUNNING.value)
                     ),
+                    AgentTaskRow.task_mode != TaskMode.KNOWLEDGE_QUERY.value,
                     AgentTaskRow.cancelled.is_(False),
                     AgentTaskRow.available_at <= now,
                     or_(
@@ -222,6 +223,37 @@ class DatabaseTaskRepository:
                 lease_generation=row.lease_generation,
                 budgets=TaskBudgets.model_validate(row.budgets),
             )
+
+    def expire_stale_knowledge_queries(self, *, limit: int = 100) -> int:
+        """同步 API 崩溃后只做终态收敛，不交给通用 planner 重放。"""
+        if limit <= 0:
+            raise ValueError("invalid_sync_query_reaper_limit")
+        now = self._now()
+        with UnitOfWork(self._database) as work:
+            assert work.session is not None
+            rows = tuple(
+                work.session.scalars(
+                    select(AgentTaskRow)
+                    .where(
+                        AgentTaskRow.task_mode == "knowledge_query",
+                        AgentTaskRow.status == TaskStatus.RUNNING.value,
+                        AgentTaskRow.lease_expires_at.is_not(None),
+                        AgentTaskRow.lease_expires_at <= now,
+                    )
+                    .order_by(AgentTaskRow.lease_expires_at, AgentTaskRow.task_id)
+                    .limit(limit)
+                    .with_for_update(skip_locked=True)
+                )
+            )
+            for row in rows:
+                row.status = TaskStatus.FAILED.value
+                row.current_node = TaskNode.TERMINAL.value
+                row.last_error_code = "knowledge_query_lease_expired"
+                row.lease_owner = None
+                row.lease_expires_at = None
+                row.state_version += 1
+                row.updated_at = now
+            return len(rows)
 
     def claim_task(
         self,

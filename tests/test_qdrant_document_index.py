@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -87,6 +87,9 @@ class FakeQdrantClient:
         self.payload_indexes = []
         self.payload_schema = {}
         self.points: dict[str, FakeRecord] = {}
+        self.upsert_sizes = []
+        self.retrieve_sizes = []
+        self.scroll_limits = []
 
     def collection_exists(self, collection_name):
         return self.exists
@@ -118,22 +121,35 @@ class FakeQdrantClient:
         )
 
     def upsert(self, *, points, **kwargs):
+        self.upsert_sizes.append(len(points))
         for point in points:
             self.points[str(point.id)] = FakeRecord(
                 str(point.id), dict(point.payload or {}), dict(point.vector or {})
             )
 
     def delete(self, *, points_selector, **kwargs):
-        expected_ids = {str(value) for condition in points_selector.must_not for value in condition.has_id}
         for point_id, record in list(self.points.items()):
-            if self._matches(record.payload, points_selector.must) and point_id not in expected_ids:
+            if self._matches(record.payload, points_selector.must) and not self._matches_any(
+                record.payload, points_selector.must_not
+            ):
                 del self.points[point_id]
 
     def retrieve(self, *, ids, **kwargs):
+        self.retrieve_sizes.append(len(ids))
         return [self.points[str(point_id)] for point_id in ids if str(point_id) in self.points]
 
-    def scroll(self, *, scroll_filter, **kwargs):
-        return ([record for record in self.points.values() if self._matches(record.payload, scroll_filter.must)], None)
+    def scroll(self, *, scroll_filter, limit, offset=None, **kwargs):
+        self.scroll_limits.append(limit)
+        records = [
+            record
+            for record in self.points.values()
+            if self._matches(record.payload, scroll_filter.must)
+            and not self._matches_any(record.payload, scroll_filter.must_not)
+        ]
+        start = int(offset or 0)
+        page = records[start : start + limit]
+        next_offset = start + limit if start + limit < len(records) else None
+        return page, next_offset
 
     def set_payload(self, *, payload, points, **kwargs):
         for record in self.points.values():
@@ -144,11 +160,26 @@ class FakeQdrantClient:
 
     @staticmethod
     def _matches(payload, conditions):
-        return all(payload.get(condition.key) == condition.match.value for condition in conditions or ())
+        return all(
+            FakeQdrantClient._matches_filter(payload, condition)
+            for condition in conditions or ()
+        )
 
     @staticmethod
     def _matches_any(payload, conditions):
-        return any(payload.get(condition.key) == condition.match.value for condition in conditions or ())
+        return any(
+            FakeQdrantClient._matches_filter(payload, condition)
+            for condition in conditions or ()
+        )
+
+    @staticmethod
+    def _matches_filter(payload, condition):
+        if isinstance(condition, models.Filter):
+            return (
+                FakeQdrantClient._matches(payload, condition.must)
+                and not FakeQdrantClient._matches_any(payload, condition.must_not)
+            )
+        return payload.get(condition.key) == condition.match.value
 
 
 def test_collection_is_named_dense_sparse_with_required_payload_indexes() -> None:
@@ -242,7 +273,54 @@ def test_publish_is_idempotent_and_readback_verified() -> None:
     assert {record.payload["current"] for record in client.points.values()} == {False}
 
 
-def test_publishing_new_active_version_supersedes_old_projection() -> None:
+def test_discard_unbound_preserves_only_applied_generation() -> None:
+    client = FakeQdrantClient()
+    adapter = QdrantDocumentIndex(
+        client,
+        FakeEmbedder(),
+        FakeMetadata(),
+        now=lambda: datetime(2026, 8, 22, tzinfo=UTC),
+    )
+    active = _job()
+    orphan = replace(active, job_id="job-orphan", projection_generation=2)
+    cleanup = replace(
+        active,
+        job_id="job-cleanup",
+        projection_generation=3,
+        previous_projection_generation=1,
+        previous_projection_version_id=active.version_id,
+    )
+    adapter.index(active, _parsed(active))
+    adapter.index(orphan, _parsed(orphan))
+
+    adapter.discard_unbound(cleanup)
+
+    assert {
+        record.payload["projection_generation"] for record in client.points.values()
+    } == {1}
+
+
+def test_audit_rejects_acl_payload_drift_and_retirement_fails_closed() -> None:
+    client = FakeQdrantClient()
+    adapter = QdrantDocumentIndex(
+        client,
+        FakeEmbedder(),
+        FakeMetadata(),
+        now=lambda: datetime(2026, 8, 22, tzinfo=UTC),
+    )
+    job = _job()
+    receipt = adapter.index(job, _parsed(job))
+    adapter.publish(job, receipt, lifecycle_status="active")
+    for record in client.points.values():
+        record.payload["allowed_principals"] = ["role:admin"]
+
+    assert adapter.verify(job, receipt) is False
+    with pytest.raises(DocumentIndexError, match="retire_target_invalid"):
+        adapter.retire(job, receipt)
+    assert len(client.points) == receipt.chunk_count
+
+
+def test_generation_switch_keeps_bound_projection_visible_until_old_is_retired() -> None:
     client = FakeQdrantClient()
     adapter = QdrantDocumentIndex(
         client,
@@ -257,12 +335,26 @@ def test_publishing_new_active_version_supersedes_old_projection() -> None:
             "job_id": "job-new",
             "version_id": "version-new",
             "version": 2,
+            "projection_generation": 2,
         }
     )
     old_receipt = adapter.index(old_job, _parsed(old_job))
     adapter.publish(old_job, old_receipt, lifecycle_status="active")
     new_receipt = adapter.index(new_job, _parsed(new_job))
     adapter.publish(new_job, new_receipt, lifecycle_status="active")
+
+    # 新世代可见但 SQL 尚绑定时，精确旧世代仍可检索；CAS 后精确新世代立即可检索。
+    current_by_generation = {
+        generation: [
+            record
+            for record in client.points.values()
+            if record.payload["projection_generation"] == generation
+            and record.payload["current"] is True
+        ]
+        for generation in (old_receipt.projection_generation, new_receipt.projection_generation)
+    }
+    assert current_by_generation[old_receipt.projection_generation]
+    assert current_by_generation[new_receipt.projection_generation]
 
     old_payloads = [
         record.payload for record in client.points.values()
@@ -272,10 +364,64 @@ def test_publishing_new_active_version_supersedes_old_projection() -> None:
         record.payload for record in client.points.values()
         if record.payload["version_id"] == "version-new"
     ]
-    assert old_payloads and {item["lifecycle_status"] for item in old_payloads} == {"superseded"}
-    assert {item["current"] for item in old_payloads} == {False}
+    assert old_payloads and {item["lifecycle_status"] for item in old_payloads} == {"active"}
+    assert {item["current"] for item in old_payloads} == {True}
     assert new_payloads and {item["lifecycle_status"] for item in new_payloads} == {"active"}
     assert {item["current"] for item in new_payloads} == {True}
+
+    adapter.retire(new_job, new_receipt)
+
+    assert {
+        record.payload["projection_generation"] for record in client.points.values()
+    } == {new_receipt.projection_generation}
+
+
+def test_large_document_embedding_upsert_and_readback_are_bounded() -> None:
+    class RecordingEmbedder(FakeEmbedder):
+        def __init__(self) -> None:
+            self.batch_sizes = []
+
+        def embed(self, texts):
+            self.batch_sizes.append(len(texts))
+            return super().embed(texts)
+
+    client = FakeQdrantClient()
+    embedder = RecordingEmbedder()
+    adapter = QdrantDocumentIndex(
+        client,
+        embedder,
+        FakeMetadata(),
+        batch_size=2,
+        now=lambda: datetime(2026, 8, 22, tzinfo=UTC),
+    )
+    job = _job()
+    chunks = tuple(
+        ParsedChunk(
+            f"{job.version_id}:chunk-{index:06d}",
+            index,
+            f"chunk text {index}",
+            _hash(f"chunk text {index}"),
+            f"section/{index}",
+        )
+        for index in range(1, 8)
+    )
+    document = ParsedDocument(
+        tenant_id=job.tenant_id,
+        document_id=job.document_id,
+        version_id=job.version_id,
+        document_version=job.version,
+        source_file_name=job.source_file_name,
+        chunks=chunks,
+        manifest_digest=compute_chunk_manifest_digest(chunks),
+    )
+
+    receipt = adapter.index(job, document)
+
+    assert receipt.chunk_count == 7
+    assert max(embedder.batch_sizes) <= 2
+    assert max(client.upsert_sizes) <= 2
+    assert max(client.retrieve_sizes) <= 2
+    assert max(client.scroll_limits) <= 2
 
 
 def test_sparse_keyword_vector_is_deterministic_for_chinese_and_english() -> None:
@@ -294,6 +440,19 @@ def test_invalid_principals_fail_closed_with_safe_code() -> None:
 
     with pytest.raises(DocumentIndexError, match="document_index_metadata_invalid"):
         adapter.index(job, _parsed(job))
+
+
+def test_principal_identifier_may_contain_identity_provider_namespace() -> None:
+    client = FakeQdrantClient()
+    adapter = QdrantDocumentIndex(
+        client,
+        FakeEmbedder(),
+        FakeMetadata(("user:idp:alice",)),
+        now=lambda: datetime(2026, 8, 22, tzinfo=UTC),
+    )
+    job = _job()
+
+    assert adapter.index(job, _parsed(job)).chunk_count == 2
 
 
 def test_existing_collection_schema_mismatch_blocks_receipt() -> None:

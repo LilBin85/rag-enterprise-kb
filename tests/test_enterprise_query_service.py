@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import hashlib
+import sys
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
-from rag_kb.application.query_service import KnowledgeQueryService
+from rag_kb.answerer import DeepSeekAnswerModel
+from rag_kb.application.query_service import KnowledgeQueryService, _SYNC_LEASE_SECONDS
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.retrieval import RetrievalCandidate, RetrievalResult
+from rag_kb.domain.tasks import TaskNode, TaskStatus
 from rag_kb.infrastructure.database import Base, build_database
 from rag_kb.infrastructure.database.models import (
     ACLGrantRow,
@@ -26,6 +30,7 @@ from rag_kb.infrastructure.database.models import (
     TenantRow,
 )
 from rag_kb.infrastructure.database.session import Database
+from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
 
 
 def _auth() -> AuthContext:
@@ -227,6 +232,7 @@ def test_sync_task_is_leased_during_request_and_released_at_terminal(database: D
             assert task is not None
             assert task.lease_owner == "api-sync-knowledge-query"
             assert task.lease_expires_at is not None
+            assert task.lease_generation == 1
             assert task.status == "running"
 
     retriever = FakeRetriever(_result(_candidate()))
@@ -237,6 +243,8 @@ def test_sync_task_is_leased_during_request_and_released_at_terminal(database: D
     assert result.verdict == "answer"
     task = _tasks(database)[0]
     assert task.status == "succeeded"
+    assert task.current_node == "terminal"
+    assert task.state_version == 2
     assert task.lease_owner is None and task.lease_expires_at is None
 
 
@@ -250,6 +258,103 @@ def test_sync_task_lease_released_on_failure(database: Database) -> None:
     task = _tasks(database)[0]
     assert task.status == "failed"
     assert task.lease_owner is None and task.lease_expires_at is None
+
+
+def test_late_sync_answer_cannot_overwrite_recovered_terminal_task(database: Database) -> None:
+    def recover_task() -> None:
+        with database.engine.begin() as connection:
+            connection.execute(
+                update(AgentTaskRow)
+                .where(AgentTaskRow.task_mode == "knowledge_query")
+                .values(lease_expires_at=datetime.now(UTC) - timedelta(seconds=1))
+            )
+        repository = DatabaseTaskRepository(database)
+        task_id = _tasks(database)[0].task_id
+        lease = repository.claim_task(
+            task_id,
+            worker_id="query-recovery",
+            lease_seconds=30,
+        )
+        assert lease is not None
+        repository.checkpoint(
+            lease,
+            lease.state.model_copy(
+                update={
+                    "status": TaskStatus.FAILED,
+                    "current_node": TaskNode.TERMINAL,
+                    "last_error": "query_recovered",
+                }
+            ),
+            event_type="query_recovered",
+            trace_id="recovery",
+            run_id="recovery",
+        )
+
+    result = KnowledgeQueryService(
+        database,
+        FakeRetriever(_result(_candidate())),
+        FakeModel(on_answer=recover_task),
+    ).query("问题", _auth())
+
+    task = _tasks(database)[0]
+    assert result.verdict == "refusal"
+    assert task.status == "failed"
+    assert task.last_error_code == "query_recovered"
+    assert task.lease_generation == 2
+
+
+def test_expired_sync_query_is_reaped_without_planner(database: Database) -> None:
+    with database.sessions.begin() as session:
+        session.add(
+            AgentTaskRow(
+                task_id="expired-query",
+                tenant_id="tenant-a",
+                user_id="alice",
+                task_mode="knowledge_query",
+                status="running",
+                goal="knowledge_query:test",
+                auth_context_ref="sha256:test",
+                lease_owner="api-sync-knowledge-query",
+                lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+                lease_generation=1,
+            )
+        )
+
+    repository = DatabaseTaskRepository(database)
+    assert repository.expire_stale_knowledge_queries() == 1
+    task = next(item for item in _tasks(database) if item.task_id == "expired-query")
+    assert task.status == "failed"
+    assert task.current_node == "terminal"
+    assert task.last_error_code == "knowledge_query_lease_expired"
+    assert task.lease_owner is None and task.lease_expires_at is None
+
+
+def test_deepseek_answer_timeout_is_shorter_than_sync_lease(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeChatDeepSeek:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+        def with_structured_output(self, _schema):
+            return object()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "langchain_deepseek",
+        SimpleNamespace(ChatDeepSeek=FakeChatDeepSeek),
+    )
+    DeepSeekAnswerModel(
+        SimpleNamespace(
+            deepseek_model="test",
+            deepseek_api_key="test",
+            deepseek_base_url="https://example.invalid",
+        )
+    )
+
+    assert isinstance(captured.get("timeout"), int)
+    assert captured["timeout"] < _SYNC_LEASE_SECONDS
+    assert captured["max_retries"] == 0
 
 
 def test_revoked_after_model_cannot_produce_citation(database: Database) -> None:

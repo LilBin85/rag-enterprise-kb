@@ -2,11 +2,13 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 import pytest
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
 from rag_kb.infrastructure.database import Base, build_database
+from rag_kb.web.dependencies import EXPECTED_DATABASE_REVISION
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -100,6 +102,11 @@ def test_metadata_contains_required_enterprise_entities() -> None:
     assert EXPECTED_TABLES <= set(Base.metadata.tables)
 
 
+def test_readiness_revision_matches_alembic_head() -> None:
+    config = Config(str(ROOT_DIR / "alembic.ini"))
+    assert ScriptDirectory.from_config(config).get_current_head() == EXPECTED_DATABASE_REVISION
+
+
 def test_alembic_upgrade_and_downgrade_on_sqlite_adapter(tmp_path: Path) -> None:
     database_path = tmp_path / "migration.sqlite3"
     config = Config(str(ROOT_DIR / "alembic.ini"))
@@ -108,7 +115,17 @@ def test_alembic_upgrade_and_downgrade_on_sqlite_adapter(tmp_path: Path) -> None
     command.upgrade(config, "head")
 
     database = build_database(sqlite_url(database_path))
-    assert EXPECTED_TABLES <= set(inspect(database.engine).get_table_names())
+    inspector = inspect(database.engine)
+    assert EXPECTED_TABLES <= set(inspector.get_table_names())
+    assert "ix_agent_tasks_claim" in {
+        index["name"] for index in inspector.get_indexes("agent_tasks")
+    }
+    assert "ix_ingestion_jobs_expired" in {
+        index["name"] for index in inspector.get_indexes("ingestion_jobs")
+    }
+    assert "ix_tool_calls_sweeper" in {
+        index["name"] for index in inspector.get_indexes("tool_calls")
+    }
     command.check(config)
 
     command.downgrade(config, "base")

@@ -10,7 +10,9 @@
 - `research`：可暂停、继续、取消的多步研究任务；每步由显式 `NextAction` 和持久 checkpoint 驱动。
 - `controlled_action`：读工具检索后提出写动作；固定六工具注册表中的写工具必须绑定当前任务、计划、证据、主体、参数摘要和未过期批准。
 
-摄取采用“对象落盘 → 解析 → SQL manifest → generation-specific Qdrant projection → receipt → active 发布”的顺序。lease、generation、幂等键和状态事件用于崩溃恢复；旧 worker 不能覆盖新世代。
+摄取采用三阶段投影切换：先按新 generation 分批构建并回读校验 Qdrant 投影，再发布新世代可见，最后在单个 SQL 事务中以原绑定为前置条件 CAS 激活版本并精确绑定新世代，绑定成功后才清理旧投影。切换窗口内，检索仍只使用 PostgreSQL 当前绑定的 `projection_key`；旧 worker 不能倒退当前世代。
+
+worker 对任务、摄取和投影队列轮转调度，并周期执行有界的上传预留、过期工具调用和同步问答租约回收。详细恢复语义见[架构说明](docs/architecture.md)。
 
 固定工具为 `search_knowledge`、`fetch_evidence`、`list_document_versions`、`compare_document_versions`、`create_report_artifact`、`create_work_item_draft`。写工具只允许服务端生成对象键，不能接收路径、URL、shell、SQL 或任意外部调用。
 
@@ -34,11 +36,13 @@ docker compose up --build -d
 conda activate rag-kb
 docker compose up -d qdrant
 $env:RAG_KB_DATABASE_URL = "postgresql+psycopg://<用户>:<密码>@localhost:5432/<数据库>"
-alembic upgrade head                 # 当前迁移目标：20260822_0008
+alembic upgrade head                 # 当前迁移目标：20260824_0009
 python -m rag_kb.qdrant_init         # 幂等创建并校验企业 Qdrant schema
 .\scripts\start_api.ps1             # FastAPI :8000
 conda run -n rag-kb --no-capture-output python -m rag_kb.worker --watch --include-tasks
 ```
+
+`--include-tasks` 同时启用通用任务队列、过期工具调用和同步问答租约回收；摄取、投影收敛和上传预留恢复始终由 worker 处理。
 
 若本机没有 Docker，可由管理员单独启动 PostgreSQL/Qdrant；不要在 API 进程中执行迁移或下载模型。健康检查：`GET /health/live` 与 `GET /health/ready`。
 
@@ -57,7 +61,21 @@ conda run -n rag-kb --no-capture-output python -m rag_kb.worker --watch --includ
 ## 验证
 
 ```powershell
+conda run -n rag-kb --no-capture-output python -m pytest -q `
+  tests/test_database_migrations.py `
+  tests/test_worker_runtime.py `
+  tests/test_ingestion_worker.py `
+  tests/test_projection_reconciler.py `
+  tests/test_qdrant_document_index.py `
+  tests/test_approval_tool_execution.py `
+  tests/test_stage3_acl_evidence.py
+
 conda run -n rag-kb --no-capture-output python -m pytest -q
+
+# 仅在 RAG_KB_TEST_POSTGRES_URL 已配置且 Qdrant 可达时运行
+conda run -n rag-kb --no-capture-output python -m pytest -q `
+  tests/test_postgres_qdrant_projection_convergence.py
+
 conda run -n rag-kb --no-capture-output python scripts/benchmark_enterprise_retrieval.py `
   --dataset data/benchmarks/retrieval_acceptance_v2.yaml `
   --schema schemas/retrieval-acceptance-v2.schema.json `
@@ -72,9 +90,7 @@ conda run -n rag-kb --no-capture-output python scripts/build_project_acceptance_
   --output docs/acceptance/latest.json
 ```
 
-2026-08-24 的隔离真实组件套件为 `334 passed`；机器报告中的 pytest、检索质量、ACL
-零泄漏、真实模型和任务契约门均为 `passed`。脚本仍以证据文件为准，不从文档继承指标，
-也不会填充缺失数字。
+文档不预填当前工作树的通过数量。结果以实际命令输出和重新生成的机器报告为准；脚本不会从文档继承指标或填充缺失数字。
 
 ## 目录边界
 

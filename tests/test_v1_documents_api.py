@@ -23,6 +23,7 @@ from rag_kb.infrastructure.database.document_repository import (
 )
 from rag_kb.web.app import create_app
 from rag_kb.web.dependencies import build_document_service, build_identity_provider, resolve_auth_context
+from rag_kb.web.routers.documents import MAX_UPLOAD_METADATA_CHARS
 
 
 class FakeDocumentService:
@@ -250,6 +251,24 @@ def test_upload_body_is_bounded_before_service_dispatch(setup_app, monkeypatch) 
         headers={"X-Demo-Role-Token": "write-token", "Idempotency-Key": "oversized"},
         files={"file": ("policy.md", b"12345", "text/markdown")},
         data={"metadata": _metadata()},
+    )
+
+    assert response.status_code == 413
+    assert service.uploads == []
+
+
+def test_upload_metadata_is_bounded_before_json_parsing(setup_app, monkeypatch) -> None:
+    client, service = setup_app
+    monkeypatch.setattr(
+        "rag_kb.web.routers.documents.json.loads",
+        lambda _raw: pytest.fail("oversized metadata reached json.loads"),
+    )
+
+    response = client.post(
+        "/v1/documents",
+        headers={"X-Demo-Role-Token": "write-token", "Idempotency-Key": "large-metadata"},
+        files={"file": ("policy.md", b"safe fixture", "text/markdown")},
+        data={"metadata": "x" * (MAX_UPLOAD_METADATA_CHARS + 1)},
     )
 
     assert response.status_code == 413

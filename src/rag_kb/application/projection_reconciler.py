@@ -11,6 +11,7 @@ from rag_kb.application.ingestion_worker import (
     ClaimedIngestionJob,
     DocumentIndexPort,
     DocumentParserPort,
+    _LeaseHeartbeat,
 )
 from rag_kb.domain.indexing import IndexReceipt
 
@@ -34,6 +35,12 @@ class ProjectionReconcilePort(Protocol):
     ) -> ClaimedProjectionRepair | None: ...
 
     def projection_guard(self, claim: ClaimedProjectionRepair): ...
+
+    def projection_is_bound(self, claim: ClaimedProjectionRepair) -> bool: ...
+
+    def renew(self, claim: ClaimedProjectionRepair, *, lease_seconds: int) -> None: ...
+
+    def prepare_rebuild(self, claim: ClaimedProjectionRepair) -> ClaimedProjectionRepair: ...
 
     def complete(
         self,
@@ -86,16 +93,88 @@ class ProjectionReconciler:
         try:
             guard_factory = getattr(self._repairs, "projection_guard", None)
             guard = guard_factory(claim) if guard_factory is not None else nullcontext()
-            with guard:
-                parsed = self._parser.parse(job)
-                receipt = self._indexer.index(job, parsed)
-                self._indexer.publish(job, receipt, lifecycle_status="active")
-                self._repairs.complete(
-                    claim,
-                    receipt,
-                    audit_after=self._audit_interval,
-                )
+            renew = getattr(self._repairs, "renew", None)
+            heartbeat = _LeaseHeartbeat(
+                (lambda: renew(claim, lease_seconds=self._lease_seconds))
+                if renew is not None
+                else None,
+                self._lease_seconds,
+            )
+            # 等待文档 guard 也可能超过租约，心跳必须在阻塞前启动。
+            with heartbeat:
+                with guard:
+                    heartbeat.renew_now()
+                    receipt = job.index_receipt
+                    verify = getattr(self._indexer, "verify", None)
+                    if job.phase == "audit" and receipt is not None and verify is not None:
+                        healthy = verify(job, receipt)
+                        heartbeat.renew_now()
+                        if healthy:
+                            retire = getattr(self._indexer, "retire", None)
+                            if retire is not None:
+                                retire(job, receipt)
+                            heartbeat.stop()
+                            self._repairs.complete(
+                                claim,
+                                receipt,
+                                audit_after=self._audit_interval,
+                            )
+                            return ProjectionReconcileResult(
+                                status="succeeded",
+                                document_id=job.document_id,
+                            )
+                        prepare_rebuild = getattr(self._repairs, "prepare_rebuild", None)
+                        if prepare_rebuild is not None:
+                            claim = prepare_rebuild(claim)
+                            job = claim.job
+                    if job.phase == "reconcile":
+                        discard_unbound = getattr(self._indexer, "discard_unbound", None)
+                        if discard_unbound is not None:
+                            discard_unbound(job)
+                    parsed = self._parser.parse(job)
+                    heartbeat.renew_now()
+                    receipt = self._indexer.index(job, parsed)
+                    heartbeat.renew_now()
+                    self._indexer.publish(job, receipt, lifecycle_status="active")
+                    heartbeat.stop()
+                    self._repairs.complete(
+                        claim,
+                        receipt,
+                        audit_after=self._audit_interval,
+                    )
+                    retire = getattr(self._indexer, "retire", None)
+                    if retire is not None:
+                        try:
+                            retire(job, receipt)
+                        except Exception:
+                            # SQL 已绑定精确世代；下一轮轻量审计会重试清理。
+                            pass
         except Exception:
+            if (
+                job.phase == "reconcile"
+                and job.projection_generation is not None
+                and job.projection_generation != job.previous_projection_generation
+            ):
+                projection_is_bound = getattr(self._repairs, "projection_is_bound", None)
+                try:
+                    bound = (
+                        projection_is_bound(claim)
+                        if projection_is_bound is not None
+                        else False
+                    )
+                except Exception:
+                    bound = True
+                if bound:
+                    return ProjectionReconcileResult(
+                        status="succeeded",
+                        document_id=job.document_id,
+                    )
+                discard = getattr(self._indexer, "discard", None)
+                if discard is not None:
+                    try:
+                        discard(job)
+                    except Exception:
+                        pass
             try:
                 self._repairs.fail(claim, retry_after=self._retry_delay)
             except Exception:

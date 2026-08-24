@@ -151,6 +151,7 @@ class ObservedProjectionPort(DocumentRegistryIngestionJobPort):
         self.claimed_generations: list[int] = []
         self.activate_generations: list[int] = []
         self.complete_generations: list[int] = []
+        self.bind_generations: list[int] = []
 
     def claim_next(self, **kwargs):
         job = super().claim_next(**kwargs)
@@ -173,6 +174,10 @@ class ObservedProjectionPort(DocumentRegistryIngestionJobPort):
     def complete_projection(self, job: ClaimedIngestionJob, receipt: IndexReceipt, **kwargs) -> None:
         self.complete_generations.append(job.lease_generation)
         super().complete_projection(job, receipt, **kwargs)
+
+    def bind_projection(self, job: ClaimedIngestionJob, receipt: IndexReceipt) -> str:
+        self.bind_generations.append(job.lease_generation)
+        return super().bind_projection(job, receipt)
 
 
 class LeaseFencedProjection:
@@ -280,7 +285,7 @@ def test_v2_late_projection_cannot_regress_v3_current_state(tmp_path) -> None:
         with database.sessions() as session:
             v2_before_publish = session.get(DocumentVersionRow, v2.version_id)
             v3_before_guard = session.get(DocumentVersionRow, v3.version_id)
-            assert v2_before_publish is not None and v2_before_publish.lifecycle_status == "active"
+            assert v2_before_publish is not None and v2_before_publish.lifecycle_status == "indexing"
             assert v3_before_guard is not None and v3_before_guard.lifecycle_status == "indexing"
 
         projection.release_old_publish.set()
@@ -383,10 +388,12 @@ def test_stale_lease_generation_cannot_leave_projection_indexing(tmp_path) -> No
     assert old_result.status == "failure_recording_failed"
     assert old_result.error_code == "ingestion_failure_recording_failed"
     assert new_result.status == "succeeded"
-    assert old_port.activate_generations == [1]
+    assert old_port.activate_generations == []
     assert old_port.complete_generations == []
-    assert new_port.activate_generations == [2]
-    assert new_port.complete_generations == [2]
+    assert old_port.bind_generations == []
+    assert new_port.activate_generations == []
+    assert new_port.complete_generations == []
+    assert new_port.bind_generations == [2]
     assert projection.index_generations == [1, 2]
     assert projection.publish_generations == [2]
     assert projection.payload == {

@@ -4,11 +4,29 @@
 
 ## 迁移顺序
 
-1. 运行 `alembic upgrade head`，当前目标为 `20260822_0008`。
+1. 运行 `alembic upgrade head`，当前目标为 `20260824_0009`。
 2. 启动 PostgreSQL、Qdrant，再启动 API 与 `worker --include-tasks`。
 3. 使用新版 `/v1` 客户端；上传请求补齐 `Idempotency-Key`，查询使用服务端身份。
 4. 旧客户端在兼容期通过显式 `include_legacy_routes=True` 接入；响应带 `Deprecation`、`Sunset`、`Link`，业务委托新版服务。
 5. 以机器报告 `docs/acceptance/latest.json` 验证迁移结果，不沿用旧 README 或旧报告数字。
+
+## 0009 队列索引
+
+| 索引 | 表与列 | 用途 |
+| --- | --- | --- |
+| `ix_agent_tasks_claim` | `agent_tasks(status, available_at, created_at)` | 全局任务领取排序 |
+| `ix_ingestion_jobs_expired` | `ingestion_jobs(status, lease_expires_at)` | 过期摄取租约扫描 |
+| `ix_tool_calls_sweeper` | `tool_calls(status, execution_deadline)` | 过期工具调用回收 |
+
+`20260824_0009` 只增加以上三个索引，不迁移业务数据。迁移使用普通 `CREATE INDEX`，应在 API/worker 启动前执行；Compose 已通过服务依赖顺序保证这一点。`downgrade 20260822_0008` 只删除这三个索引，回滚应用代码时应同步回滚迁移。
+
+```powershell
+alembic upgrade head
+alembic current
+conda run -n rag-kb --no-capture-output python -m pytest -q tests/test_database_migrations.py
+```
+
+`alembic current` 应显示 `20260824_0009`。
 
 ## 旧测试与文档
 

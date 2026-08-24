@@ -136,35 +136,6 @@ class Retriever:
         vector = self.embedder.embed([question])[0]
         return self._search_vector(vector, role)
 
-    def search_many(
-        self,
-        questions_and_roles: Sequence[tuple[str, Role]],
-        *,
-        batch_size: int = 32,
-    ) -> list[RetrievalResult]:
-        """批量编码查询，逐条执行同一条服务端 ACL 受限 Qdrant 查询。
-
-        BGE-M3 的 encode 是本次真实检索评测中最昂贵的 CPU 步骤；这里批量调用它，
-        但绝不把角色过滤转移到调用方或模型侧。Qdrant 查询仍为每个角色分别构造
-        ``status=active AND allowed_roles contains role`` 过滤器。
-        """
-        if batch_size <= 0:
-            raise ValueError("retriever_batch_size_must_be_positive")
-        if not questions_and_roles:
-            return []
-
-        results: list[RetrievalResult] = []
-        for start in range(0, len(questions_and_roles), batch_size):
-            batch = questions_and_roles[start : start + batch_size]
-            vectors = self.embedder.embed([question for question, _role in batch])
-            if len(vectors) != len(batch):
-                raise RuntimeError("retriever_embedder_returned_unexpected_vector_count")
-            results.extend(
-                self._search_vector(vector, role)
-                for vector, (_question, role) in zip(vectors, batch, strict=True)
-            )
-        return results
-
     @staticmethod
     def _acl_filter(role: Role) -> models.Filter:
         return models.Filter(

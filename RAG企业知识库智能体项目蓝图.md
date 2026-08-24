@@ -1,10 +1,12 @@
 ---
 title: RAG 企业知识库智能体项目蓝图
-status: MVP + 受限策略比较与策略落地规划工作流——原有问答路径保持兼容，两条 Agent 路径均由聚焦测试验证
+status: 历史 MVP 蓝图，不作为当前实现、部署或验收事实源
 project_type: 应届生求职作品集
 ---
 
 # RAG 企业知识库智能体项目蓝图
+
+> 本文保留早期 MVP 决策和演进记录，不随当前实现逐项同步。当前入口、运行、架构、迁移和验收事实分别以 `README.md`、`使用指南.md`、`docs/architecture.md`、`docs/migration.md` 和 `docs/acceptance/latest.json` 为准。
 
 ## 1. 项目定位
 

@@ -78,3 +78,27 @@ def test_v1_query_rejects_body_role_and_unknown_token() -> None:
 
     assert body_role.status_code == 422
     assert no_identity.status_code == 403
+
+
+def test_v1_query_rejects_invalid_request_id_as_4xx() -> None:
+    app = create_app(include_legacy_routes=False)
+    service = CapturingQueryService()
+    app.dependency_overrides[build_identity_provider] = lambda: DemoTokenIdentityProvider(
+        {
+            "valid": Principal(
+                tenant_id="tenant-a",
+                user_id="user-a",
+                roles=frozenset({"admin"}),
+            )
+        }
+    )
+    app.dependency_overrides[build_knowledge_query_service] = lambda: service
+
+    response = TestClient(app).post(
+        "/v1/knowledge/query",
+        json={"question": "问题"},
+        headers={"Authorization": "Bearer valid", "X-Request-ID": "x" * 201},
+    )
+
+    assert 400 <= response.status_code < 500
+    assert service.calls == []

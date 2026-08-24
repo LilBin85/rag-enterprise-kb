@@ -8,7 +8,7 @@ import math
 import re
 import uuid
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -19,6 +19,7 @@ from qdrant_client.http import models
 from rag_kb.application.ingestion_worker import ClaimedIngestionJob, DocumentIndexPort
 from rag_kb.domain.indexing import (
     IndexReceipt,
+    ParsedChunk,
     ParsedDocument,
     compute_chunk_manifest_digest,
 )
@@ -29,9 +30,9 @@ from rag_kb.infrastructure.vectorstore.qdrant_collection import (
 
 
 _POINT_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "rag-enterprise-kb/document-index-v2")
-_PRINCIPAL_PATTERN = re.compile(r"^(?:user|group|role):[^:\s]+$")
 _ASCII_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 _CJK_PATTERN = re.compile(r"[\u3400-\u9fff]+")
+_PRINCIPAL_TYPES = frozenset({"user", "group", "role"})
 
 
 @dataclass(frozen=True)
@@ -89,7 +90,11 @@ class PreparedDocumentIndex:
 
 def _normalize_principals(principals: Sequence[str]) -> tuple[str, ...]:
     normalized = tuple(sorted(set(principals)))
-    if not normalized or any(not _PRINCIPAL_PATTERN.fullmatch(item) for item in normalized):
+    if not normalized or any(
+        not separator or subject_type not in _PRINCIPAL_TYPES or not subject_id
+        for item in normalized
+        for subject_type, separator, subject_id in (item.partition(":"),)
+    ):
         raise DocumentIndexError("document_index_metadata_invalid")
     return normalized
 
@@ -126,7 +131,7 @@ def projection_key(tenant_id: str, version_id: str, generation: int) -> str:
 
 
 class QdrantDocumentIndex(DocumentIndexPort):
-    """写入新 collection 的两阶段文档索引；不依赖旧 ``ChunkStore``。"""
+    """写入新 collection 的三阶段文档索引；不依赖旧 ``ChunkStore``。"""
 
     def __init__(
         self,
@@ -136,14 +141,18 @@ class QdrantDocumentIndex(DocumentIndexPort):
         *,
         collection: str = "kb_chunks_v2",
         now: Callable[[], datetime] | None = None,
+        batch_size: int = 64,
     ) -> None:
         if not collection:
             raise ValueError("document_index_collection_required")
+        if batch_size <= 0 or batch_size > 1024:
+            raise ValueError("invalid_document_index_batch_size")
         self._client = client
         self._embedder = embedder
         self._metadata_port = metadata_port
         self._collection = collection
         self._now = now or (lambda: datetime.now(UTC))
+        self._batch_size = batch_size
 
     @staticmethod
     def point_id(
@@ -158,8 +167,9 @@ class QdrantDocumentIndex(DocumentIndexPort):
         )
         return str(uuid.uuid5(_POINT_NAMESPACE, encoded))
 
-    def prepare(self, job: ClaimedIngestionJob, parsed_document: ParsedDocument) -> PreparedDocumentIndex:
-        self._validate_parsed_document(job, parsed_document)
+    def _load_metadata(
+        self, job: ClaimedIngestionJob
+    ) -> tuple[DocumentIndexMetadata, tuple[str, ...]]:
         try:
             metadata = self._metadata_port.get_metadata(job)
         except DocumentIndexError:
@@ -174,20 +184,36 @@ class QdrantDocumentIndex(DocumentIndexPort):
             raise
         except Exception as exc:
             raise DocumentIndexError("document_index_metadata_invalid") from exc
+        return metadata, principals
+
+    def _embed_chunks(self, chunks: Sequence[ParsedChunk]) -> list[Sequence[float]]:
         try:
-            vectors = list(self._embedder.embed([chunk.text for chunk in parsed_document.chunks]))
+            vectors = list(self._embedder.embed([chunk.text for chunk in chunks]))
         except Exception as exc:
             raise DocumentIndexError("document_embedding_failed") from exc
-        if len(vectors) != len(parsed_document.chunks) or not vectors:
+        if len(vectors) != len(chunks) or not vectors:
             raise DocumentIndexError("dense_embedding_invalid")
         dimension = len(vectors[0])
-        if dimension <= 0 or any(len(vector) != dimension for vector in vectors):
+        if dimension <= 0 or any(
+            len(vector) != dimension
+            or any(not math.isfinite(float(value)) for value in vector)
+            for vector in vectors
+        ):
             raise DocumentIndexError("dense_embedding_invalid")
+        return vectors
 
+    def _prepare_chunks(
+        self,
+        job: ClaimedIngestionJob,
+        chunks: Sequence[ParsedChunk],
+        vectors: Sequence[Sequence[float]],
+        metadata: DocumentIndexMetadata,
+        principals: tuple[str, ...],
+    ) -> PreparedDocumentIndex:
         try:
             points: list[models.PointStruct] = []
             payloads_by_id: dict[str, dict] = {}
-            for chunk, vector in zip(parsed_document.chunks, vectors, strict=True):
+            for chunk, vector in zip(chunks, vectors, strict=True):
                 point_id = self.point_id(
                     tenant_id=job.tenant_id,
                     version_id=job.version_id,
@@ -229,13 +255,37 @@ class QdrantDocumentIndex(DocumentIndexPort):
 
     def index(self, job: ClaimedIngestionJob, parsed_document: ParsedDocument) -> IndexReceipt:
         try:
-            prepared = self.prepare(job, parsed_document)
-            dense_vector = prepared.points[0].vector["dense"]
-            self._ensure_collection(len(dense_vector))
-            self._client.upsert(collection_name=self._collection, points=list(prepared.points), wait=True)
-            self._delete_stale_points(job, prepared.point_ids)
-            points = self._read_version_points(job)
-            self._validate_indexed_points(job, parsed_document, prepared, points)
+            self._validate_parsed_document(job, parsed_document)
+            metadata, principals = self._load_metadata(job)
+            dimension: int | None = None
+            for start in range(0, len(parsed_document.chunks), self._batch_size):
+                chunks = parsed_document.chunks[start : start + self._batch_size]
+                vectors = self._embed_chunks(chunks)
+                batch_dimension = len(vectors[0])
+                if dimension is None:
+                    dimension = batch_dimension
+                    self._ensure_collection(dimension)
+                    self._delete_generation(job)
+                elif batch_dimension != dimension:
+                    raise DocumentIndexError("dense_embedding_invalid")
+                prepared = self._prepare_chunks(job, chunks, vectors, metadata, principals)
+                self._client.upsert(
+                    collection_name=self._collection,
+                    points=list(prepared.points),
+                    wait=True,
+                )
+                self._validate_indexed_batch(prepared)
+            count, manifest, payloads_valid = self._projection_summary(
+                job,
+                lifecycle_status="indexing",
+                current=False,
+            )
+            if (
+                count != len(parsed_document.chunks)
+                or manifest != parsed_document.manifest_digest
+                or not payloads_valid
+            ):
+                raise DocumentIndexError("document_index_readback_mismatch")
         except DocumentIndexError:
             raise
         except Exception as exc:
@@ -268,114 +318,169 @@ class QdrantDocumentIndex(DocumentIndexPort):
         expected_current = lifecycle_status == "active"
         version_filter = self._version_filter(job)
         try:
-            if expected_current:
-                self._client.set_payload(
-                    collection_name=self._collection,
-                    payload={"lifecycle_status": "superseded", "current": False},
-                    points=models.Filter(
-                        must=[
-                            models.FieldCondition(
-                                key="tenant_id", match=models.MatchValue(value=job.tenant_id)
-                            ),
-                            models.FieldCondition(
-                                key="document_id", match=models.MatchValue(value=job.document_id)
-                            ),
-                        ],
-                        should=[
-                            models.FieldCondition(
-                                key="projection_generation",
-                                range=models.Range(lt=receipt.projection_generation),
-                            ),
-                            models.IsEmptyCondition(
-                                is_empty=models.PayloadField(key="projection_generation")
-                            ),
-                        ],
-                    ),
-                    wait=True,
-                )
+            metadata, principals = self._load_metadata(job)
             self._client.set_payload(
                 collection_name=self._collection,
                 payload={"lifecycle_status": lifecycle_status, "current": expected_current},
                 points=version_filter,
                 wait=True,
             )
-            points = self._read_version_points(job)
-            current_points = self._read_current_document_points(job) if expected_current else []
+            count, manifest, payloads_valid = self._projection_summary(
+                job,
+                lifecycle_status=lifecycle_status,
+                current=expected_current,
+                metadata=metadata,
+                principals=principals,
+            )
         except Exception as exc:
             raise DocumentIndexError("document_index_publish_failed") from exc
-        if len(points) != receipt.chunk_count or any(
-            (point.payload or {}).get("lifecycle_status") != lifecycle_status
-            or (point.payload or {}).get("current") is not expected_current
-            or (point.payload or {}).get("projection_generation")
-            != receipt.projection_generation
-            for point in points
+        if (
+            count != receipt.chunk_count
+            or manifest != receipt.manifest_digest
+            or not payloads_valid
         ):
             raise DocumentIndexError("document_index_publish_verification_failed")
-        if expected_current and (
-            len(current_points) != receipt.chunk_count
-            or any(
-                (point.payload or {}).get("version_id") != job.version_id
-                or (point.payload or {}).get("projection_generation")
-                != receipt.projection_generation
-                for point in current_points
+
+    def verify(self, job: ClaimedIngestionJob, receipt: IndexReceipt) -> bool:
+        """轻量核对 SQL 已绑定的精确世代，不读取向量或重新嵌入。"""
+        self._validate_receipt(job, receipt)
+        try:
+            if not self._client.collection_exists(self._collection):
+                return False
+            metadata, principals = self._load_metadata(job)
+            count, manifest, payloads_valid = self._projection_summary(
+                job,
+                lifecycle_status="active",
+                current=True,
+                metadata=metadata,
+                principals=principals,
             )
-        ):
-            raise DocumentIndexError("document_index_publish_verification_failed")
-        manifest = compute_chunk_manifest_digest(
-            tuple(
-                SimpleNamespace(
-                    chunk_id=str((point.payload or {}).get("chunk_id", "")),
-                    content_hash=str((point.payload or {}).get("content_hash", "")),
-                    source_locator=str((point.payload or {}).get("source_locator", "")),
-                )
-                for point in points
-            )
+        except Exception as exc:
+            raise DocumentIndexError("document_index_audit_failed") from exc
+        return (
+            count == receipt.chunk_count
+            and manifest == receipt.manifest_digest
+            and payloads_valid
         )
-        if manifest != receipt.manifest_digest:
-            raise DocumentIndexError("document_index_publish_verification_failed")
+
+    def retire(self, job: ClaimedIngestionJob, receipt: IndexReceipt) -> None:
+        """SQL 绑定成功后删除同文档除精确当前世代外的所有旧投影。"""
+        self._validate_receipt(job, receipt)
+        try:
+            if not self.verify(job, receipt):
+                raise DocumentIndexError("document_index_retire_target_invalid")
+            self._client.delete(
+                collection_name=self._collection,
+                points_selector=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="tenant_id", match=models.MatchValue(value=job.tenant_id)
+                        ),
+                        models.FieldCondition(
+                            key="document_id", match=models.MatchValue(value=job.document_id)
+                        ),
+                    ],
+                    must_not=[
+                        models.FieldCondition(
+                            key="version_id", match=models.MatchValue(value=job.version_id)
+                        )
+                    ],
+                ),
+                wait=True,
+            )
+            self._client.delete(
+                collection_name=self._collection,
+                points_selector=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="tenant_id", match=models.MatchValue(value=job.tenant_id)
+                        ),
+                        models.FieldCondition(
+                            key="document_id", match=models.MatchValue(value=job.document_id)
+                        ),
+                        models.FieldCondition(
+                            key="version_id", match=models.MatchValue(value=job.version_id)
+                        ),
+                    ],
+                    must_not=[
+                        models.FieldCondition(
+                            key="projection_generation",
+                            match=models.MatchValue(value=receipt.projection_generation),
+                        )
+                    ],
+                ),
+                wait=True,
+            )
+            if self._has_old_document_points(job, receipt):
+                raise DocumentIndexError("document_index_retire_verification_failed")
+        except DocumentIndexError:
+            raise
+        except Exception as exc:
+            raise DocumentIndexError("document_index_retire_failed") from exc
+
+    def discard(self, job: ClaimedIngestionJob) -> None:
+        """删除一次未绑定成功的目标世代。"""
+        try:
+            if self._client.collection_exists(self._collection):
+                self._delete_generation(job)
+        except Exception as exc:
+            raise DocumentIndexError("document_index_discard_failed") from exc
+
+    def discard_unbound(self, job: ClaimedIngestionJob) -> None:
+        """重试前清除硬崩溃遗留，仅保留 SQL 当前精确绑定。"""
+        must_not = []
+        if (
+            job.previous_projection_version_id is not None
+            and job.previous_projection_generation is not None
+        ):
+            must_not.append(
+                models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="version_id",
+                            match=models.MatchValue(value=job.previous_projection_version_id),
+                        ),
+                        models.FieldCondition(
+                            key="projection_generation",
+                            match=models.MatchValue(value=job.previous_projection_generation),
+                        ),
+                    ]
+                )
+            )
+        try:
+            if not self._client.collection_exists(self._collection):
+                return
+            self._client.delete(
+                collection_name=self._collection,
+                points_selector=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="tenant_id", match=models.MatchValue(value=job.tenant_id)
+                        ),
+                        models.FieldCondition(
+                            key="document_id", match=models.MatchValue(value=job.document_id)
+                        ),
+                    ],
+                    must_not=must_not or None,
+                ),
+                wait=True,
+            )
+        except Exception as exc:
+            raise DocumentIndexError("document_index_discard_failed") from exc
 
     def _ensure_collection(self, dimension: int) -> None:
         ensure_document_collection(
             self._client, collection=self._collection, dimension=dimension
         )
 
-    def _delete_stale_points(self, job: ClaimedIngestionJob, point_ids: Sequence[str]) -> None:
+    def _delete_generation(self, job: ClaimedIngestionJob) -> None:
         self._client.delete(
             collection_name=self._collection,
-            points_selector=models.Filter(
-                must=[
-                    models.FieldCondition(key="tenant_id", match=models.MatchValue(value=job.tenant_id)),
-                    models.FieldCondition(key="version_id", match=models.MatchValue(value=job.version_id)),
-                    models.FieldCondition(
-                        key="projection_generation",
-                        match=models.MatchValue(value=job.projection_generation),
-                    ),
-                ],
-                must_not=[models.HasIdCondition(has_id=list(point_ids))],
-            ),
+            points_selector=self._version_filter(job),
             wait=True,
         )
 
-    def _read_version_points(self, job: ClaimedIngestionJob):
-        return self._scroll_points(self._version_filter(job))
-
-    def _read_current_document_points(self, job: ClaimedIngestionJob):
-        return self._scroll_points(
-            models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="tenant_id", match=models.MatchValue(value=job.tenant_id)
-                    ),
-                    models.FieldCondition(
-                        key="document_id", match=models.MatchValue(value=job.document_id)
-                    ),
-                    models.FieldCondition(key="current", match=models.MatchValue(value=True)),
-                ]
-            )
-        )
-
-    def _scroll_points(self, scroll_filter: models.Filter):
-        points = []
+    def _iter_point_pages(self, scroll_filter: models.Filter) -> Iterator[Sequence]:
         offset = None
         while True:
             page, offset = self._client.scroll(
@@ -383,12 +488,85 @@ class QdrantDocumentIndex(DocumentIndexPort):
                 scroll_filter=scroll_filter,
                 with_payload=True,
                 with_vectors=False,
-                limit=256,
+                limit=self._batch_size,
                 offset=offset,
             )
-            points.extend(page)
+            yield page
             if offset is None:
-                return points
+                return
+
+    def _projection_summary(
+        self,
+        job: ClaimedIngestionJob,
+        *,
+        lifecycle_status: str,
+        current: bool,
+        metadata: DocumentIndexMetadata | None = None,
+        principals: tuple[str, ...] | None = None,
+    ) -> tuple[int, str, bool]:
+        entries = []
+        payloads_valid = True
+        expected_key = projection_key(
+            job.tenant_id,
+            job.version_id,
+            job.projection_generation or 0,
+        )
+        for page in self._iter_point_pages(self._version_filter(job)):
+            for point in page:
+                payload = point.payload or {}
+                payloads_valid = payloads_valid and (
+                    payload.get("tenant_id") == job.tenant_id
+                    and payload.get("document_id") == job.document_id
+                    and payload.get("version_id") == job.version_id
+                    and payload.get("projection_generation") == job.projection_generation
+                    and payload.get("projection_key") == expected_key
+                    and payload.get("lifecycle_status") == lifecycle_status
+                    and payload.get("current") is current
+                )
+                if metadata is not None and principals is not None:
+                    text = payload.get("text")
+                    payloads_valid = payloads_valid and (
+                        payload.get("document_version") == job.version
+                        and payload.get("source_file_name") == job.source_file_name
+                        and payload.get("index_version") == job.index_version
+                        and payload.get("title") == metadata.title
+                        and payload.get("department") == metadata.department
+                        and payload.get("allowed_principals") == list(principals)
+                        and isinstance(text, str)
+                        and payload.get("content_hash")
+                        == "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+                    )
+                entries.append(
+                    SimpleNamespace(
+                        chunk_id=str(payload.get("chunk_id", "")),
+                        content_hash=str(payload.get("content_hash", "")),
+                        source_locator=str(payload.get("source_locator", "")),
+                    )
+                )
+        return len(entries), compute_chunk_manifest_digest(tuple(entries)), payloads_valid
+
+    def _has_old_document_points(
+        self,
+        job: ClaimedIngestionJob,
+        receipt: IndexReceipt,
+    ) -> bool:
+        document_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="tenant_id", match=models.MatchValue(value=job.tenant_id)
+                ),
+                models.FieldCondition(
+                    key="document_id", match=models.MatchValue(value=job.document_id)
+                ),
+            ]
+        )
+        return any(
+            (point.payload or {}).get("version_id") != job.version_id
+            or (point.payload or {}).get("projection_generation")
+            != receipt.projection_generation
+            for page in self._iter_point_pages(document_filter)
+            for point in page
+        )
 
     @staticmethod
     def _version_filter(job: ClaimedIngestionJob) -> models.Filter:
@@ -437,16 +615,7 @@ class QdrantDocumentIndex(DocumentIndexPort):
         ):
             raise DocumentIndexError("invalid_index_receipt")
 
-    def _validate_indexed_points(
-        self,
-        job: ClaimedIngestionJob,
-        parsed: ParsedDocument,
-        prepared: PreparedDocumentIndex,
-        points,
-    ) -> None:
-        actual_ids = {str(point.id) for point in points}
-        if actual_ids != set(prepared.point_ids):
-            raise DocumentIndexError("document_index_readback_mismatch")
+    def _validate_indexed_batch(self, prepared: PreparedDocumentIndex) -> None:
         retrieved = self._client.retrieve(
             collection_name=self._collection,
             ids=list(prepared.point_ids),
@@ -485,18 +654,6 @@ class QdrantDocumentIndex(DocumentIndexPort):
             expected_sparse = QdrantDocumentIndex._sparse_components(expected_vector.get("keyword"))
             if actual_sparse != expected_sparse or not actual_sparse[0]:
                 raise DocumentIndexError("document_index_vector_readback_mismatch")
-        actual_manifest = compute_chunk_manifest_digest(
-            tuple(
-                SimpleNamespace(
-                    chunk_id=str((point.payload or {}).get("chunk_id", "")),
-                    content_hash=str((point.payload or {}).get("content_hash", "")),
-                    source_locator=str((point.payload or {}).get("source_locator", "")),
-                )
-                for point in retrieved
-            )
-        )
-        if actual_manifest != parsed.manifest_digest or len(retrieved) != len(parsed.chunks):
-            raise DocumentIndexError("document_index_readback_mismatch")
 
     @staticmethod
     def _sparse_components(value) -> tuple[tuple[int, ...], tuple[float, ...]]:

@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import logging
+from threading import Lock
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -92,6 +93,9 @@ class ToolExecutionService:
         self._approvals = approval_service
         self._evidence_validator = evidence_validator or DatabaseTaskEvidencePort(database)
         self._now = now or (lambda: datetime.now(UTC))
+        # ponytail: 线程无法被强杀；超时后换池恢复服务，需硬终止时改用进程隔离。
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rag-kb-tool")
+        self._executor_lock = Lock()
 
     def execute(self, request: ToolExecutionRequest) -> ToolExecutionResult:
         self._approvals.expire_due(tenant_id=request.auth.tenant_id)
@@ -146,16 +150,22 @@ class ToolExecutionService:
             evidence_digest=request.evidence_digest,
             idempotency_key=request.idempotency_key,
         )
-        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rag-kb-tool")
-        future = executor.submit(registered.adapter.execute, request.arguments, context)
+        with self._executor_lock:
+            executor = self._executor
+            future = executor.submit(registered.adapter.execute, request.arguments, context)
         try:
             result = future.result(timeout=definition.timeout_seconds)
         except FutureTimeout:
-            future.cancel()
-            executor.shutdown(wait=False, cancel_futures=True)
+            if not future.cancel():
+                with self._executor_lock:
+                    if self._executor is executor:
+                        self._executor = ThreadPoolExecutor(
+                            max_workers=1,
+                            thread_name_prefix="rag-kb-tool",
+                        )
+                executor.shutdown(wait=False, cancel_futures=True)
             return self._complete(tool_call_id, status="unknown", error_code="tool_timeout")
         except BaseException as exc:
-            executor.shutdown(wait=False, cancel_futures=True)
             logger.exception("受控工具执行失败；调用状态将按副作用风险关闭")
             status = "unknown" if definition.mode is ToolMode.WRITE else "failed"
             code = (
@@ -164,9 +174,6 @@ class ToolExecutionService:
                 else f"tool_execution_failed_{type(exc).__name__.lower()}"
             )
             return self._complete(tool_call_id, status=status, error_code=code)
-        else:
-            executor.shutdown(wait=True)
-
         try:
             self._registry.validate_output(registered, result)
             verified = registered.adapter.verify(result, context)
@@ -469,7 +476,7 @@ class ToolExecutionService:
                         ArtifactRow.tenant_id == row.tenant_id,
                         ArtifactRow.task_id == row.task_id,
                         ArtifactRow.tool_call_id == row.tool_call_id,
-                        ArtifactRow.status == "creating",
+                        ArtifactRow.status.in_(("creating", "ready")),
                     )
                 ):
                     artifact.status = "unknown"
@@ -520,7 +527,7 @@ class ToolExecutionService:
                             ArtifactRow.tenant_id == row.tenant_id,
                             ArtifactRow.task_id == row.task_id,
                             ArtifactRow.tool_call_id == row.tool_call_id,
-                            ArtifactRow.status == "creating",
+                            ArtifactRow.status.in_(("creating", "ready")),
                         )
                     ):
                         artifact.status = "unknown"

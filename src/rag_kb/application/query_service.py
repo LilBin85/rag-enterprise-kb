@@ -9,6 +9,7 @@ from typing import Literal, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy import update
 
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.retrieval import RetrievalCandidate, RetrievalResult
@@ -28,12 +29,11 @@ _REFUSALS = {
     "retrieval_failure": "检索或生成服务暂时不可用，请稍后重试",
 }
 
-# 同步问答任务的自租约：请求期间持有租约，异步任务 worker 的领取查询会因此
-# 跳过本任务（否则会误领为 agent 任务并以 lease 约束冲突破坏同步终态写入，
-# 把可回答的查询误报为 conflicting_evidence）。终态写入时必须释放租约；
-# 若 API 进程中途崩溃，租约过期后 worker 可将孤儿任务收尾为 failed。
+# 同步问答任务的自租约用于栅栏终态写入；通用 worker 不领取此模式，显式恢复者
+# 仍可在租约过期后递增 generation 接管，迟到的 API 请求不得覆盖恢复结果。
 _SYNC_LEASE_OWNER = "api-sync-knowledge-query"
 _SYNC_LEASE_SECONDS = 120
+_SYNC_LEASE_GENERATION = 1
 
 
 class RetrieverPort(Protocol):
@@ -160,13 +160,13 @@ class KnowledgeQueryService:
                     evidence_ids=evidence_ids,
                     auth=auth,
                 )
-                task = work.session.get(AgentTaskRow, task_id)
-                if task is None or task.tenant_id != auth.tenant_id or task.user_id != auth.user_id:
+                if not self._finish_owned_task(
+                    work.session,
+                    task_id,
+                    auth,
+                    status="succeeded",
+                ):
                     raise RuntimeError("query_task_binding_lost")
-                task.status = "succeeded"
-                task.last_error_code = None
-                task.lease_owner = None
-                task.lease_expires_at = None
         except Exception:
             logger.exception(
                 "账本引用复核失败 tenant=%s task_id=%s",
@@ -206,6 +206,7 @@ class KnowledgeQueryService:
                     lease_owner=_SYNC_LEASE_OWNER,
                     lease_expires_at=datetime.now(UTC)
                     + timedelta(seconds=_SYNC_LEASE_SECONDS),
+                    lease_generation=_SYNC_LEASE_GENERATION,
                 )
             )
             work.session.flush()
@@ -228,20 +229,54 @@ class KnowledgeQueryService:
         try:
             with UnitOfWork(self._database) as work:
                 assert work.session is not None
-                task = work.session.get(AgentTaskRow, task_id)
-                if task is None or task.tenant_id != auth.tenant_id or task.user_id != auth.user_id:
-                    return
-                task.status = status
-                task.last_error_code = error_code
-                # 终态任务必须无租约（lease 约束），同步自租约在此释放。
-                task.lease_owner = None
-                task.lease_expires_at = None
+                self._finish_owned_task(
+                    work.session,
+                    task_id,
+                    auth,
+                    status=status,
+                    error_code=error_code,
+                )
         except Exception:
             logger.exception(
                 "知识问答任务终态写入失败 tenant=%s task_id=%s",
                 auth.tenant_id,
                 task_id,
             )
+
+    @staticmethod
+    def _finish_owned_task(
+        session,
+        task_id: str,
+        auth: AuthContext,
+        *,
+        status: str,
+        error_code: str | None = None,
+    ) -> bool:
+        now = datetime.now(UTC)
+        result = session.execute(
+            update(AgentTaskRow)
+            .where(
+                AgentTaskRow.task_id == task_id,
+                AgentTaskRow.tenant_id == auth.tenant_id,
+                AgentTaskRow.user_id == auth.user_id,
+                AgentTaskRow.task_mode == "knowledge_query",
+                AgentTaskRow.status == "running",
+                AgentTaskRow.lease_owner == _SYNC_LEASE_OWNER,
+                AgentTaskRow.lease_generation == _SYNC_LEASE_GENERATION,
+                AgentTaskRow.lease_expires_at.is_not(None),
+                AgentTaskRow.lease_expires_at > now,
+            )
+            .values(
+                status=status,
+                current_node="terminal",
+                last_error_code=error_code,
+                lease_owner=None,
+                lease_expires_at=None,
+                state_version=AgentTaskRow.state_version + 1,
+                updated_at=now,
+            )
+        )
+        return result.rowcount == 1
 
     @staticmethod
     def _refusal(kind: str) -> KnowledgeQueryResult:

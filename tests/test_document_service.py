@@ -1,7 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
 
 import pytest
 from sqlalchemy import func, select
@@ -259,6 +259,59 @@ def test_delete_document_rejects_running_ingestion_job(tmp_path: Path) -> None:
             "policy-a",
             auth("document:write", "document:read"),
         )
+
+
+def test_upload_and_delete_share_document_guard(tmp_path: Path) -> None:
+    _service, database, base_store = build_service(tmp_path)
+    entered = Event()
+    release = Event()
+
+    class BlockingStore(LocalObjectStore):
+        def put_exclusive(self, storage_key: str, content: bytes) -> None:
+            super().put_exclusive(storage_key, content)
+            entered.set()
+            assert release.wait(timeout=5)
+
+    store = BlockingStore(base_store.root)
+    service = DocumentService(database, store, vector_deleter=RecordingVectorDeleter())
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        upload = executor.submit(register, service, key="guarded-upload")
+        assert entered.wait(timeout=5)
+        deletion = executor.submit(
+            service.delete_document,
+            "policy-a",
+            auth("document:write", "document:read"),
+        )
+        assert not deletion.done()
+        release.set()
+        created = upload.result(timeout=5)
+        deleted = deletion.result(timeout=5)
+
+    assert deleted is not None and deleted.document_id == created.document_id
+    with database.sessions() as session:
+        assert session.get(DocumentRow, ("tenant-a", "policy-a")) is None
+    assert not any(path.is_file() for path in base_store.root.rglob("*"))
+
+
+def test_delete_document_rejects_active_projection_reconcile_lease(tmp_path: Path) -> None:
+    service, database, store = build_service(tmp_path)
+    register(service, key="delete-reconcile")
+    with database.sessions.begin() as session:
+        document = session.get(DocumentRow, ("tenant-a", "policy-a"))
+        assert document is not None
+        document.projection_reconcile_owner = "reconciler-a"
+        document.projection_reconcile_expires_at = datetime.now(UTC) + timedelta(minutes=1)
+        document.projection_reconcile_lease_generation = 1
+    vector_deleter = RecordingVectorDeleter()
+    deletion_service = DocumentService(database, store, vector_deleter=vector_deleter)
+
+    with pytest.raises(DocumentRegistryConflict, match="document_projection_reconcile_running"):
+        deletion_service.delete_document(
+            "policy-a",
+            auth("document:write", "document:read"),
+        )
+
+    assert vector_deleter.deleted == []
 
 
 def test_reusing_idempotency_key_with_changed_request_fails_closed(tmp_path: Path) -> None:
@@ -655,9 +708,16 @@ def test_projection_retry_exhaustion_does_not_downgrade_active_version(tmp_path:
         job.lease_expires_at = now - timedelta(seconds=1)
 
     exhausted_port = DocumentRegistryIngestionJobPort(database, now=lambda: now)
-    assert exhausted_port.claim_next(
+    cleanup = exhausted_port.claim_next(
         worker_id="worker-next", lease_seconds=60, max_attempts=3
-    ) is None
+    )
+    assert cleanup is not None and cleanup.phase == "cleanup"
+    exhausted_port.record_failure(
+        cleanup,
+        error_code="ingestion_retry_exhausted",
+        retry=False,
+        retry_after=timedelta(0),
+    )
 
     with database.sessions() as session:
         version = session.get(DocumentVersionRow, result.version_id)
@@ -687,7 +747,7 @@ def test_concurrent_same_idempotency_key_converges_on_sqlite(tmp_path: Path) -> 
         assert session.scalar(select(func.count()).select_from(IdempotencyRecordRow)) == 1
 
 
-def test_concurrent_distinct_keys_for_new_document_return_stable_conflict(tmp_path: Path) -> None:
+def test_concurrent_distinct_keys_for_same_upload_converge_to_one_version(tmp_path: Path) -> None:
     service, database, _ = build_service(tmp_path)
     start = Barrier(2)
 
@@ -705,10 +765,9 @@ def test_concurrent_distinct_keys_for_new_document_return_stable_conflict(tmp_pa
             except BaseException as exc:
                 failures.append(exc)
 
-    assert len(outcomes) == 1
-    assert len(failures) == 1
-    assert isinstance(failures[0], DocumentRegistryConflict)
-    assert str(failures[0]) == "document_already_exists"
+    assert failures == []
+    assert len(outcomes) == 2
+    assert {outcome.outcome for outcome in outcomes} == {"created", "existing_recovered"}
     with database.sessions() as session:
         assert session.scalar(select(func.count()).select_from(DocumentVersionRow)) == 1
-        assert session.scalar(select(func.count()).select_from(IdempotencyRecordRow)) == 1
+        assert session.scalar(select(func.count()).select_from(IdempotencyRecordRow)) == 2

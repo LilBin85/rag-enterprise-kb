@@ -303,11 +303,8 @@ def test_delayed_old_publish_is_exactly_filtered_and_reconciler_converges(
             assert job.status == "succeeded"
 
         delayed_client.release.set()
-        try:
+        with pytest.raises(DocumentIndexError, match="publish_verification_failed"):
             old_publish.result(timeout=30)
-        except DocumentIndexError as exc:
-            # 旧世代被重新标为 current 后，唯一 current 回读门应识别分叉。
-            assert exc.code == "document_index_publish_verification_failed"
 
         payloads_after_late_write = _document_payloads(
             client,
@@ -315,11 +312,11 @@ def test_delayed_old_publish_is_exactly_filtered_and_reconciler_converges(
             tenant_id,
             document_id,
         )
-        assert any(
+        assert not any(
             payload.get("projection_generation") == old_receipt.projection_generation
             and payload.get("current") is True
             for payload in payloads_after_late_write
-        ), "the delayed old write did not land"
+        ), "retired points must not be recreated by a delayed payload update"
         new_payloads = [
             payload
             for payload in payloads_after_late_write
@@ -353,6 +350,27 @@ def test_delayed_old_publish_is_exactly_filtered_and_reconciler_converges(
             (candidate.version_id, candidate.projection_generation)
             for candidate in candidates
         } == {(second.version_id, new_generation)}
+
+        # 注入已绑定精确世代异常，确保审计只在确认不一致后才重建。
+        client.set_payload(
+            collection_name=collection,
+            payload={"current": False},
+            points=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="tenant_id", match=models.MatchValue(value=tenant_id)
+                    ),
+                    models.FieldCondition(
+                        key="version_id", match=models.MatchValue(value=second.version_id)
+                    ),
+                    models.FieldCondition(
+                        key="projection_generation",
+                        match=models.MatchValue(value=new_generation),
+                    ),
+                ]
+            ),
+            wait=True,
+        )
 
         reconcile_now = datetime(1970, 1, 2, tzinfo=UTC)
         with database.engine.begin() as connection:

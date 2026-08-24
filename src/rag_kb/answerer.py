@@ -17,6 +17,8 @@ from rag_kb.retriever import RetrievalCandidate, Retriever
 
 logger = logging.getLogger(__name__)
 
+_DEEPSEEK_ANSWER_TIMEOUT_SECONDS = 60
+
 # 蓝图 7.4 的标准化拒答文案;kind 为机器可读原因码。
 REFUSAL_MESSAGES = {
     "no_authorized_evidence": "当前知识库中没有可用于回答的已授权资料",
@@ -57,6 +59,8 @@ class DeepSeekAnswerModel:
             api_key=settings.deepseek_api_key,
             base_url=settings.deepseek_base_url,
             temperature=0,
+            timeout=_DEEPSEEK_ANSWER_TIMEOUT_SECONDS,
+            max_retries=0,
             # deepseek-v4 默认开启 thinking 模式,与 function calling 的强制 tool_choice
             # 冲突(API 400,2026-08-07 实测);结构化输出场景显式关闭,省 token 且降延迟
             extra_body={"thinking": {"type": "disabled"}},

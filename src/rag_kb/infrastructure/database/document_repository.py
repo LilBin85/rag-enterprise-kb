@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
 from uuid import uuid4
 
-from sqlalchemy import Select, and_, delete, func, select, update
+from sqlalchemy import Select, and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -586,6 +586,31 @@ class DocumentRegistryRepository:
             for idempotency, version in rows
         )
 
+    def defer_pending_object_reservation(
+        self,
+        session: Session,
+        *,
+        tenant_id: str,
+        user_id: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> None:
+        """把本次未恢复记录移到队尾，避免坏满批次永久饿死后续记录。"""
+        updated = session.execute(
+            update(IdempotencyRecordRow)
+            .where(
+                IdempotencyRecordRow.tenant_id == tenant_id,
+                IdempotencyRecordRow.user_id == user_id,
+                IdempotencyRecordRow.scope == "document_upload",
+                IdempotencyRecordRow.idempotency_key == idempotency_key,
+                IdempotencyRecordRow.request_hash == request_hash,
+                IdempotencyRecordRow.status == "in_progress",
+            )
+            .values(updated_at=datetime.now(UTC))
+        ).rowcount
+        if updated != 1:
+            raise IdempotencyConflict("idempotency_binding_mismatch")
+
     def get_version(self, session: Session, tenant_id: str, version_id: str) -> DocumentVersionRow | None:
         return session.scalar(
             select(DocumentVersionRow).where(
@@ -627,6 +652,26 @@ class DocumentRegistryRepository:
             status=document.status,
             versions=versions,
         )
+
+    def get_projection_binding(
+        self,
+        session: Session,
+        *,
+        tenant_id: str,
+        document_id: str,
+    ) -> tuple[int | None, str | None]:
+        row = session.execute(
+            select(
+                DocumentRow.applied_projection_generation,
+                DocumentRow.applied_projection_version_id,
+            ).where(
+                DocumentRow.tenant_id == tenant_id,
+                DocumentRow.document_id == document_id,
+            )
+        ).one_or_none()
+        if row is None:
+            raise DocumentRegistryConflict("projection_document_missing")
+        return row.applied_projection_generation, row.applied_projection_version_id
 
     def prepare_document_deletion(
         self,
@@ -670,6 +715,15 @@ class DocumentRegistryRepository:
         if any(job.status == "running" for job in jobs):
             raise DocumentRegistryConflict("document_ingestion_running")
         now = datetime.now(UTC)
+        reconcile_expires_at = document.projection_reconcile_expires_at
+        if reconcile_expires_at is not None and reconcile_expires_at.tzinfo is None:
+            reconcile_expires_at = reconcile_expires_at.replace(tzinfo=UTC)
+        if (
+            document.projection_reconcile_owner is not None
+            and reconcile_expires_at is not None
+            and reconcile_expires_at > now
+        ):
+            raise DocumentRegistryConflict("document_projection_reconcile_running")
         for version in versions:
             version.lifecycle_status = "withdrawn"
         for job in jobs:
@@ -797,13 +851,17 @@ class DocumentRegistryRepository:
     ) -> IngestionJobRow | None:
         now = datetime.now(UTC)
         lease_expires_at = now + timedelta(seconds=lease_seconds)
+        claimable_attempt = or_(
+            IngestionJobRow.attempts < max_attempts,
+            IngestionJobRow.error_code == "ingestion_projection_cleanup_failed",
+        )
         if session.get_bind().dialect.name == "sqlite":
             candidate = (
                 select(IngestionJobRow.job_id)
                 .where(
                     IngestionJobRow.status == "pending",
                     IngestionJobRow.available_at <= now,
-                    IngestionJobRow.attempts < max_attempts,
+                    claimable_attempt,
                 )
                 .order_by(IngestionJobRow.created_at, IngestionJobRow.job_id)
                 .limit(1)
@@ -815,7 +873,7 @@ class DocumentRegistryRepository:
                     IngestionJobRow.job_id == candidate,
                     IngestionJobRow.status == "pending",
                     IngestionJobRow.available_at <= now,
-                    IngestionJobRow.attempts < max_attempts,
+                    claimable_attempt,
                 )
                 .values(
                     status="running",
@@ -838,7 +896,7 @@ class DocumentRegistryRepository:
             .where(
                 IngestionJobRow.status == "pending",
                 IngestionJobRow.available_at <= now,
-                IngestionJobRow.attempts < max_attempts,
+                claimable_attempt,
             )
             .order_by(IngestionJobRow.created_at, IngestionJobRow.job_id)
             .limit(1)
@@ -879,12 +937,20 @@ class DocumentRegistryRepository:
         )
         for job in expired_jobs:
             if job.attempts >= max_attempts:
-                self._mark_job_failed(
-                    session,
-                    job,
-                    error_code="ingestion_retry_exhausted",
-                    now=now,
-                )
+                if job.projection_generation is None:
+                    self._mark_job_failed(
+                        session,
+                        job,
+                        error_code="ingestion_retry_exhausted",
+                        now=now,
+                    )
+                    continue
+                job.status = "pending"
+                job.error_code = "ingestion_projection_cleanup_failed"
+                job.lease_owner = None
+                job.lease_expires_at = None
+                job.available_at = now
+                job.updated_at = now
             else:
                 job.status = "pending"
                 job.lease_owner = None
@@ -918,6 +984,29 @@ class DocumentRegistryRepository:
         if job is None:
             raise DocumentRegistryConflict("ingestion_lease_stale")
         return job
+
+    def renew_job_lease(
+        self,
+        session: Session,
+        *,
+        tenant_id: str,
+        job_id: str,
+        worker_id: str,
+        lease_generation: int,
+        lease_seconds: int,
+    ) -> None:
+        if lease_seconds <= 0:
+            raise ValueError("invalid_ingestion_lease_duration")
+        job = self.lock_current_lease(
+            session,
+            tenant_id=tenant_id,
+            job_id=job_id,
+            worker_id=worker_id,
+            lease_generation=lease_generation,
+        )
+        now = datetime.now(UTC)
+        job.lease_expires_at = now + timedelta(seconds=lease_seconds)
+        job.updated_at = now
 
     def replace_chunk_manifest(
         self,
@@ -1170,6 +1259,8 @@ class DocumentRegistryRepository:
         lease_generation: int,
         receipt: IndexReceipt,
         expected_lifecycle_status: str | None = None,
+        expected_applied_generation: int | None = None,
+        expected_applied_version_id: str | None = None,
     ) -> None:
         job = self.lock_current_lease(
             session,
@@ -1210,6 +1301,8 @@ class DocumentRegistryRepository:
                 document is None
                 or document.projection_generation < receipt.projection_generation
                 or version.desired_projection_generation != receipt.projection_generation
+                or document.applied_projection_generation != expected_applied_generation
+                or document.applied_projection_version_id != expected_applied_version_id
             ):
                 raise DocumentRegistryConflict("projection_generation_stale")
             version.applied_projection_generation = receipt.projection_generation

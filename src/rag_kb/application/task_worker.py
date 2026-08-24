@@ -143,7 +143,13 @@ class TaskWorker:
         except TaskRepositoryError as exc:
             return TaskWorkerResult(status="stale", task_id=lease.state.task_id, error_code=exc.code)
         except ToolExecutionError as exc:
-            status = "stale" if exc.code == "tool_task_lease_stale" else "failed"
+            stale = exc.code == "tool_task_lease_stale"
+            if not stale:
+                try:
+                    runtime.fail_closed(lease.state.task_id, exc.code)
+                except Exception:
+                    pass
+            status = "stale" if stale else "failed"
             return TaskWorkerResult(status=status, task_id=lease.state.task_id, error_code=exc.code)
         except Exception as exc:
             # 不把模型、对象或工具正文写入日志/状态；可恢复失败保持安全码。
@@ -158,6 +164,13 @@ class TaskWorker:
                 task_id=lease.state.task_id,
                 error_code=code,
             )
+
+    def expire_stale_tool_calls(self, *, limit: int = 100) -> int:
+        """由生产 worker 周期调用；工具恢复仍由执行服务统一实现。"""
+        return self._tools.expire_stale_running(limit=limit)
+
+    def expire_stale_knowledge_queries(self, *, limit: int = 100) -> int:
+        return self._repository.expire_stale_knowledge_queries(limit=limit)
 
     @staticmethod
     def _release_runnable_lease(runtime: TaskRuntime, task_id: str) -> None:

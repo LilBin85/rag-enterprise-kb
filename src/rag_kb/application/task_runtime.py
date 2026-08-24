@@ -557,6 +557,8 @@ class TaskRuntime:
                 "status": TaskStatus.FAILED,
                 "current_node": TaskNode.TERMINAL,
                 "last_error": error_code,
+                "pending_action": None,
+                "pending_approval": None,
             }
         )
         self._save(failed, event_type="task_failed")

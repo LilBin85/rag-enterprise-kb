@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime, timedelta
 import logging
 import socket
 import time
@@ -19,6 +20,7 @@ from rag_kb.application.approval_service import ApprovalService
 from rag_kb.application.pending_action_store import PendingActionStore
 from rag_kb.application.task_worker import TaskWorker
 from rag_kb.application.tool_execution_service import ToolExecutionService
+from rag_kb.application.upload_reconciler import UploadReservationReconciler
 from rag_kb.application.enterprise_retriever import EnterpriseRetriever
 from rag_kb.application.tool_registry import ToolRegistry
 from rag_kb.config import get_settings, resolve_retrieval_limits
@@ -46,6 +48,11 @@ from rag_kb.infrastructure.tools.factory import build_tool_registry
 
 
 logger = logging.getLogger(__name__)
+
+_RECOVERY_BATCH_SIZE = 25
+_RECOVERY_INTERVAL_SECONDS = 30.0
+_RECOVERY_TIME_BUDGET_SECONDS = 1.0
+_UPLOAD_RESERVATION_GRACE = timedelta(seconds=30)
 
 
 class _UnavailableTaskPlanner:
@@ -90,6 +97,14 @@ def build_workers(
 def build_ingestion_worker(*, worker_id: str | None = None) -> IngestionWorker:
     """保留单元测试/一次性摄取调用兼容入口。"""
     return build_workers(worker_id=worker_id)[0]
+
+
+def build_upload_reconciler() -> UploadReservationReconciler:
+    settings = get_settings()
+    return UploadReservationReconciler(
+        build_database(settings.database_url),
+        LocalObjectStore(settings.object_store_root),
+    )
 
 
 def build_task_worker(*, worker_id: str | None = None, planner=None) -> TaskWorker:
@@ -144,6 +159,7 @@ def run(*, watch: bool, poll_seconds: float, max_jobs: int, include_tasks: bool 
     if poll_seconds <= 0 or max_jobs <= 0:
         raise ValueError("invalid_worker_runtime_limits")
     worker, reconciler = build_workers()
+    upload_reconciler = build_upload_reconciler()
     task_worker = None
     if include_tasks:
         try:
@@ -152,40 +168,81 @@ def run(*, watch: bool, poll_seconds: float, max_jobs: int, include_tasks: bool 
             # 模型不可用时，领取到的任务会由 TaskWorker 终止为安全失败；摄取仍照常运行。
             logger.error("通用任务模型不可用 error_code=%s", exc.code)
             task_worker = build_task_worker(planner=_UnavailableTaskPlanner(exc.code))
+    queues = [("ingestion", worker), ("projection", reconciler)]
+    if task_worker is not None:
+        queues.insert(0, ("task", task_worker))
     processed = 0
+    queue_index = 0
+    idle_queues = 0
+    next_recovery_at = 0.0
     while True:
-        if task_worker is not None:
-            task_result = task_worker.run_once()
-            if task_result.status != "idle":
-                processed += 1
-                logger.info(
-                    "通用任务结束 status=%s task_id=%s error_code=%s",
-                    task_result.status,
-                    task_result.task_id,
-                    task_result.error_code,
+        now = time.monotonic()
+        if now >= next_recovery_at:
+            if task_worker is not None:
+                try:
+                    expired_tools = task_worker.expire_stale_tool_calls(
+                        limit=_RECOVERY_BATCH_SIZE
+                    )
+                    expired_queries = task_worker.expire_stale_knowledge_queries(
+                        limit=_RECOVERY_BATCH_SIZE
+                    )
+                    if expired_tools or expired_queries:
+                        logger.info(
+                            "过期运行恢复结束 tools=%s knowledge_queries=%s",
+                            expired_tools,
+                            expired_queries,
+                        )
+                except Exception:
+                    logger.error("运行恢复失败 error_code=runtime_sweep_failed")
+            try:
+                upload_result = upload_reconciler.reconcile(
+                    older_than=datetime.now(UTC) - _UPLOAD_RESERVATION_GRACE,
+                    limit=_RECOVERY_BATCH_SIZE,
+                    time_budget_seconds=_RECOVERY_TIME_BUDGET_SECONDS,
                 )
-                if processed >= max_jobs and not watch:
-                    return 0
-                continue
-        result = worker.run_once()
+                if upload_result.scanned:
+                    logger.info(
+                        "上传预留恢复结束 scanned=%s recovered=%s missing=%s mismatched=%s failed=%s",
+                        upload_result.scanned,
+                        upload_result.recovered,
+                        upload_result.missing_objects,
+                        upload_result.content_mismatches,
+                        upload_result.failed,
+                    )
+            except Exception:
+                logger.error("上传预留恢复失败 error_code=upload_reconciliation_failed")
+            next_recovery_at = time.monotonic() + _RECOVERY_INTERVAL_SECONDS
+
+        queue_name, current_worker = queues[queue_index]
+        queue_index = (queue_index + 1) % len(queues)
+        result = current_worker.run_once()
         if result.status == "idle":
-            repair = reconciler.run_once()
-            if repair.status != "idle":
-                processed += 1
-                logger.info(
-                    "投影收敛结束 status=%s document_id=%s",
-                    repair.status,
-                    repair.document_id,
-                )
-                if processed >= max_jobs and not watch:
-                    return 0
+            idle_queues += 1
+            if idle_queues < len(queues):
                 continue
+            idle_queues = 0
             if not watch:
                 return 0
             time.sleep(poll_seconds)
             continue
+
+        idle_queues = 0
         processed += 1
-        logger.info("摄取任务结束 status=%s job_id=%s", result.status, result.job_id)
+        if queue_name == "task":
+            logger.info(
+                "通用任务结束 status=%s task_id=%s error_code=%s",
+                result.status,
+                result.task_id,
+                result.error_code,
+            )
+        elif queue_name == "projection":
+            logger.info(
+                "投影收敛结束 status=%s document_id=%s",
+                result.status,
+                result.document_id,
+            )
+        else:
+            logger.info("摄取任务结束 status=%s job_id=%s", result.status, result.job_id)
         if processed >= max_jobs and not watch:
             return 0
 

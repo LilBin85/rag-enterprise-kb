@@ -25,7 +25,7 @@ from rag_kb.infrastructure.vectorstore.qdrant_collection import (
 from rag_kb.infrastructure.vectorstore.qdrant_document_index import QdrantDocumentDeletion
 
 
-EXPECTED_DATABASE_REVISION = "20260822_0008"
+EXPECTED_DATABASE_REVISION = "20260824_0009"
 
 
 class ReadinessFailure(RuntimeError):
@@ -189,7 +189,10 @@ def build_compatibility_policy_comparison_service() -> CompatibilityPolicyCompar
 def resolve_auth_context(
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
     demo_token: Annotated[str | None, Header(alias="X-Demo-Role-Token")] = None,
-    request_id: Annotated[str | None, Header(alias="X-Request-ID")] = None,
+    request_id: Annotated[
+        str | None,
+        Header(alias="X-Request-ID", min_length=1, max_length=200, pattern=r".*\S.*"),
+    ] = None,
     provider: Annotated[IdentityProvider, Depends(build_identity_provider)] = None,
 ) -> AuthContext:
     """从服务端身份提供器解析统一上下文；错误响应不泄露令牌或角色存在性。"""

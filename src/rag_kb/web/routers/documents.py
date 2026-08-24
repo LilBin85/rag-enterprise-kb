@@ -29,8 +29,12 @@ from rag_kb.web.schemas.documents import DocumentUploadMetadata
 
 router = APIRouter(prefix="/v1", tags=["documents"])
 
+MAX_UPLOAD_METADATA_CHARS = 16 * 1024
+
 
 def parse_metadata(raw: str) -> DocumentUploadMetadata:
+    if len(raw) > MAX_UPLOAD_METADATA_CHARS:
+        raise HTTPException(status_code=413, detail="metadata 超出大小上限")
     try:
         return DocumentUploadMetadata.model_validate(json.loads(raw))
     except (json.JSONDecodeError, ValidationError) as exc:

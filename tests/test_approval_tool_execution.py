@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event
 from uuid import uuid4
 
 import pytest
@@ -9,11 +10,12 @@ from sqlalchemy import select, text, update
 
 from rag_kb.application.approval_service import ApprovalService, ApprovalServiceError, arguments_fingerprint, principal_fingerprint
 from rag_kb.application.tool_execution_service import ToolExecutionError, ToolExecutionRequest, ToolExecutionService
-from rag_kb.application.tool_registry import ToolRegistry
+from rag_kb.application.tool_registry import ToolRegistry, builtin_tool_definitions
 from rag_kb.domain.evidence import canonical_evidence_snapshot
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.task_runtime import canonical_fingerprint
 from rag_kb.domain.tasks import TaskMode
+from rag_kb.domain.tools import ApprovalPolicy, ToolMode
 from rag_kb.infrastructure.database import Base, build_database
 from rag_kb.infrastructure.database.models import (
     ACLGrantRow,
@@ -62,6 +64,37 @@ class _FailingObjectStore:
 
     def read(self, storage_key: str) -> bytes:
         raise OSError("object absent")
+
+
+class _BlockingObjectStore:
+    def __init__(self) -> None:
+        self.entered = Event()
+        self.release = Event()
+        self.content: bytes | None = None
+
+    def put_exclusive(self, storage_key: str, content: bytes) -> None:
+        self.content = content
+        self.entered.set()
+        assert self.release.wait(timeout=5), "blocking store was not released"
+
+    def read(self, storage_key: str) -> bytes:
+        assert self.content is not None
+        return self.content
+
+
+class _SignalingAdapter:
+    def __init__(self, adapter) -> None:
+        self.adapter = adapter
+        self.finished = Event()
+
+    def execute(self, arguments, context):
+        try:
+            return self.adapter.execute(arguments, context)
+        finally:
+            self.finished.set()
+
+    def verify(self, result, context):
+        return self.adapter.verify(result, context)
 
 
 @pytest.fixture()
@@ -308,6 +341,129 @@ def test_unknown_isolated_from_artifact_and_task_after_object_write_failure(stag
         task = session.scalar(select(AgentTaskRow).where(AgentTaskRow.task_id == "task-1"))
         assert artifact is not None and artifact.status == "unknown"
         assert task is not None and task.status == "unknown"
+
+
+def test_timed_out_artifact_adapter_cannot_restore_unknown_to_ready(stage5) -> None:
+    database, requester, approver, _, lease = stage5
+    approval_service, binding = _approved(database, requester, approver)
+    store = _BlockingObjectStore()
+    adapter = _SignalingAdapter(
+        LocalArtifactToolAdapter(database, store, artifact_type="report")
+    )
+    definition = next(
+        item for item in builtin_tool_definitions() if item.name == "create_report_artifact"
+    ).model_copy(update={"timeout_seconds": 1})
+    executor = ToolExecutionService(
+        database,
+        ToolRegistry([definition], adapters={"create_report_artifact": adapter}),
+        approval_service,
+    )
+
+    try:
+        result = executor.execute(_request(requester, binding.approval_id, lease))
+        assert result.status == "unknown"
+        assert store.entered.is_set()
+    finally:
+        store.release.set()
+
+    assert adapter.finished.wait(timeout=5), "timed out adapter did not finish"
+    with database.sessions() as session:
+        artifact = session.scalar(
+            select(ArtifactRow).where(ArtifactRow.tool_call_id == result.tool_call_id)
+        )
+        assert artifact is not None and artifact.status == "unknown"
+
+
+def test_artifact_created_after_timeout_is_never_ready(stage5) -> None:
+    database, requester, approver, _, lease = stage5
+    approval_service, binding = _approved(database, requester, approver)
+    store = LocalObjectStore(Path(database.engine.url.database).parent / "late-objects")
+    inner = LocalArtifactToolAdapter(database, store, artifact_type="report")
+
+    class DelayedAdapter:
+        def __init__(self) -> None:
+            self.entered = Event()
+            self.release = Event()
+            self.finished = Event()
+
+        def execute(self, arguments, context):
+            self.entered.set()
+            assert self.release.wait(timeout=5)
+            try:
+                return inner.execute(arguments, context)
+            finally:
+                self.finished.set()
+
+        def verify(self, result, context):
+            return inner.verify(result, context)
+
+    adapter = DelayedAdapter()
+    definition = next(
+        item for item in builtin_tool_definitions() if item.name == "create_report_artifact"
+    ).model_copy(update={"timeout_seconds": 1})
+    executor = ToolExecutionService(
+        database,
+        ToolRegistry([definition], adapters={"create_report_artifact": adapter}),
+        approval_service,
+    )
+
+    try:
+        result = executor.execute(_request(requester, binding.approval_id, lease))
+        assert result.status == "unknown"
+        with database.sessions() as session:
+            assert session.scalar(
+                select(ArtifactRow).where(ArtifactRow.tool_call_id == result.tool_call_id)
+            ) is None
+    finally:
+        adapter.release.set()
+
+    assert adapter.finished.wait(timeout=5)
+    with database.sessions() as session:
+        artifact = session.scalar(
+            select(ArtifactRow).where(ArtifactRow.tool_call_id == result.tool_call_id)
+        )
+        assert artifact is not None and artifact.status == "unknown"
+
+
+def test_timeout_replaces_stuck_executor_for_next_call(stage5) -> None:
+    database, requester, _approver, _, lease = stage5
+
+    class FirstCallBlocks(_VerifiedAdapter):
+        def __init__(self) -> None:
+            self.calls = 0
+            self.release = Event()
+
+        def execute(self, arguments, context):
+            self.calls += 1
+            if self.calls == 1:
+                assert self.release.wait(timeout=5)
+            return super().execute(arguments, context)
+
+    adapter = FirstCallBlocks()
+    definition = next(
+        item for item in builtin_tool_definitions() if item.name == "create_report_artifact"
+    ).model_copy(
+        update={
+            "mode": ToolMode.READ,
+            "approval_policy": ApprovalPolicy.NEVER,
+            "timeout_seconds": 1,
+        }
+    )
+    executor = ToolExecutionService(
+        database,
+        ToolRegistry([definition], adapters={"create_report_artifact": adapter}),
+        ApprovalService(database),
+    )
+
+    try:
+        first = executor.execute(_request(requester, None, lease, key="stuck"))
+        second = executor.execute(_request(requester, None, lease, key="next"))
+    finally:
+        adapter.release.set()
+
+    assert first.status == "unknown"
+    assert second.status == "succeeded"
+    assert adapter.calls == 2
 
 
 def test_expired_running_sweeper_persists_unknown_without_adapter_execution(stage5) -> None:

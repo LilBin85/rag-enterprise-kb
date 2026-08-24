@@ -315,6 +315,7 @@ class IngestionJobRow(Base):
             name="index_receipt_complete",
         ),
         Index("ix_ingestion_jobs_claim", "status", "available_at"),
+        Index("ix_ingestion_jobs_expired", "status", "lease_expires_at"),
     )
 
     job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -426,6 +427,12 @@ class AgentTaskRow(Base):
             name="pending_approval_action_valid",
         ),
         Index("ix_agent_tasks_owner_status", "tenant_id", "user_id", "status"),
+        Index(
+            "ix_agent_tasks_claim",
+            "status",
+            "available_at",
+            "created_at",
+        ),
         Index("ix_agent_tasks_pending_action_expiry", "pending_action_expires_at"),
     )
 
@@ -624,6 +631,7 @@ class ToolCallRow(Base):
         ),
         Index("ix_tool_calls_task", "tenant_id", "task_id", "created_at"),
         Index("ix_tool_calls_task_status", "tenant_id", "task_id", "status"),
+        Index("ix_tool_calls_sweeper", "status", "execution_deadline"),
         Index(
             "uq_tool_calls_consumed_approval",
             "tenant_id",
