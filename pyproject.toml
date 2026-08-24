@@ -5,8 +5,38 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rag-kb"
 version = "0.1.0"
-description = "可审计且受权限约束的企业知识库 RAG 问答原型"
+description = "受企业权限与证据约束的可恢复知识任务智能体"
 requires-python = ">=3.13"
+dependencies = [
+  "alembic>=1.18.5,<2",
+  "fastapi>=0.141.1,<1",
+  "langchain>=1.3.14,<2",
+  "langchain-deepseek>=1.1.0,<2",
+  "langgraph>=1.2.11,<2",
+  "jsonschema>=4.26.0,<5",
+  "pydantic-settings>=2.14.2,<3",
+  "psycopg[binary]>=3.3,<4",
+  "python-multipart>=0.0.32,<1",
+  "PyYAML>=6.0.3,<7",
+  "qdrant-client>=1.19.0,<2",
+  "SQLAlchemy>=2.0.52,<2.1",
+  "uvicorn>=0.52.1,<1",
+]
+
+[project.optional-dependencies]
+models = [
+  "docling>=2.118.0,<3",
+  "FlagEmbedding>=1.4.0,<2",
+  "torch>=2.13,<3",
+]
+evaluation = [
+  "numpy>=2.5.1,<3",
+  "scikit-learn>=1.9.0,<2",
+]
+dev = [
+  "httpx>=0.28.1,<1",
+  "pytest>=9.1.1,<10",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

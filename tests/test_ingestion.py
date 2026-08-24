@@ -60,7 +60,7 @@ def test_compute_content_hash_format() -> None:
 
 def test_load_manifest_reads_all_documents() -> None:
     specs = load_manifest(CORPUS_DIR)
-    assert len(specs) == 4
+    assert len(specs) == 14
     leave = sorted((s for s in specs if s.document_id == "hr-leave-policy"), key=lambda s: s.version)
     assert [s.version for s in leave] == [1, 2]
     assert set(leave[0].allowed_roles) == {Role.HR, Role.ADMIN}

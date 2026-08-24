@@ -1,0 +1,83 @@
+{
+  "baseline_date": "2026-08-22",
+  "git_revision": "320fd8767e3b76f9a32af66edfe3e4b3aed83cf1",
+  "branch": "main",
+  "scope": "阶段0只读基线事实；不是最终验收报告",
+  "environment": {
+    "conda_python": "3.13.14",
+    "system_python": "3.13.12",
+    "conda": "26.5.3",
+    "docker_cli": "not_found",
+    "qdrant": {
+      "url": "http://localhost:6333",
+      "observed_available": true
+    }
+  },
+  "commands": {
+    "pytest": "conda run --no-capture-output -n rag-kb python -m pytest -q -p no:cacheprovider --basetemp data/local/pytest-baseline-20260822 tests",
+    "planner_deterministic": "conda run --no-capture-output -n rag-kb python scripts/benchmark_planner_workflow_agent.py --output data/local/benchmarks/planner-deterministic-baseline-20260822.json",
+    "policy_comparison": "conda run --no-capture-output -n rag-kb python scripts/benchmark_policy_comparisons.py --output data/local/benchmarks/policy-comparison-baseline-20260822.json",
+    "retrieval_acceptance": "conda run --no-capture-output -n rag-kb python scripts/benchmark_retrieval_acceptance.py --output data/local/benchmarks/retrieval-acceptance-baseline-20260822.json"
+  },
+  "results": {
+    "pytest": {
+      "passed": 270,
+      "failed": 0,
+      "skipped": 0,
+      "duration_seconds": 221.13
+    },
+    "policy_comparison": {
+      "cases": 4,
+      "passed": 4,
+      "violation_counts": {
+        "acl_leakage_count": 0,
+        "version_mismatch": 0,
+        "citation_integrity": 0,
+        "guardrail_violations": 0,
+        "refusal_incorrect_count": 0
+      }
+    },
+    "planner_deterministic": {
+      "sample_size": 12,
+      "task_outcome_rate": 1.0,
+      "first_pass_rate": 0.75,
+      "repair_rate": 0.25,
+      "acl_leak_rate": 0.0,
+      "all_gates_passed": true,
+      "real_model_baseline_run": false
+    },
+    "retrieval_acceptance": {
+      "total_cases": 62,
+      "calibration_cases": 15,
+      "test_cases": 47,
+      "recall_at_5": 1.0,
+      "mrr": 0.9861111111111112,
+      "ndcg_at_5": 0.9897480487103183,
+      "no_answer_accuracy": 1.0,
+      "acl_leak_rate": 0.0,
+      "all_gates_passed": true
+    }
+  },
+  "source_artifacts": [
+    {
+      "path": "data/local/benchmarks/planner-deterministic-baseline-20260822.json",
+      "sha256": "1BB582AD28924510072EC0D66ADAB9B1257CFC47F46D47B1E813FB170C78D7FB"
+    },
+    {
+      "path": "data/local/benchmarks/policy-comparison-baseline-20260822.json",
+      "sha256": "A1A0FC22B371C8090E44F0B8FF34EBD0F6BEAEA66789E7D2D86AF51DF9CF1236"
+    },
+    {
+      "path": "data/local/benchmarks/retrieval-acceptance-baseline-20260822.json",
+      "sha256": "3CE12D658B272B598AEFF879E316DCA9E885DE57376A3BC74844BD6DCB76758E"
+    }
+  ],
+  "protected_assets": {
+    "untracked": ["output/", "面试题及答案.md"],
+    "must_not_overwrite": ["output/", "面试题及答案.md", ".obsidian/"]
+  },
+  "unverified": [
+    "真实 DeepSeek/Planner 模型基线未运行；不得沿用旧文档中的真实 Planner 100% 结论。",
+    "Docker CLI 不在当前 PATH；仅验证了现有 Qdrant 服务可访问，未验证容器编排命令。"
+  ]
+}

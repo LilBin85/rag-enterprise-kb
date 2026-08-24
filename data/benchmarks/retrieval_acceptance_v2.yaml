@@ -1,0 +1,300 @@
+version: 2
+name: expanded-enterprise-retrieval-holdout
+description: 扩充模拟语料后重新冻结的检索集；development 不参与选参，test 首次运行前保持封存。
+corpus_manifest: data/corpus/manifest.yaml
+required_top_k: 5
+cases:
+  - case_id: v2-dev-security
+    split: development
+    category: semantic
+    query: 生产管理员的临时权限最长可以保留多久？
+    role: engineer
+    answerable: true
+    gold_chunk_ids: [security-access-management:v1:chunk-01]
+    gold_versions: [{document_id: security-access-management, version: 1}]
+    exact_terms: []
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-dev-procurement
+    split: development
+    category: exact_term
+    query: 二十万元采购在 V2 中还需要谁批准？
+    role: admin
+    answerable: true
+    gold_chunk_ids: [procurement-approval-policy:v2:chunk-01]
+    gold_versions: [{document_id: procurement-approval-policy, version: 2}]
+    exact_terms: [二十万元]
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-dev-acl
+    split: development
+    category: acl
+    query: 普通员工能否查到生产特权权限的复核周期？
+    role: employee
+    answerable: false
+    no_answer_kind: acl_denied
+    gold_chunk_ids: []
+    gold_versions: []
+    exact_terms: []
+    acl_filtered: true
+    forbidden_document_ids: [security-access-management]
+  - case_id: v2-dev-multi
+    split: development
+    category: multi_chunk
+    query: 新员工开通生产权限时，入职流程和访问管理分别要求什么？
+    role: hr
+    answerable: true
+    gold_chunk_ids: [employee-onboarding-process:v1:chunk-01, security-access-management:v1:chunk-01]
+    gold_versions: [{document_id: employee-onboarding-process, version: 1}, {document_id: security-access-management, version: 1}]
+    exact_terms: []
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-cal-incident
+    split: calibration
+    category: semantic
+    query: 最高等级线上事故发生后多久必须建立统一指挥？
+    role: engineer
+    answerable: true
+    gold_chunk_ids: [incident-response-standard:v1:chunk-01]
+    gold_versions: [{document_id: incident-response-standard, version: 1}]
+    exact_terms: []
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-cal-onboarding
+    split: calibration
+    category: semantic
+    query: 入职日前由谁确认岗位设备和系统清单？
+    role: hr
+    answerable: true
+    gold_chunk_ids: [employee-onboarding-process:v1:chunk-01]
+    gold_versions: [{document_id: employee-onboarding-process, version: 1}]
+    exact_terms: []
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-cal-sla-exact
+    split: calibration
+    category: exact_term
+    query: 核心 API 的月度可用性 99.95% 出自哪份规则？
+    role: employee
+    answerable: true
+    gold_chunk_ids: [product-service-level-agreement:v1:chunk-01]
+    gold_versions: [{document_id: product-service-level-agreement, version: 1}]
+    exact_terms: [99.95%]
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-cal-remote
+    split: calibration
+    category: semantic
+    query: 每周远程办公最多可以申请几天？
+    role: employee
+    answerable: true
+    gold_chunk_ids: [remote-work-policy:v1:chunk-01]
+    gold_versions: [{document_id: remote-work-policy, version: 1}]
+    exact_terms: []
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-cal-acl-procurement
+    split: calibration
+    category: acl
+    query: 人力资源人员可以查阅单一来源采购的书面论证要求吗？
+    role: hr
+    answerable: false
+    no_answer_kind: acl_denied
+    gold_chunk_ids: []
+    gold_versions: []
+    exact_terms: []
+    acl_filtered: true
+    forbidden_document_ids: [procurement-approval-policy]
+  - case_id: v2-cal-acl-data
+    split: calibration
+    category: acl
+    query: 安全管理员对受限数据对外共享需要批准什么？
+    role: admin
+    answerable: true
+    gold_chunk_ids: [data-classification-sharing:v1:chunk-01]
+    gold_versions: [{document_id: data-classification-sharing, version: 1}]
+    exact_terms: []
+    acl_filtered: true
+    forbidden_document_ids: []
+  - case_id: v2-cal-noanswer-password
+    split: calibration
+    category: no_answer
+    query: 访问管理制度规定密码最少必须包含多少个字符？
+    role: admin
+    answerable: false
+    no_answer_kind: out_of_scope
+    gold_chunk_ids: []
+    gold_versions: []
+    exact_terms: []
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-cal-noanswer-insurance
+    split: calibration
+    category: no_answer
+    query: 关键供应商必须购买多少万元的责任保险？
+    role: admin
+    answerable: false
+    no_answer_kind: out_of_scope
+    gold_chunk_ids: []
+    gold_versions: []
+    exact_terms: []
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-test-vendor
+    split: test
+    category: semantic
+    query: 哪些变化会立即触发供应商临时复评？
+    role: admin
+    answerable: true
+    gold_chunk_ids: [vendor-management-standard:v1:chunk-01]
+    gold_versions: [{document_id: vendor-management-standard, version: 1}]
+    exact_terms: []
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-test-data-sharing
+    split: test
+    category: semantic
+    query: 对外共享数据以前必须确认哪些最小化和删除信息？
+    role: hr
+    answerable: true
+    gold_chunk_ids: [data-classification-sharing:v1:chunk-01]
+    gold_versions: [{document_id: data-classification-sharing, version: 1}]
+    exact_terms: []
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-test-incident-review
+    split: test
+    category: semantic
+    query: 线上事故解除后，复盘初稿和正式复盘分别何时完成？
+    role: engineer
+    answerable: true
+    gold_chunk_ids: [incident-response-standard:v1:chunk-01]
+    gold_versions: [{document_id: incident-response-standard, version: 1}]
+    exact_terms: []
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-test-remote-security
+    split: test
+    category: semantic
+    query: 居家处理内部数据时对设备和网络有什么要求？
+    role: employee
+    answerable: true
+    gold_chunk_ids: [remote-work-policy:v1:chunk-01]
+    gold_versions: [{document_id: remote-work-policy, version: 1}]
+    exact_terms: []
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-test-injection-fact
+    split: test
+    category: exact_term
+    query: 安全测试样本中的交付包编号是什么？
+    role: admin
+    answerable: true
+    gold_chunk_ids: [malicious-prompt-injection-sample:v1:chunk-01]
+    gold_versions: [{document_id: malicious-prompt-injection-sample, version: 1}]
+    exact_terms: [DEMO-2026-08]
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-test-procurement-date
+    split: test
+    category: exact_term
+    query: 采购审批制度 V2 从哪一天开始替代旧版？
+    role: admin
+    answerable: true
+    gold_chunk_ids: [procurement-approval-policy:v2:chunk-01]
+    gold_versions: [{document_id: procurement-approval-policy, version: 2}]
+    exact_terms: [2026 年 7 月 1 日]
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-test-acl-incident
+    split: test
+    category: acl
+    query: 普通员工能否查询 P0 事故五分钟建群的内部规范？
+    role: employee
+    answerable: false
+    no_answer_kind: acl_denied
+    gold_chunk_ids: []
+    gold_versions: []
+    exact_terms: []
+    acl_filtered: true
+    forbidden_document_ids: [incident-response-standard]
+  - case_id: v2-test-acl-onboarding
+    split: test
+    category: acl
+    query: 工程师能否看到人力资源创建入职单的提前时限？
+    role: engineer
+    answerable: false
+    no_answer_kind: acl_denied
+    gold_chunk_ids: []
+    gold_versions: []
+    exact_terms: []
+    acl_filtered: true
+    forbidden_document_ids: [employee-onboarding-process]
+  - case_id: v2-test-noanswer-vpn-quota
+    split: test
+    category: no_answer
+    query: 企业 VPN 每名员工每月有多少 GB 的流量上限？
+    role: admin
+    answerable: false
+    no_answer_kind: out_of_scope
+    gold_chunk_ids: []
+    gold_versions: []
+    exact_terms: []
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-test-noanswer-rto
+    split: test
+    category: no_answer
+    query: 产品服务等级协议规定灾难恢复 RTO 必须是多少分钟？
+    role: admin
+    answerable: false
+    no_answer_kind: out_of_scope
+    gold_chunk_ids: []
+    gold_versions: []
+    exact_terms: []
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-test-multi-vendor-data
+    split: test
+    category: multi_chunk
+    query: 供应商接触内部数据时，供应商管理和数据分级制度共同要求哪些控制？
+    role: admin
+    answerable: true
+    gold_chunk_ids: [vendor-management-standard:v1:chunk-01, data-classification-sharing:v1:chunk-01]
+    gold_versions: [{document_id: vendor-management-standard, version: 1}, {document_id: data-classification-sharing, version: 1}]
+    exact_terms: []
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-test-multi-onboarding-security
+    split: test
+    category: multi_chunk
+    query: 新员工账号开通和试用期结束复核需要哪些部门协作与访问控制？
+    role: hr
+    answerable: true
+    gold_chunk_ids: [employee-onboarding-process:v1:chunk-01, security-access-management:v1:chunk-01]
+    gold_versions: [{document_id: employee-onboarding-process, version: 1}, {document_id: security-access-management, version: 1}]
+    exact_terms: []
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-test-sla-maintenance
+    split: test
+    category: semantic
+    query: 计划维护至少要提前多久通知且每月最多多久？
+    role: employee
+    answerable: true
+    gold_chunk_ids: [product-service-level-agreement:v1:chunk-01]
+    gold_versions: [{document_id: product-service-level-agreement, version: 1}]
+    exact_terms: []
+    acl_filtered: false
+    forbidden_document_ids: []
+  - case_id: v2-test-security-offboarding
+    split: test
+    category: semantic
+    query: 员工离职和岗位调动时账号权限分别何时处理？
+    role: hr
+    answerable: true
+    gold_chunk_ids: [security-access-management:v1:chunk-01]
+    gold_versions: [{document_id: security-access-management, version: 1}]
+    exact_terms: []
+    acl_filtered: false
+    forbidden_document_ids: []

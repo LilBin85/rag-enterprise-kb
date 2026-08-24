@@ -20,10 +20,18 @@ class Settings(BaseSettings):
 
     # 本地策略比较接口的演示身份令牌;不等同于生产认证系统
     demo_role_tokens: dict[str, str] = {}
+    # 未完成统一认证迁移前，生产入口默认不挂载信任 body role 的旧路由。
+    enable_legacy_routes: bool = False
 
     # Qdrant
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "kb_chunks"
+    # 新版企业投影与旧 role-only collection 物理隔离，迁移评测通过前不切别名。
+    qdrant_v2_collection: str = "kb_chunks_v2"
+
+    # PostgreSQL 是业务与任务状态的生产事实源。SQLite URL 只用于本地轻量测试；
+    # schema 创建和升级必须由 Alembic 显式执行，普通请求不得建表或 ALTER。
+    database_url: str = "postgresql+psycopg://rag_kb:rag_kb@localhost:5432/rag_kb"
 
     # HuggingFace 下载端点(国内镜像;可直连时留空)
     hf_endpoint: str | None = None
@@ -45,6 +53,9 @@ class Settings(BaseSettings):
     retrieval_candidate_k: int | None = Field(default=None, ge=1, le=100)
     retrieval_context_k: int | None = Field(default=None, ge=1, le=100)
     retrieval_score_threshold: float | None = Field(default=None, allow_inf_nan=False)
+    retrieval_context_token_budget: int = Field(default=4000, ge=1, le=32000)
+    retrieval_rrf_k: int = Field(default=60, ge=1, le=1000)
+    enable_hybrid_retrieval: bool = False
 
     # 策略比较 Agent:只读工具循环的有界运行参数
     agent_max_steps: int = Field(default=4, ge=1, le=10)
@@ -62,6 +73,9 @@ class Settings(BaseSettings):
     policy_rollout_db_path: Path = ROOT_DIR / "data" / "local" / "policy_rollout_tasks.sqlite3"
     policy_rollout_draft_dir: Path = ROOT_DIR / "data" / "local" / "policy_rollout_drafts"
     policy_rollout_claim_ttl_seconds: int = Field(default=300, ge=1, le=3600)
+
+    # 服务端生成对象键；请求和模型均不得指定任意文件路径。
+    object_store_root: Path = ROOT_DIR / "data" / "local" / "objects"
 
     # bge-m3 dense 向量维度(工作单元 3 使用)
     embedding_dim: int = 1024

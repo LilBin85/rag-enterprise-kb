@@ -36,6 +36,77 @@ documents:
     version: 2
     note: 2026 版;年假 15 天;新增育儿假 10 天;激活后替代 v1(superseded)
 
+  - document_id: security-access-management
+    file: 信息安全访问管理制度.md
+    title: 信息安全访问管理制度
+    department: security
+    allowed_roles: [engineer, hr, admin]
+    version: 1
+
+  - document_id: procurement-approval-policy
+    file: 采购审批制度-v1.md
+    title: 采购审批制度
+    department: procurement
+    allowed_roles: [admin]
+    version: 1
+
+  - document_id: procurement-approval-policy
+    file: 采购审批制度-v2.md
+    title: 采购审批制度
+    department: procurement
+    allowed_roles: [admin]
+    version: 2
+    note: 2026 版替代 2025 版
+
+  - document_id: incident-response-standard
+    file: 线上事故响应规范.md
+    title: 线上事故响应规范
+    department: engineering
+    allowed_roles: [engineer, admin]
+    version: 1
+
+  - document_id: employee-onboarding-process
+    file: 新员工入职流程.md
+    title: 新员工入职流程
+    department: hr
+    allowed_roles: [hr, admin]
+    version: 1
+
+  - document_id: vendor-management-standard
+    file: 供应商管理规范.md
+    title: 供应商管理规范
+    department: procurement
+    allowed_roles: [admin]
+    version: 1
+
+  - document_id: remote-work-policy
+    file: 远程办公规定.md
+    title: 远程办公规定
+    department: general
+    allowed_roles: [employee, engineer, hr, admin]
+    version: 1
+
+  - document_id: product-service-level-agreement
+    file: 产品服务等级协议.md
+    title: 产品服务等级协议
+    department: product
+    allowed_roles: [employee, engineer, hr, admin]
+    version: 1
+
+  - document_id: data-classification-sharing
+    file: 数据分级与共享规定.md
+    title: 数据分级与共享规定
+    department: security
+    allowed_roles: [engineer, hr, admin]
+    version: 1
+
+  - document_id: malicious-prompt-injection-sample
+    file: 恶意提示注入样本文档.md
+    title: 外部供应商交付说明（安全测试样本）
+    department: security
+    allowed_roles: [admin]
+    version: 1
+
 cases:
   - name: authorized-retrieval
     comment: 授权检索(蓝图 10.2 第 1 行)

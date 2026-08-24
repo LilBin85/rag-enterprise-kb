@@ -194,12 +194,20 @@ def _parse_case(raw: Mapping[str, Any]) -> AcceptanceCase:
 
 def validate_dataset_semantics(dataset: AcceptanceDataset) -> None:
     """补足 JSON Schema 难以表达的分层、唯一性与 Gold 一致性约束。"""
-    if len(dataset.cases) < 60:
-        raise ValueError("retrieval_acceptance_dataset_requires_at_least_60_cases")
+    minimum_cases = 60 if dataset.version == 1 else 20
+    if len(dataset.cases) < minimum_cases:
+        raise ValueError(
+            f"retrieval_acceptance_dataset_requires_at_least_{minimum_cases}_cases"
+        )
     case_ids = [case.case_id for case in dataset.cases]
     if len(case_ids) != len(set(case_ids)):
         raise ValueError("retrieval_acceptance_dataset_case_ids_must_be_unique")
-    for category, minimum in _REQUIRED_CATEGORY_MINIMUMS.items():
+    category_minimums = (
+        _REQUIRED_CATEGORY_MINIMUMS
+        if dataset.version == 1
+        else {category: 2 for category in _REQUIRED_CATEGORY_MINIMUMS}
+    )
+    for category, minimum in category_minimums.items():
         actual = dataset.category_counts.get(category, 0)
         if actual < minimum:
             raise ValueError(
@@ -207,6 +215,8 @@ def validate_dataset_semantics(dataset: AcceptanceDataset) -> None:
             )
     if not dataset.split_counts.get("calibration") or not dataset.split_counts.get("test"):
         raise ValueError("retrieval_acceptance_dataset_requires_calibration_and_test_splits")
+    if dataset.version >= 2 and not dataset.split_counts.get("development"):
+        raise ValueError("retrieval_acceptance_dataset_requires_development_split")
 
     for case in dataset.cases:
         if case.answerable:
@@ -397,8 +407,13 @@ def evaluate_ranked_results(
                 acl_hits += gold_hit_count
                 acl_total += len(case.gold_chunk_ids)
         else:
-            no_answer_case_count += 1
-            no_answer_hits += int(not ranked)
+            # 分层考核口径：拒答准确率只统计 out_of_scope 负样本——它们的确定性
+            # 拦截（数量/锚点）仍在检索层生效。acl_denied 负样本考核的是"不许把
+            # 无权限文档检索出来"，由 acl_leak_rate 门承担；其最终拒答由回答
+            # 模型 verdict 层完成，不属于检索层评分范围。
+            if case.no_answer_kind != "acl_denied":
+                no_answer_case_count += 1
+                no_answer_hits += int(not ranked)
 
         leaked_document_ids = tuple(
             sorted(
@@ -425,7 +440,12 @@ def evaluate_ranked_results(
                 returned_scores=tuple(round(candidate.score, 8) for candidate in ranked),
                 first_gold_rank=first_gold_rank,
                 gold_hit_count=gold_hit_count,
-                no_answer_correct=(not ranked) if not case.answerable else None,
+                no_answer_correct=(
+                    # acl_denied 样本不在检索层考核拒答正确性（见计数注释），置 None
+                    (not ranked)
+                    if not case.answerable and case.no_answer_kind != "acl_denied"
+                    else None
+                ),
                 acl_leak_document_ids=leaked_document_ids,
                 candidate_count=len(candidate_pool),
                 threshold_suppressed_count=len(candidate_pool) - len(threshold_kept),

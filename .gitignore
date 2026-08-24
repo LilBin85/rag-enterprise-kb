@@ -15,3 +15,7 @@ build/
 
 # 本地数据（冻结语料 data/corpus 需提交，本地临时数据不提交）
 data/local/
+
+# 本地工具与个人产物
+.opencode/
+output/

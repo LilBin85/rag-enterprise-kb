@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/enterprise-task-evaluation.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "dataset_version", "description", "cases"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "dataset_version": {"type": "string", "pattern": "^[0-9]{4}\\.[0-9]{2}\\.[0-9]+$"},
+    "description": {"type": "string", "minLength": 1},
+    "cases": {
+      "type": "array",
+      "minItems": 20,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/case"}
+    }
+  },
+  "$defs": {
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id", "split", "scenario", "mode", "goal", "scripted_actions",
+        "required_events", "expected_terminal_status", "security_gates"
+      ],
+      "properties": {
+        "case_id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+        "split": {"enum": ["development", "calibration", "test"]},
+        "scenario": {"type": "string", "minLength": 1},
+        "mode": {"enum": ["knowledge_research", "controlled_action"]},
+        "goal": {"type": "string", "minLength": 4},
+        "scripted_actions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": ["search", "call_tool", "ask_user", "update_plan", "propose_action", "finish", "refuse"]
+          }
+        },
+        "required_events": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "expected_terminal_status": {
+          "enum": ["waiting_for_user", "waiting_for_approval", "succeeded", "refused", "failed", "unknown"]
+        },
+        "security_gates": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "acl_no_leak", "tenant_no_leak", "citation_valid", "injection_ignored",
+              "budget_enforced", "approval_required", "approval_current", "evidence_current",
+              "idempotent_once", "checkpoint_resume", "read_only_no_write", "tool_timeout_closed"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

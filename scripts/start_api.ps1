@@ -8,4 +8,4 @@
 # 用法(项目根目录):  .\scripts\start_api.ps1
 
 $env:PYTHONUTF8 = "1"
-conda run -n rag-kb --no-capture-output python -m uvicorn rag_kb.api:app --port 8000
+conda run -n rag-kb --no-capture-output python -m uvicorn rag_kb.main:app --port 8000

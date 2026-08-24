@@ -5,10 +5,8 @@
 """
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rag_kb.answerer import AnswerService, ModelVerdict
-from rag_kb.api import app, build_answer_service
 from rag_kb.models import Role
 
 
@@ -126,34 +124,3 @@ def test_refusal_leaks_no_restricted_metadata(service, fake_model) -> None:
     for forbidden in ["leave-policy", "休假", "年假", "v1", "v2", '"hr"']:
         assert forbidden not in payload, f"拒答响应泄露了受限标识: {forbidden}"
 
-
-# ---------- API 端点 ----------
-
-@pytest.fixture()
-def client(kb_and_retriever, fake_model):
-    _, retriever = kb_and_retriever
-    service = AnswerService(retriever=retriever, model=fake_model)
-    app.dependency_overrides[build_answer_service] = lambda: service
-    with TestClient(app) as c:
-        yield c
-    app.dependency_overrides.clear()
-
-
-def test_questions_endpoint(client, fake_model) -> None:
-    fake_model.next = ModelVerdict(
-        verdict="answer", answer="年假 15 天。", used_chunk_ids=["leave-policy:v2:chunk-01"]
-    )
-    resp = client.post("/questions", json={"question": "年假有多少天?", "role": "hr"})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["verdict"] == "answer"
-    assert body["citations"][0]["document_version"] == 2
-
-
-def test_questions_endpoint_refusal(client, fake_model) -> None:
-    resp = client.post("/questions", json={"question": "年假有多少天?", "role": "employee"})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["verdict"] == "refusal"
-    assert body["citations"] == []
-    assert fake_model.calls == []

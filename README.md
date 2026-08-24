@@ -1,106 +1,81 @@
-# RAG 企业知识库智能体
+# RAG 企业知识任务智能体
 
-> 第一次使用？请先看 [使用指南.md](使用指南.md)（新手向全流程：启动、演示、提问、测试、FAQ）。
+面向企业制度与技术规范的租户隔离知识任务智能体。新版 `/v1` 接口以 PostgreSQL 事实源、Qdrant 授权检索、证据账本和可恢复任务状态为核心；旧接口仅作为薄兼容层，默认关闭。
 
-面向企业制度与技术规范文档的、可审计且受权限约束的检索增强问答原型：系统只在用户有权访问的文档中检索，为回答附上可定位的来源引用；没有足够授权证据时明确拒答。
+验收唯一事实来源是机器报告 [docs/acceptance/latest.json](docs/acceptance/latest.json)。报告缺失、真实模型未运行或检索质量门失败时，文档不推断“全部通过”；请以报告中的 `verdict`、`gates` 和 `unverified` 为准。
 
-在不改变 `/questions` 契约的前提下，项目另有一个安全收敛的 `POST /policy-comparisons` 工作流：Agent 只能调用服务端绑定的两个只读工具，比较两个明确版本；ACL、生命周期、确定性 diff 和引用均由应用层控制。
+## 架构与运行模式
 
-另有认证的 `/policy-rollout-tasks`：规划阶段在当前角色可访问的 active 文档内动态检索，返回带引用和依赖关系的 Todo 计划，或持久化澄清问题；继续请求会追加不可变计划版本。特定计划版本必须以当前证据摘要显式批准，才可同步生成一份确定性本地 JSON 草稿；不执行 Todo 或任何外部操作。来源策略被撤回、删除、失效、内容变化或角色失权时，计划不能批准或执行。
+- `knowledge_query`：一次授权检索、证据账本记录、受约束回答。拒答分两层：数量/锚点等字面缺失在检索层确定性拦截，主谓语义充分性由回答模型 verdict 判定；引用一律以证据账本复核兜底。
+- `research`：可暂停、继续、取消的多步研究任务；每步由显式 `NextAction` 和持久 checkpoint 驱动。
+- `controlled_action`：读工具检索后提出写动作；固定六工具注册表中的写工具必须绑定当前任务、计划、证据、主体、参数摘要和未过期批准。
 
-> 本项目为求职作品集原型，验证范围以冻结测试语料覆盖的场景为准，不宣称生产就绪。
+摄取采用“对象落盘 → 解析 → SQL manifest → generation-specific Qdrant projection → receipt → active 发布”的顺序。lease、generation、幂等键和状态事件用于崩溃恢复；旧 worker 不能覆盖新世代。
 
-## 技术栈
+固定工具为 `search_knowledge`、`fetch_evidence`、`list_document_versions`、`compare_document_versions`、`create_report_artifact`、`create_work_item_draft`。写工具只允许服务端生成对象键，不能接收路径、URL、shell、SQL 或任意外部调用。
 
-- FastAPI + Uvicorn：HTTP API 层
-- Docling：Markdown / PDF 文档解析
-- bge-m3（FlagEmbedding，CPU）：dense 向量检索基线
-- Qdrant（Docker Compose）：向量数据库，payload 携带版本、ACL 与来源元数据
-- DeepSeek API：问答使用 `ChatDeepSeek`（langchain-deepseek 组件级封装）生成回答；策略比较 Agent 使用 `create_agent` 和两个服务端绑定的只读工具
-- 策略落地规划 Planner：使用 `ChatDeepSeek.with_structured_output(PlannerDecision)` 输出结构化决策，由应用层控制有界检索循环
-- pytest：冻结语料回归测试（默认 mock DeepSeek 调用）
+详见：[架构说明](docs/architecture.md)、[威胁模型](docs/threat-model.md)、[迁移说明](docs/migration.md)、[使用指南](使用指南.md)。
 
-## 快速启动
+## Windows 启动
 
-前置：Docker Desktop 已启动；Conda 环境已创建（`conda env create` 或按蓝图 4.5 节手动安装）。
+前置：Conda 环境 `rag-kb`、PostgreSQL、Qdrant（默认 `http://localhost:6333`）。不要把密钥写入仓库；`.env` 仅供本地配置读取。
+
+完整容器方式会启动 PostgreSQL、Qdrant、迁移、一次性 `qdrant-init`、API 和 worker。
+启动前应在 `.env` 中把 `DEMO_ROLE_TOKENS` 配置为 JSON 令牌映射；未配置时健康检查可用，
+受保护接口固定拒绝未认证请求：
 
 ```powershell
-# 1. 启动 Qdrant（项目唯一容器依赖）
-docker compose up -d
+docker compose up --build -d
+```
 
-# 2. 激活环境并验证连通性
+本机未安装 Docker 时可使用下面的 Windows/Conda 方式：
+
+```powershell
 conda activate rag-kb
-python scripts/verify_qdrant.py
-
-# 3. 配置密钥
-Copy-Item .env.example .env   # 然后填入真实 DEEPSEEK_API_KEY 和本地 DEMO_ROLE_TOKENS
-
-# 4. 启动 API 服务(脚本内含 PYTHONUTF8,修复中文 Windows 下 Docling 的 GBK 编码问题)
-.\scripts\start_api.ps1
+docker compose up -d qdrant
+$env:RAG_KB_DATABASE_URL = "postgresql+psycopg://<用户>:<密码>@localhost:5432/<数据库>"
+alembic upgrade head                 # 当前迁移目标：20260822_0008
+python -m rag_kb.qdrant_init         # 幂等创建并校验企业 Qdrant schema
+.\scripts\start_api.ps1             # FastAPI :8000
+conda run -n rag-kb --no-capture-output python -m rag_kb.worker --watch --include-tasks
 ```
 
-## 环境变量
+若本机没有 Docker，可由管理员单独启动 PostgreSQL/Qdrant；不要在 API 进程中执行迁移或下载模型。健康检查：`GET /health/live` 与 `GET /health/ready`。
 
-| 变量 | 必需 | 说明 |
-| --- | --- | --- |
-| `DEEPSEEK_API_KEY` | 是 | DeepSeek API 密钥，只存在于本地 `.env`，不提交 Git |
-| `DEEPSEEK_BASE_URL` | 否 | 默认 `https://api.deepseek.com` |
-| `DEEPSEEK_MODEL` | 否 | 默认 `deepseek-v4-flash` |
-| `DEMO_ROLE_TOKENS` | 策略比较必需 | 本地演示角色令牌 JSON；生产环境应由真实认证上下文替代 |
-| `QDRANT_URL` | 否 | 默认 `http://localhost:6333` |
-| `HF_ENDPOINT` | 否 | HuggingFace 下载端点；国内网络建议 `https://hf-mirror.com` |
-| `AGENT_MAX_STEPS` | 否 | 策略比较 Agent 最多执行步数，默认 `4` |
-| `AGENT_MAX_TOOL_CALLS` | 否 | 策略比较 Agent 最多只读工具调用数，默认 `3` |
-| `AGENT_TIMEOUT_SECONDS` | 否 | 单次 DeepSeek Agent 模型调用超时，默认 `20` |
+2026-08-23 已完成本机 Docker Compose 真实构建、迁移、Qdrant 初始化、服务健康和 HTTP
+认证边界验证；其他环境必须重新运行健康检查，不能直接继承本机结论。
 
-## 固定演示
+## API
 
-服务启动后，运行蓝图第 12 节的固定演示脚本（可重复运行，开头自动重置数据）：
+- `POST /v1/knowledge/query`：服务端身份问答。
+- `POST /v1/documents`：multipart 上传，必须带 `Idempotency-Key`，返回 `202`。
+- `GET /v1/documents/{document_id}`、`GET /v1/ingestion-jobs/{job_id}`：租户与 ACL 约束的查询。
+- 任务接口位于 `/v1/tasks`；暂停、继续、取消、批准和恢复由持久状态图处理。
+
+身份来自 `Authorization: Bearer ...` 或本地演示 `X-Demo-Role-Token`，角色不能由请求正文提升。旧 `/questions`、`/policy-comparisons`、`/policy-rollout-tasks` 只有在 `create_app(include_legacy_routes=True)` 时装配，并返回 `Deprecation`、`Sunset`、`Link`。
+
+## 验证
 
 ```powershell
-python scripts/demo.py                # 完整演示(含冻结测试回归)
-python scripts/demo.py --skip-tests   # 仅演示 API 行为
+conda run -n rag-kb --no-capture-output python -m pytest -q
+conda run -n rag-kb --no-capture-output python scripts/benchmark_enterprise_retrieval.py `
+  --dataset data/benchmarks/retrieval_acceptance_v2.yaml `
+  --schema schemas/retrieval-acceptance-v2.schema.json `
+  --output data/local/benchmarks/enterprise-retrieval-stage9-sufficiency-aligned.json
+conda run -n rag-kb --no-capture-output python scripts/build_project_acceptance_report.py `
+  --pytest-xml data/local/acceptance/pytest-stage9.xml `
+  --retrieval-report data/local/benchmarks/enterprise-retrieval-stage9-sufficiency-aligned.json `
+  --task-report data/local/benchmarks/enterprise-task-evaluation.json `
+  --model-report data/local/acceptance/task-model-live-smoke.json `
+  --dataset data/benchmarks/retrieval_acceptance_v2.yaml `
+  --config pyproject.toml `
+  --output docs/acceptance/latest.json
 ```
 
-演示顺序：导入语料 → engineer 查询（回答+引用）→ employee 越权查询（零泄露拒答）→ 上传 v2（仅引用新版）→ 删除后查询（无证据拒答）→ 冻结 pytest 回归。
+2026-08-24 的隔离真实组件套件为 `334 passed`；机器报告中的 pytest、检索质量、ACL
+零泄漏、真实模型和任务契约门均为 `passed`。脚本仍以证据文件为准，不从文档继承指标，
+也不会填充缺失数字。
 
-## 验证与测试
+## 目录边界
 
-```powershell
-python -m pytest tests/ -q            # 冻结测试(默认脱离真实模型与真实 API)
-python scripts/benchmark_policy_comparisons.py  # 使用 manifest/固定语料 fixture，结果写入 data/local/benchmarks/
-python scripts/benchmark_planner_workflow_agent.py --live --smoke --repetitions 1 --max-model-calls 30  # 真实 Planner 4x1 冒烟
-python scripts/benchmark_retrieval_acceptance.py  # 真实 bge-m3 + Qdrant 冻结检索评测
-python scripts/smoke_real_ingest.py   # 手动冒烟:真 bge-m3 + 真 Docling PDF 摄取
-python scripts/smoke_answer.py        # 手动冒烟:真 DeepSeek 端到端问答
-python scripts/download_bge_m3.py     # 预下载 bge-m3(经 hf-mirror 镜像)
-```
-
-2026-08-14 验收结果：最新代码的冻结回归为 270 项通过；真实 Planner 的 4 个场景单次冒烟和 11 个场景各 3 次稳定性评测分别为 4/4、33/33 通过，安全、质量和成本门均通过，11×3 首稿成功率 100%、repair 与 emergency 均为 0%。真实 `BAAI/bge-m3 + Qdrant` 检索在独立的 47 个测试样本上得到 Recall@5 1.0、MRR 0.9861、nDCG@5 0.9897，精确术语、正确版本、ACL 过滤和无答案指标均为 1.0，ACL 泄漏率为 0。以上数字只适用于仓库内冻结模拟语料；Planner 的精确事件轨迹匹配率仅作为诊断指标，外部 Provider 内部重试仍不可观测。
-
-完整评分、证据等级、报告哈希与未关闭边界见 [项目验收报告.md](项目验收报告.md)。
-
-检索校准集选择的评测阈值为 `0.5625275`。应用的 `retrieval_score_threshold` 生产默认值仍为 `None`，该阈值需要经过灰度验证后才能发布，不能把评测选择直接描述为线上配置。
-
-## 目录说明
-
-| 路径 | 用途 |
-| --- | --- |
-| `src/rag_kb/` | 应用代码（摄取、检索、回答、拒答策略） |
-| `tests/` | 冻结 pytest 测试 |
-| `data/corpus/` | 冻结测试语料（自造模拟文档，需提交） |
-| `scripts/` | 环境验证等辅助脚本 |
-| `schemas/` | 基准报告 JSON Schema |
-| `docker-compose.yml` | 仅运行 Qdrant |
-
-## 安全边界
-
-- API 密钥只从环境变量 / 本地 `.env` 读取，不提交 Git。
-- 检索文档、用户问题与模型输出均视为不可信数据；文档中的指令性文本不获得任何执行能力。
-- `/policy-comparisons` 只允许读取请求绑定的两个正版本；角色必须通过服务端配置的 `X-Demo-Role-Token` 校验。只比较 `active`/`superseded`，越权、撤回、删除、缺失、非法或模型/工具失败均统一拒答。
-- 上传文件名和落盘目录使用的 `document_id` 只允许作为路径单元使用，含路径分隔符的输入会在落盘前拒绝；每次上传使用独立落盘名，失败时只清理本次原件，不覆盖或删除既有版本原件。
-- `/health` 在 Qdrant 不可达时返回 HTTP 503，而不是把依赖故障报告为健康。
-- Agent 不可选择角色、文档、集合、生命周期状态或 ACL；工具白名单只有授权版本证据读取和确定性比较，无写入、网络、文件、MCP 或任意 Qdrant 工具。
-- 批准后的执行仅创建一份可对账的本地 JSON 草稿；接口只返回受控的相对草稿文件标识，不暴露服务器文件系统路径；不通知、不部署、不操作账户或支付、不启动 worker，也不使用多智能体。
-- 运行日志只记录 `run_id`、阶段、角色、文档哈希、计数、耗时和错误码；不记录密钥、提示词、正文或完整模型输出。
-- 详细设计决策见桌面《RAG企业知识库智能体项目蓝图》。
+`src/rag_kb/` 为新应用；`tests/` 为分层回归；`schemas/` 为机器契约；`scripts/` 为可复现入口；`data/benchmarks/` 为任务集。用户的 `.obsidian/`、`output/`、面试材料和历史验收报告均属于受保护资产，不在迁移中删除或覆盖。
