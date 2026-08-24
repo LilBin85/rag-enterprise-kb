@@ -2,9 +2,8 @@
 
 from fastapi import FastAPI
 
-from rag_kb.config import get_settings
 from rag_kb.web.app import create_app
 
 
 def create_application() -> FastAPI:
-    return create_app(include_legacy_routes=get_settings().enable_legacy_routes)
+    return create_app()

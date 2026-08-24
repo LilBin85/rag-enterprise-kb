@@ -2,9 +2,9 @@
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import BaseModel, Field, StrictInt, field_validator
+from pydantic import BaseModel
 
 
 class Role(StrEnum):
@@ -81,22 +81,13 @@ class Refusal(BaseModel):
 
 
 class QuestionResponse(BaseModel):
-    """POST /questions 的响应契约。不回显问题原文,避免响应意外携带敏感查询上下文。"""
+    """问答响应契约。不回显问题原文,避免响应意外携带敏感查询上下文。"""
 
     verdict: Literal["answer", "refusal"]  # 判定结果:正常回答 / 拒答
     answer: str | None = None              # 回答正文(verdict=answer 时非空)
     refusal: Refusal | None = None         # 拒答信息(verdict=refusal 时非空)
     citations: list[Citation] = []         # 引用来源列表
     role: Role                             # 请求用户的角色身份
-
-
-class PolicyComparisonRequest(BaseModel):
-    """策略版本比较请求;版本必须由服务端按原样绑定,不接受 latest 等别名。"""
-
-    document_id: str
-    from_version: StrictInt
-    to_version: StrictInt
-    role: Role
 
 
 class PolicyChange(BaseModel):
@@ -120,7 +111,7 @@ class PolicyComparison(BaseModel):
 
 
 class PolicyComparisonResponse(BaseModel):
-    """POST /policy-comparisons 的稳定响应;拒答不回显文档或版本标识。"""
+    """策略比较响应;拒答不回显文档或版本标识。"""
 
     verdict: Literal["comparison", "refusal"]
     comparison: PolicyComparison | None = None
@@ -128,102 +119,5 @@ class PolicyComparisonResponse(BaseModel):
     role: Role
     run_id: str
 
-
-# ---------- 策略落地规划（v1：只读、可恢复，不执行 Todo） ----------
-
-class PlanStatus(StrEnum):
-    CLARIFICATION = "clarification"
-    PLANNING = "planning"  # v1 同步请求中的短暂 CAS 声明，不执行任何 Todo。
-    PLANNED = "planned"
-    FAILED = "failed"
-    REFUSED = "refused"
-
-
-class PolicyRolloutTaskCreateRequest(BaseModel):
-    goal: str = Field(min_length=1, max_length=4000)
-    role: Role
-
-
-class PolicyRolloutTaskContinueRequest(BaseModel):
-    clarification_answers: list[Annotated[str, Field(min_length=1, max_length=2000)]] = Field(default_factory=list, min_length=1, max_length=20)
-
-
 class TodoCitation(Citation):
     """规划 Todo 的引用；始终由本次授权检索候选组装。"""
-
-
-class PolicyRolloutTodo(BaseModel):
-    todo_id: str = Field(min_length=1, max_length=128)
-    title: str = Field(min_length=1, max_length=500)
-    detail: str = Field(min_length=1, max_length=4000)
-    depends_on: list[str] = Field(default_factory=list, max_length=50)
-    citations: list[TodoCitation] = Field(default_factory=list, min_length=1, max_length=20)
-
-
-class PolicyRolloutPlanVersion(BaseModel):
-    version: StrictInt
-    todos: list[PolicyRolloutTodo] = Field(default_factory=list, min_length=1, max_length=50)
-    created_at: datetime
-
-
-class PolicyRolloutClarification(BaseModel):
-    questions: list[str] = Field(default_factory=list, min_length=1, max_length=10)
-    answers: list[Annotated[str, Field(min_length=1, max_length=2000)]] = Field(default_factory=list, max_length=20)
-
-
-class PolicyRolloutTaskResponse(BaseModel):
-    task_id: str
-    role: Role
-    status: PlanStatus
-    goal: str
-    plan_versions: list[PolicyRolloutPlanVersion] = Field(default_factory=list)
-    clarification: PolicyRolloutClarification | None = None
-    run_id: str
-
-
-# ---------- 策略落地批准与本地草稿执行（v2：无外部副作用） ----------
-
-class ExecutionStatus(StrEnum):
-    RUNNING = "running"
-    SUCCEEDED = "succeeded"
-    FAILED = "failed"
-    UNKNOWN = "unknown"
-
-
-class PolicyRolloutApprovalRequest(BaseModel):
-    version: StrictInt
-
-
-class PolicyRolloutApprovalResponse(BaseModel):
-    task_id: str
-    version: StrictInt
-    role: Role
-    digest: str
-    approved_at: datetime
-
-
-class PolicyRolloutExecutionRequest(BaseModel):
-    version: StrictInt
-    idempotency_key: str = Field(min_length=1, max_length=256)
-    action: Literal["create_local_draft_work_item"]
-
-
-class PolicyRolloutExecutionResponse(BaseModel):
-    execution_id: str
-    task_id: str
-    version: StrictInt
-    role: Role
-    idempotency_key: str
-    action: Literal["create_local_draft_work_item"]
-    status: ExecutionStatus
-    digest: str
-    work_item_id: str
-    draft_path: str  # 兼容既有响应字段名；值仅为服务端草稿目录下的安全文件名。
-    created_at: datetime
-
-    @field_validator("draft_path")
-    @classmethod
-    def draft_path_must_be_safe_filename(cls, value: str) -> str:
-        if not value or value in {".", ".."} or any(separator in value for separator in ("/", "\\", ":")):
-            raise ValueError("draft_path 必须是安全的相对文件名")
-        return value

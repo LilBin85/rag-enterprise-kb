@@ -7,7 +7,7 @@
 1. 运行 `alembic upgrade head`，当前目标为 `20260824_0009`。
 2. 启动 PostgreSQL、Qdrant，再启动 API 与 `worker --include-tasks`。
 3. 使用新版 `/v1` 客户端；上传请求补齐 `Idempotency-Key`，查询使用服务端身份。
-4. 旧客户端在兼容期通过显式 `include_legacy_routes=True` 接入；响应带 `Deprecation`、`Sunset`、`Link`，业务委托新版服务。
+4. 旧接口兼容层已删除，客户端必须使用 `/v1` 接口。
 5. 以机器报告 `docs/acceptance/latest.json` 验证迁移结果，不沿用旧 README 或旧报告数字。
 
 ## 0009 队列索引
@@ -36,6 +36,8 @@ conda run -n rag-kb --no-capture-output python -m pytest -q tests/test_database_
 
 | 分类 | 删除内容 | 替代覆盖 |
 | --- | --- | --- |
+| 旧兼容代码 | `rag_kb.api`、`web/routers/compatibility.py`、`application/policy_comparison_compat.py`、`rag_kb.policy_compare` | `rag_kb.main:app`、版本化 `/v1` 路由、`skills/policy_comparison.py` |
+| 旧兼容测试 | `test_api.py`、`test_compatibility_routes.py`、`test_policy_comparison_import_compatibility.py` | `/v1` 路由测试与策略比较领域测试 |
 | 已替代代码 | `policy_rollout_planning.py`、`policy_rollout_store.py`、`policy_rollout_execution.py` | `application/task_runtime.py`、`application/task_worker.py`、PostgreSQL task repository、固定工具与审批服务 |
 | 已替代脚本 | `benchmark_planner_workflow_agent.py`、`diagnose_planner_decision.py` | `enterprise_task_evaluation.yaml`、新版任务恢复/安全测试与机器验收报告 |
 | 已替代测试 | `test_policy_rollout_planning.py`、`test_policy_rollout_execution.py` | `test_task_runtime.py`、`test_task_worker_recovery.py`、`test_approval_tool_execution.py`、`test_v1_tasks_api.py` |

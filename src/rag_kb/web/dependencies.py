@@ -11,7 +11,6 @@ from sqlalchemy import text
 from rag_kb.config import get_settings
 from rag_kb.application.approval_service import ApprovalService
 from rag_kb.application.query_service import KnowledgeQueryService
-from rag_kb.application.policy_comparison_compat import CompatibilityPolicyComparisonService
 from rag_kb.application.task_query_service import DatabaseTaskQueryService
 from rag_kb.application.document_service import DocumentService
 from rag_kb.domain.identity import AuthContext
@@ -179,11 +178,6 @@ def build_task_query_service() -> DatabaseTaskQueryService:
 @lru_cache
 def build_approval_service() -> ApprovalService:
     return ApprovalService(build_database(get_settings().database_url))
-
-
-@lru_cache
-def build_compatibility_policy_comparison_service() -> CompatibilityPolicyComparisonService:
-    return CompatibilityPolicyComparisonService(build_database(get_settings().database_url))
 
 
 def resolve_auth_context(

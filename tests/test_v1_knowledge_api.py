@@ -22,7 +22,7 @@ class CapturingQueryService:
 
 
 def test_v1_query_uses_server_owned_identity_without_body_role() -> None:
-    app = create_app(include_legacy_routes=False)
+    app = create_app()
     service = CapturingQueryService()
     provider = DemoTokenIdentityProvider(
         {
@@ -51,7 +51,7 @@ def test_v1_query_uses_server_owned_identity_without_body_role() -> None:
 
 
 def test_v1_query_rejects_body_role_and_unknown_token() -> None:
-    app = create_app(include_legacy_routes=False)
+    app = create_app()
     provider = DemoTokenIdentityProvider(
         {
             "valid": Principal(
@@ -81,7 +81,7 @@ def test_v1_query_rejects_body_role_and_unknown_token() -> None:
 
 
 def test_v1_query_rejects_invalid_request_id_as_4xx() -> None:
-    app = create_app(include_legacy_routes=False)
+    app = create_app()
     service = CapturingQueryService()
     app.dependency_overrides[build_identity_provider] = lambda: DemoTokenIdentityProvider(
         {

@@ -163,7 +163,7 @@ class FakeApprovalService:
 
 @pytest.fixture()
 def setup_app() -> Iterator[tuple[TestClient, FakeTaskRepository, FakeTaskQueryService, FakeApprovalService]]:
-    app = create_app(include_legacy_routes=False)
+    app = create_app()
     repository = FakeTaskRepository()
     query_service = FakeTaskQueryService()
     approval_service = FakeApprovalService()

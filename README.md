@@ -1,6 +1,6 @@
 # RAG 企业知识任务智能体
 
-面向企业制度与技术规范的租户隔离知识任务智能体。新版 `/v1` 接口以 PostgreSQL 事实源、Qdrant 授权检索、证据账本和可恢复任务状态为核心；旧接口仅作为薄兼容层，默认关闭。
+面向企业制度与技术规范的租户隔离知识任务智能体。`/v1` 接口以 PostgreSQL 事实源、Qdrant 授权检索、证据账本和可恢复任务状态为核心。
 
 验收唯一事实来源是机器报告 [docs/acceptance/latest.json](docs/acceptance/latest.json)。报告缺失、真实模型未运行或检索质量门失败时，文档不推断“全部通过”；请以报告中的 `verdict`、`gates` 和 `unverified` 为准。
 
@@ -56,7 +56,7 @@ conda run -n rag-kb --no-capture-output python -m rag_kb.worker --watch --includ
 - `GET /v1/documents/{document_id}`、`GET /v1/ingestion-jobs/{job_id}`：租户与 ACL 约束的查询。
 - 任务接口位于 `/v1/tasks`；暂停、继续、取消、批准和恢复由持久状态图处理。
 
-身份来自 `Authorization: Bearer ...` 或本地演示 `X-Demo-Role-Token`，角色不能由请求正文提升。旧 `/questions`、`/policy-comparisons`、`/policy-rollout-tasks` 只有在 `create_app(include_legacy_routes=True)` 时装配，并返回 `Deprecation`、`Sunset`、`Link`。
+身份来自 `Authorization: Bearer ...` 或本地演示 `X-Demo-Role-Token`，角色不能由请求正文提升。应用只提供版本化 `/v1` 业务接口。
 
 ## 验证
 

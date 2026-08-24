@@ -48,7 +48,6 @@ services:
       <<: *app_runtime
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEMO_ROLE_TOKENS: '${DEMO_ROLE_TOKENS:-{}}'
-      ENABLE_LEGACY_ROUTES: ${ENABLE_LEGACY_ROUTES:-false}
     ports:
       - "8000:8000"
     volumes:

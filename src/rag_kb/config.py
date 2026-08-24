@@ -20,9 +20,6 @@ class Settings(BaseSettings):
 
     # 本地策略比较接口的演示身份令牌;不等同于生产认证系统
     demo_role_tokens: dict[str, str] = {}
-    # 未完成统一认证迁移前，生产入口默认不挂载信任 body role 的旧路由。
-    enable_legacy_routes: bool = False
-
     # Qdrant
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "kb_chunks"
@@ -92,7 +89,7 @@ class Settings(BaseSettings):
           部分模型默认启用 torch.compile,须显式禁用(同日实测 InvalidCxxCompiler);
         - HF_HUB_OFFLINE=1(仅当 bge-m3 已完整缓存):transformers 5.x 加载 tokenizer
           时会向 HF 发起 list_repo_templates 远程探测,即使模型已在本地——该探测在
-          镜像抖动时会以 ConnectTimeout 拖垮 /questions(2026-08-08 实测)。
+          镜像抖动时会以 ConnectTimeout 拖垮知识查询(2026-08-08 实测)。
           模型冻结后运行期不应依赖外网;缓存不完整时不设此值,允许走镜像下载。
         """
         if self.hf_home:

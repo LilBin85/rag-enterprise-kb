@@ -1,4 +1,4 @@
-"""诊断:完整复现 POST /questions 的内部路径(env 状态 → embedder 加载 → 真实检索)。
+"""诊断:完整复现知识查询的内部路径(env 状态 → embedder 加载 → 真实检索)。
 
 手动运行: python scripts/diagnose_embedder.py
 定位 2026-08-08 的 retrieval_failure:确认 HF_HUB_OFFLINE 是否生效、模型是否可加载、

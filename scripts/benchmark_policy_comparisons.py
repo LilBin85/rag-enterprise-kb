@@ -14,7 +14,7 @@ from jsonschema import validate
 
 from rag_kb.ingestion import chunk_items, parse_document
 from rag_kb.models import ChunkStatus, DocumentSpec, Role
-from rag_kb.policy_compare import PolicyComparisonService
+from rag_kb.skills.policy_comparison import PolicyComparisonService
 
 
 class ManifestEvidenceStore:

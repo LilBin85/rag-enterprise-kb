@@ -15,13 +15,13 @@ class FailedProbe:
 
 
 def test_live_probe_has_no_external_dependency() -> None:
-    client = TestClient(create_app(include_legacy_routes=False))
+    client = TestClient(create_app())
 
     assert client.get("/health/live").json() == {"status": "ok"}
 
 
 def test_ready_probe_reports_dependencies() -> None:
-    app = create_app(include_legacy_routes=False)
+    app = create_app()
     app.dependency_overrides[build_readiness_probe] = lambda: ReadyProbe()
 
     response = TestClient(app).get("/health/ready")
@@ -31,7 +31,7 @@ def test_ready_probe_reports_dependencies() -> None:
 
 
 def test_ready_probe_fails_closed() -> None:
-    app = create_app(include_legacy_routes=False)
+    app = create_app()
     app.dependency_overrides[build_readiness_probe] = lambda: FailedProbe()
 
     response = TestClient(app).get("/health/ready")
@@ -43,20 +43,7 @@ def test_ready_probe_fails_closed() -> None:
     }
 
 
-def test_explicit_compatibility_factory_exposes_new_and_legacy_contracts() -> None:
-    app = create_app(include_legacy_routes=True)
-
-    paths = app.openapi()["paths"]
-
-    assert "/health/live" in paths
-    assert "/health/ready" in paths
-    assert "/v1/knowledge/query" in paths
-    assert "/questions" in paths
-    assert "/policy-comparisons" in paths
-    assert "/policy-rollout-tasks" in paths
-
-
-def test_default_factory_does_not_expose_unauthenticated_legacy_routes() -> None:
+def test_factory_only_exposes_versioned_contracts() -> None:
     paths = create_app().openapi()["paths"]
 
     assert "/v1/knowledge/query" in paths

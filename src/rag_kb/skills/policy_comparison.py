@@ -27,7 +27,7 @@ from rag_kb.observability import RunObserver
 from rag_kb.store import ChunkStore
 
 # 保留历史 logger 名称，避免迁移改变现有日志路由。
-logger = logging.getLogger("rag_kb.policy_compare")
+logger = logging.getLogger(__name__)
 
 REFUSAL_MESSAGE = "当前无法完成策略版本比较"
 ALLOWED_TOOL_NAMES = frozenset({"fetch_authorized_version", "compare_authorized_versions"})

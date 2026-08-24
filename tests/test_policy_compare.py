@@ -7,7 +7,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from rag_kb.models import Role
-from rag_kb.policy_compare import (
+from rag_kb.skills.policy_comparison import (
     ALLOWED_TOOL_NAMES,
     BoundPolicyTools,
     PolicyComparisonService,
@@ -136,7 +136,7 @@ def test_tool_binding_rejects_unknown_version_and_extra_arguments() -> None:
 
 
 def test_production_adapter_accepts_create_agent_tool_keywords() -> None:
-    from rag_kb.policy_compare import DeepSeekPolicyAgentModel
+    from rag_kb.skills.policy_comparison import DeepSeekPolicyAgentModel
 
     class FakeLLM:
         def bind_tools(self, tools, **kwargs):
@@ -150,7 +150,7 @@ def test_production_adapter_accepts_create_agent_tool_keywords() -> None:
 
 
 def test_production_adapter_can_allow_terminal_response_after_tool_calls() -> None:
-    from rag_kb.policy_compare import DeepSeekPolicyAgentModel
+    from rag_kb.skills.policy_comparison import DeepSeekPolicyAgentModel
 
     class FakeLLM:
         def bind_tools(self, tools, **kwargs):
@@ -164,7 +164,7 @@ def test_production_adapter_can_allow_terminal_response_after_tool_calls() -> No
 
 
 def test_single_tool_call_guard_keeps_first_call_and_usage_metadata():
-    from rag_kb.policy_compare import DeepSeekPolicyAgentModel
+    from rag_kb.skills.policy_comparison import DeepSeekPolicyAgentModel
 
     class FakeBoundModel:
         def invoke(self, _messages):
@@ -195,7 +195,7 @@ def test_single_tool_call_guard_keeps_first_call_and_usage_metadata():
 
 
 def test_single_tool_call_guard_skips_invalid_calls():
-    from rag_kb.policy_compare import _SingleToolCallBoundModel
+    from rag_kb.skills.policy_comparison import _SingleToolCallBoundModel
 
     class FakeBoundModel:
         def invoke(self):
@@ -209,7 +209,7 @@ def test_single_tool_call_guard_skips_invalid_calls():
 
 
 def test_default_adapter_binding_does_not_wrap_policy_comparison_model():
-    from rag_kb.policy_compare import DeepSeekPolicyAgentModel
+    from rag_kb.skills.policy_comparison import DeepSeekPolicyAgentModel
 
     class FakeLLM:
         def bind_tools(self, _tools, **_kwargs):
