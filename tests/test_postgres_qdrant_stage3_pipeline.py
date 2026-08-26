@@ -41,7 +41,7 @@ def _auth(tenant_id: str, user_id: str, permissions: tuple[str, ...]) -> AuthCon
     )
 
 
-@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="未配置 RAG_KB_TEST_POSTGRES_URL")
+@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="postgres_test_url_unconfigured")
 def test_postgres_qdrant_ingestion_and_authorized_retrieval(tmp_path: Path) -> None:
     assert POSTGRES_TEST_URL is not None
     try:
@@ -49,8 +49,8 @@ def test_postgres_qdrant_ingestion_and_authorized_retrieval(tmp_path: Path) -> N
 
         client = QdrantClient(url="http://localhost:6333", timeout=2)
         client.get_collections()
-    except Exception as exc:
-        pytest.skip(f"Qdrant localhost:6333 unavailable: {exc}")
+    except Exception:
+        pytest.skip("qdrant_unavailable")
 
     database = build_database(POSTGRES_TEST_URL)
     assert database.engine.dialect.name == "postgresql"
@@ -142,4 +142,3 @@ def test_postgres_qdrant_ingestion_and_authorized_retrieval(tmp_path: Path) -> N
         with database.engine.begin() as connection:
             connection.execute(text("DELETE FROM tenants WHERE tenant_id IN (:tenant, :other)"), {"tenant": tenant_id, "other": other_tenant})
         database.engine.dispose()
-

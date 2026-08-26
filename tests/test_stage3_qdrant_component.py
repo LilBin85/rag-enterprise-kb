@@ -84,8 +84,8 @@ def qdrant_collection():
 
         client = QdrantClient(url="http://localhost:6333", timeout=2)
         client.get_collections()
-    except Exception as exc:
-        pytest.skip(f"Qdrant localhost:6333 unavailable: {exc}")
+    except Exception:
+        pytest.skip("qdrant_unavailable")
 
     collection = f"stage3_component_{uuid.uuid4().hex}"
     try:

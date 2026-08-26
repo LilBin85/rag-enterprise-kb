@@ -19,6 +19,8 @@ if config.config_file_name is not None:
 
 database_url = (
     config.attributes.get("database_url")
+    or os.environ.get("DATABASE_URL")
+    # 保留手动 Alembic 命令的既有环境变量；Compose 使用应用统一配置。
     or os.environ.get("RAG_KB_DATABASE_URL")
 )
 if not database_url:

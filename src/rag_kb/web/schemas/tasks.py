@@ -1,11 +1,11 @@
-"""通用任务 HTTP 契约；只暴露客户端完成协作所需的状态。"""
+"""M1 Research Agent HTTP 契约；不暴露图节点或 checkpoint 载荷。"""
 
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from rag_kb.domain.tasks import TaskMode, TaskNode, TaskStatus
+from rag_kb.domain.tasks import TaskMode, TaskStatus
 
 
 class TaskCreateRequest(BaseModel):
@@ -13,6 +13,13 @@ class TaskCreateRequest(BaseModel):
 
     goal: str = Field(min_length=1, max_length=8_000)
     task_mode: TaskMode
+
+    @field_validator("task_mode")
+    @classmethod
+    def require_research(cls, value: TaskMode) -> TaskMode:
+        if value is not TaskMode.RESEARCH:
+            raise ValueError("M1 仅支持 research 任务")
+        return value
 
 
 class TaskContinueRequest(BaseModel):
@@ -28,14 +35,8 @@ class TaskCancelRequest(BaseModel):
     expected_state_version: int = Field(ge=1)
 
 
-class TaskApprovalRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    approval_id: str = Field(min_length=1, max_length=64)
-
-
 class TaskResponse(BaseModel):
-    """刻意省略租约、认证快照和内部去重指纹。"""
+    """只返回公开业务生命周期和可展示中断摘要。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -43,11 +44,10 @@ class TaskResponse(BaseModel):
     goal: str
     task_mode: TaskMode
     status: TaskStatus
-    current_node: TaskNode
     state_version: int
-    plan_revision: int
-    current_step: int
-    pending_question: str | None = None
+    interrupt_kind: str | None = None
+    interrupt_summary: str | None = None
+    result_available: bool
     cancelled: bool
 
 
@@ -59,28 +59,6 @@ class TaskEventResponse(BaseModel):
     stage: str
     status: str
     counts: dict[str, Any]
-    token_usage: int
+    token_usage: int | None
     error_code: str | None
     created_at: datetime
-
-
-class TaskArtifactResponse(BaseModel):
-    """产物清单不泄露对象存储路径与内容摘要。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    artifact_id: str
-    artifact_type: str
-    status: str
-    created_at: datetime
-
-
-class TaskApprovalResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    approval_id: str
-    task_id: str
-    plan_revision: int
-    status: str
-    expires_at: datetime
-    approved_at: datetime | None

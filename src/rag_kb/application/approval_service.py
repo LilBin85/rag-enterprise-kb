@@ -10,9 +10,8 @@ from sqlalchemy import select, update
 from rag_kb.domain.approvals import ApprovalBinding
 from rag_kb.domain.evidence import canonical_evidence_snapshot
 from rag_kb.domain.identity import AuthContext, Permission
-from rag_kb.domain.task_runtime import canonical_fingerprint
+from rag_kb.domain.fingerprints import canonical_fingerprint
 from rag_kb.infrastructure.database.models import ApprovalRow, AgentTaskRow, PlanRevisionRow
-from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
 from rag_kb.infrastructure.database.session import Database
 from rag_kb.infrastructure.database.task_execution import (
     DatabaseTaskEvidencePort,
@@ -96,7 +95,6 @@ class ApprovalService:
             if (
                 task is None
                 or plan is None
-                or task.current_plan_revision != plan_revision
                 or task.task_mode != "controlled_action"
             ):
                 raise ApprovalServiceError("approval_plan_binding_invalid")
@@ -205,7 +203,6 @@ class ApprovalService:
             if (
                 task is None
                 or task.cancelled
-                or task.current_plan_revision != row.plan_revision
                 or (expected_task_id is not None and row.task_id != expected_task_id)
                 or (
                     expected_plan_revision is not None
@@ -252,37 +249,6 @@ class ApprovalService:
                 row.status = "approved"
                 row.approved_by = auth.user_id
                 row.approved_at = now
-            if invalid_code is None and task.status == "waiting_for_approval":
-                if (
-                    task.current_node != "await_approval"
-                    or task.pending_approval_id != row.approval_id
-                    or task.pending_action_kind != "propose_action"
-                    or task.pending_action_ref is None
-                    or task.pending_action_hash is None
-                    or task.pending_action_expires_at is None
-                ):
-                    raise ApprovalServiceError("approval_task_not_waiting")
-                # 同一事务将已批准任务重新排队。pending action/approval 均保留，
-                # 重启后的 worker 因而只能回读原动作，不能重新规划或换参数。
-                task.status = "planning"
-                task.current_node = "execute_approved_action"
-                task.lease_owner = None
-                task.lease_expires_at = None
-                task.available_at = now
-                task.state_version += 1
-                task.updated_at = now
-                task.checkpoint_digest = DatabaseTaskRepository._checkpoint_digest(task)
-                DatabaseTaskRepository._append_event(
-                    work.session,
-                    task,
-                    event_type="approval_approved_woken",
-                    trace_id=auth.request_id,
-                    run_id=auth.request_id,
-                )
-            elif invalid_code is None and (
-                task.pending_approval_id is not None or task.pending_action_ref is not None
-            ):
-                raise ApprovalServiceError("approval_task_not_waiting")
             work.session.flush()
             binding = self._binding(row)
         if invalid_code is not None:

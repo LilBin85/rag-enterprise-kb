@@ -35,6 +35,17 @@ class QueueWorker:
         self.sweeps.append(limit)
         return 1
 
+    def purge_expired_tool_results(self, *, limit: int) -> int:
+        self.sweeps.append(limit)
+        return 0
+
+    def purge_finished_task_threads(self, *, limit: int) -> int:
+        self.sweeps.append(limit)
+        return 0
+
+    def close(self) -> None:
+        return None
+
 
 class UploadReconciler:
     def __init__(self) -> None:
@@ -72,13 +83,26 @@ def test_production_loop_runs_bounded_upload_and_tool_recovery(monkeypatch) -> N
     _patch_runtime(monkeypatch, ingestion, projection, upload, task)
 
     assert worker_module.run(watch=False, poll_seconds=0.01, max_jobs=10, include_tasks=True) == 0
-    assert task.sweeps == [
-        worker_module._RECOVERY_BATCH_SIZE,
-        worker_module._RECOVERY_BATCH_SIZE,
-    ]
+    assert task.sweeps == [worker_module._RECOVERY_BATCH_SIZE] * 4
     assert upload.calls[0]["limit"] == worker_module._RECOVERY_BATCH_SIZE
     assert upload.calls[0]["time_budget_seconds"] == worker_module._RECOVERY_TIME_BUDGET_SECONDS
     assert events == ["task", "ingestion", "projection"]
+
+
+def test_missing_agent_configuration_fails_fast(monkeypatch) -> None:
+    """修复 2：Agent 未配置时 --include-tasks 直接失败，不再静默降级。"""
+    events: list[str] = []
+    ingestion = QueueWorker("ingestion", events, status="idle")
+    projection = QueueWorker("projection", events, status="idle")
+    _patch_runtime(monkeypatch, ingestion, projection, UploadReconciler())
+
+    def unconfigured(**_kwargs):
+        raise worker_module.TaskAgentConfigurationError("task_agent_api_key_missing")
+
+    monkeypatch.setattr(worker_module, "build_task_worker", unconfigured)
+    with pytest.raises(worker_module.TaskAgentConfigurationError):
+        worker_module.run(watch=False, poll_seconds=0.01, max_jobs=1, include_tasks=True)
+    assert events == []
 
 
 def test_watch_sleeps_only_after_every_queue_is_idle(monkeypatch) -> None:

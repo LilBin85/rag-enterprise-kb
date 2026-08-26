@@ -52,7 +52,7 @@ def _candidate(tenant_id: str, document_id: str, version_id: str, chunk_id: str)
     )
 
 
-@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="未配置 RAG_KB_TEST_POSTGRES_URL")
+@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="postgres_test_url_unconfigured")
 def test_postgres_acl_active_versions_and_evidence_revalidation() -> None:
     assert POSTGRES_TEST_URL is not None
     database = build_database(POSTGRES_TEST_URL)

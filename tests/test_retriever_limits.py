@@ -134,3 +134,15 @@ def test_non_finite_or_boolean_threshold_fails_closed(invalid) -> None:
 def test_settings_reject_non_finite_threshold(invalid) -> None:
     with pytest.raises(ValidationError):
         Settings(retrieval_score_threshold=invalid)
+
+
+def test_empty_optional_retrieval_environment_values_use_defaults(monkeypatch) -> None:
+    monkeypatch.setenv("RETRIEVAL_CANDIDATE_K", "")
+    monkeypatch.setenv("RETRIEVAL_CONTEXT_K", "")
+    monkeypatch.setenv("RETRIEVAL_SCORE_THRESHOLD", "")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.retrieval_candidate_k is None
+    assert settings.retrieval_context_k is None
+    assert settings.retrieval_score_threshold is None

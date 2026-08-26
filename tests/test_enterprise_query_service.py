@@ -16,7 +16,6 @@ from rag_kb.answerer import DeepSeekAnswerModel
 from rag_kb.application.query_service import KnowledgeQueryService, _SYNC_LEASE_SECONDS
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.retrieval import RetrievalCandidate, RetrievalResult
-from rag_kb.domain.tasks import TaskNode, TaskStatus
 from rag_kb.infrastructure.database import Base, build_database
 from rag_kb.infrastructure.database.models import (
     ACLGrantRow,
@@ -243,7 +242,6 @@ def test_sync_task_is_leased_during_request_and_released_at_terminal(database: D
     assert result.verdict == "answer"
     task = _tasks(database)[0]
     assert task.status == "succeeded"
-    assert task.current_node == "terminal"
     assert task.state_version == 2
     assert task.lease_owner is None and task.lease_expires_at is None
 
@@ -266,29 +264,15 @@ def test_late_sync_answer_cannot_overwrite_recovered_terminal_task(database: Dat
             connection.execute(
                 update(AgentTaskRow)
                 .where(AgentTaskRow.task_mode == "knowledge_query")
-                .values(lease_expires_at=datetime.now(UTC) - timedelta(seconds=1))
+                .values(
+                    status="failed",
+                    last_error_code="query_recovered",
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    lease_generation=AgentTaskRow.lease_generation + 1,
+                    state_version=AgentTaskRow.state_version + 1,
+                )
             )
-        repository = DatabaseTaskRepository(database)
-        task_id = _tasks(database)[0].task_id
-        lease = repository.claim_task(
-            task_id,
-            worker_id="query-recovery",
-            lease_seconds=30,
-        )
-        assert lease is not None
-        repository.checkpoint(
-            lease,
-            lease.state.model_copy(
-                update={
-                    "status": TaskStatus.FAILED,
-                    "current_node": TaskNode.TERMINAL,
-                    "last_error": "query_recovered",
-                }
-            ),
-            event_type="query_recovered",
-            trace_id="recovery",
-            run_id="recovery",
-        )
 
     result = KnowledgeQueryService(
         database,
@@ -324,7 +308,6 @@ def test_expired_sync_query_is_reaped_without_planner(database: Database) -> Non
     assert repository.expire_stale_knowledge_queries() == 1
     task = next(item for item in _tasks(database) if item.task_id == "expired-query")
     assert task.status == "failed"
-    assert task.current_node == "terminal"
     assert task.last_error_code == "knowledge_query_lease_expired"
     assert task.lease_owner is None and task.lease_expires_at is None
 

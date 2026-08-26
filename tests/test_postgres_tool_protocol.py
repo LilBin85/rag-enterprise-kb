@@ -18,8 +18,8 @@ from rag_kb.application.tool_execution_service import ToolExecutionRequest, Tool
 from rag_kb.application.tool_registry import ToolRegistry
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.evidence import canonical_evidence_snapshot
-from rag_kb.domain.task_runtime import canonical_fingerprint
-from rag_kb.domain.tasks import TaskMode
+from rag_kb.domain.fingerprints import canonical_fingerprint
+from rag_kb.domain.tasks import TaskBudgets, TaskMode
 from rag_kb.infrastructure.database import build_database
 from rag_kb.infrastructure.database.models import (
     AgentTaskRow,
@@ -34,7 +34,7 @@ from rag_kb.infrastructure.database.models import (
     PlanRevisionRow,
     ToolCallRow,
 )
-from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
+from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository, TaskLease
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
 from rag_kb.infrastructure.tools.artifacts import LocalArtifactToolAdapter
@@ -43,7 +43,7 @@ from rag_kb.infrastructure.tools.artifacts import LocalArtifactToolAdapter
 POSTGRES_TEST_URL = os.environ.get("RAG_KB_TEST_POSTGRES_URL")
 
 
-@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="未配置 RAG_KB_TEST_POSTGRES_URL")
+@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="postgres_test_url_unconfigured")
 def test_postgres_approved_write_is_idempotent_and_consumed(tmp_path: Path) -> None:
     """真实事务中，同一批准只能产生一个可验证的写工具结果。"""
     assert POSTGRES_TEST_URL is not None
@@ -154,10 +154,17 @@ def test_postgres_approved_write_is_idempotent_and_consumed(tmp_path: Path) -> N
                 )
             )
             assert task is not None
-            task.current_plan_revision = 1
+            task.status = "running"
+            task.lease_owner = f"worker-{suffix}"
+            task.lease_expires_at = datetime.now(UTC) + timedelta(seconds=60)
+            task.lease_generation = 1
 
-        lease = repository.claim_task(task_id, worker_id=f"worker-{suffix}", lease_seconds=60)
-        assert lease is not None
+        lease = TaskLease(
+            repository.get_task(auth=requester, task_id=task_id),
+            f"worker-{suffix}",
+            1,
+            TaskBudgets(),
+        )
 
         approvals = ApprovalService(database)
         pending = approvals.request(
@@ -185,6 +192,7 @@ def test_postgres_approved_write_is_idempotent_and_consumed(tmp_path: Path) -> N
                 }
             ),
             approvals,
+            tool_results=LocalObjectStore(object_root / "tool-results"),
         )
         request = ToolExecutionRequest(
             auth=requester,

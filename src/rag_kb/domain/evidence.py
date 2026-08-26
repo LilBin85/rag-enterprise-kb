@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
-from rag_kb.domain.task_runtime import canonical_fingerprint
+from rag_kb.domain.fingerprints import canonical_fingerprint
 
 
 class EvidenceRecord(BaseModel):

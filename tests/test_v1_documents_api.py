@@ -158,6 +158,22 @@ def _upload(client: TestClient, *, token: str = "write-token", document_id: str 
     )
 
 
+def _upload_version(
+    client: TestClient,
+    *,
+    token: str = "write-token",
+    document_id: str = "doc-1",
+    metadata_document_id: str | None = None,
+    key: str = "version-key",
+):
+    return client.post(
+        f"/v1/documents/{document_id}/versions",
+        headers={"X-Demo-Role-Token": token, "Idempotency-Key": key},
+        files={"file": ("policy-v2.md", b"updated fixture", "text/markdown")},
+        data={"metadata": _metadata(metadata_document_id or document_id)},
+    )
+
+
 def test_multipart_upload_requires_identity_and_idempotency_key(setup_app) -> None:
     client, service = setup_app
     missing_identity = client.post(
@@ -191,6 +207,18 @@ def test_multipart_upload_returns_202_and_document_job_queries_work(setup_app) -
     )
     assert jobs.status_code == 200
     assert jobs.json()[0]["job_id"] == "job-1"
+
+
+def test_document_version_upload_uses_path_document_and_existing_guard(setup_app) -> None:
+    client, service = setup_app
+
+    updated = _upload_version(client)
+    mismatched = _upload_version(client, metadata_document_id="other-doc", key="mismatch-key")
+
+    assert updated.status_code == 202
+    assert service.uploads[-1]["document_id"] == "doc-1"
+    assert service.uploads[-1]["expect_existing"] is True
+    assert mismatched.status_code == 422
 
 
 def test_existing_document_conflict_returns_safe_recovery_reference(setup_app) -> None:

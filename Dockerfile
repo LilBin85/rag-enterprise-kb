@@ -14,14 +14,12 @@ RUN apt-get update \
         libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md requirements.txt ./
 COPY src ./src
-# 生产只做 CPU 推理；先从 PyTorch 官方 CPU 仓库安装，避免 PyPI 默认轮子拉取 CUDA 运行时。
-RUN python -m pip install --no-cache-dir \
-    --index-url https://download.pytorch.org/whl/cpu \
-    "torch>=2.13,<3" "torchvision>=0,<1"
-# worker 会真实解析 PDF 并生成 bge-m3 向量，不能只安装基础 API 依赖。
-RUN python -m pip install --no-cache-dir ".[models]"
+COPY scripts/init_demo_principals.py ./scripts/init_demo_principals.py
+COPY scripts/init_agent_checkpointer.py ./scripts/init_agent_checkpointer.py
+# requirements.txt 是当前验证环境生成的完整锁；其中指定 CPU PyTorch 仓库。
+RUN python -m pip install --no-cache-dir -r requirements.txt
 
 COPY alembic.ini ./
 COPY migrations ./migrations

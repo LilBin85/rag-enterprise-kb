@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from rag_kb.domain.evidence import EvidenceSnapshot, canonical_evidence_snapshot
 from rag_kb.domain.identity import AuthContext
-from rag_kb.domain.task_runtime import canonical_fingerprint
+from rag_kb.domain.fingerprints import canonical_fingerprint
 from rag_kb.infrastructure.database.evidence_repository import (
     EvidenceLedgerConflict,
     EvidenceLedgerRepository,
@@ -37,13 +37,14 @@ class TaskPlanBinding:
     evidence_ids: tuple[str, ...]
 
 
-def _current_task_auth(
+def current_task_auth(
     session: Session,
     *,
     task: AgentTaskRow,
     auth_context_ref: str,
     request_id: str,
 ) -> AuthContext:
+    """重建当前服务端身份；与冻结摘要不符即视为身份已变更。"""
     principal = session.get(
         PrincipalRow,
         {"tenant_id": task.tenant_id, "user_id": task.user_id},
@@ -110,7 +111,7 @@ class DatabaseTaskAuthContextPort:
                 raise TaskExecutionContextError("task_not_found")
             if task.auth_context_ref != auth_context_ref:
                 raise TaskExecutionContextError("task_auth_context_binding_mismatch")
-            return _current_task_auth(
+            return current_task_auth(
                 session,
                 task=task,
                 auth_context_ref=auth_context_ref,
@@ -169,7 +170,7 @@ class DatabaseTaskEvidencePort:
                 raise TaskExecutionContextError("task_not_found")
             if task.auth_context_ref != auth_context_ref:
                 raise TaskExecutionContextError("task_auth_context_binding_mismatch")
-            auth = _current_task_auth(
+            auth = current_task_auth(
                 session,
                 task=task,
                 auth_context_ref=auth_context_ref,
@@ -195,7 +196,7 @@ class DatabaseTaskEvidencePort:
     ) -> tuple[AuthContext, EvidenceSnapshot]:
         if plan.tenant_id != task.tenant_id or plan.task_id != task.task_id:
             raise TaskExecutionContextError("task_plan_binding_invalid")
-        auth = _current_task_auth(
+        auth = current_task_auth(
             session,
             task=task,
             auth_context_ref=task.auth_context_ref,

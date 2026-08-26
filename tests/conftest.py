@@ -66,7 +66,7 @@ def _qdrant_reachable(url: str) -> bool:
 def qdrant_url() -> str:
     url = get_settings().qdrant_url
     if not _qdrant_reachable(url):
-        pytest.skip(f"Qdrant 不可达({url});跳过集成测试")
+        pytest.skip("qdrant_unavailable")
     return url
 
 

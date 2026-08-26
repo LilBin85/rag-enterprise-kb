@@ -353,26 +353,11 @@ class AgentTaskRow(Base):
             ondelete="RESTRICT",
         ),
         UniqueConstraint("tenant_id", "task_id", name="uq_agent_tasks_tenant_task"),
-        CheckConstraint("current_plan_revision >= 0", name="plan_revision_nonnegative"),
-        CheckConstraint("current_step >= 0", name="current_step_nonnegative"),
-        CheckConstraint("model_calls >= 0", name="model_calls_nonnegative"),
-        CheckConstraint("tool_calls >= 0", name="tool_calls_nonnegative"),
-        CheckConstraint("replans >= 0", name="replans_nonnegative"),
-        CheckConstraint("consecutive_failures >= 0", name="failures_nonnegative"),
-        CheckConstraint("token_usage >= 0", name="token_usage_nonnegative"),
-        CheckConstraint("no_new_evidence_count >= 0", name="no_evidence_nonnegative"),
         CheckConstraint("state_version > 0", name="state_version_positive"),
         CheckConstraint(
             "status IN ('waiting_for_user', 'planning', 'running', 'waiting_for_approval', "
             "'succeeded', 'refused', 'failed', 'cancelled', 'unknown')",
             name="status_valid",
-        ),
-        CheckConstraint(
-            "current_node IN ('load_task', 'classify_goal', 'check_clarification', 'update_plan', "
-            "'select_action', 'execute_read_tool', 'record_evidence', 'evaluate_evidence', "
-            "'await_approval', 'execute_approved_action', 'verify_action', 'generate_result', "
-            "'terminal')",
-            name="current_node_valid",
         ),
         CheckConstraint("lease_generation >= 0", name="lease_generation_nonnegative"),
         CheckConstraint(
@@ -390,41 +375,25 @@ class AgentTaskRow(Base):
             name="cancelled_status_consistent",
         ),
         CheckConstraint(
-            "status <> 'waiting_for_user' "
-            "OR (pending_question IS NOT NULL AND length(trim(pending_question)) > 0)",
-            name="waiting_question_complete",
+            "status NOT IN ('waiting_for_user', 'waiting_for_approval') OR "
+            "(interrupt_kind IS NOT NULL AND length(trim(interrupt_kind)) > 0 "
+            "AND interrupt_summary IS NOT NULL AND length(trim(interrupt_summary)) > 0)",
+            name="interrupt_complete",
         ),
         CheckConstraint(
-            "status <> 'waiting_for_approval' "
-            "OR (pending_approval_id IS NOT NULL AND length(trim(pending_approval_id)) > 0)",
-            name="waiting_approval_complete",
+            "CASE WHEN task_mode <> 'research' OR status NOT IN ('succeeded', 'refused') "
+            "THEN 1 WHEN result_purged_at IS NULL THEN CASE WHEN result_kind = 'research' "
+            "AND result_ref IS NOT NULL AND length(trim(result_ref)) > 0 "
+            "AND result_hash IS NOT NULL AND length(trim(result_hash)) > 0 THEN 1 ELSE 0 END "
+            "ELSE CASE WHEN result_kind = 'research' AND result_ref IS NULL "
+            "AND result_hash IS NOT NULL AND length(trim(result_hash)) > 0 THEN 1 ELSE 0 END END = 1",
+            name="research_result_complete",
         ),
         CheckConstraint(
-            "(pending_action_ref IS NULL AND pending_action_hash IS NULL "
-            "AND pending_action_kind IS NULL AND pending_action_expires_at IS NULL) OR "
-            "(pending_action_ref IS NOT NULL AND length(trim(pending_action_ref)) > 0 "
-            "AND pending_action_hash IS NOT NULL AND length(pending_action_hash) = 71 "
-            "AND substr(pending_action_hash, 1, 7) = 'sha256:' "
-            "AND pending_action_kind IS NOT NULL AND pending_action_expires_at IS NOT NULL)",
-            name="pending_action_complete",
-        ),
-        CheckConstraint(
-            "pending_action_kind IS NULL OR "
-            "pending_action_kind IN ('search', 'call_tool', 'propose_action')",
-            name="pending_action_kind_valid",
-        ),
-        CheckConstraint(
-            "current_node NOT IN ('execute_read_tool', 'await_approval', "
-            "'execute_approved_action') OR pending_action_ref IS NOT NULL",
-            name="pending_action_node_complete",
-        ),
-        CheckConstraint(
-            "status <> 'waiting_for_approval' OR pending_action_kind = 'propose_action'",
-            name="waiting_approval_action_valid",
-        ),
-        CheckConstraint(
-            "pending_approval_id IS NULL OR pending_action_kind = 'propose_action'",
-            name="pending_approval_action_valid",
+            "CASE WHEN task_mode = 'research' AND status IN "
+            "('succeeded', 'refused', 'failed', 'cancelled', 'unknown') "
+            "THEN CASE WHEN content_expires_at IS NOT NULL THEN 1 ELSE 0 END ELSE 1 END = 1",
+            name="research_content_expiry",
         ),
         Index("ix_agent_tasks_owner_status", "tenant_id", "user_id", "status"),
         Index(
@@ -433,7 +402,12 @@ class AgentTaskRow(Base):
             "available_at",
             "created_at",
         ),
-        Index("ix_agent_tasks_pending_action_expiry", "pending_action_expires_at"),
+        Index(
+            "ix_agent_tasks_retention",
+            "task_mode",
+            "status",
+            "content_expires_at",
+        ),
     )
 
     task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -445,9 +419,6 @@ class AgentTaskRow(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     goal: Mapped[str] = mapped_column(Text, nullable=False)
     auth_context_ref: Mapped[str] = mapped_column(String(500), nullable=False)
-    current_node: Mapped[str] = mapped_column(
-        String(80), nullable=False, default="load_task", server_default=text("'load_task'")
-    )
     lease_owner: Mapped[str | None] = mapped_column(String(200))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lease_generation: Mapped[int] = mapped_column(
@@ -459,44 +430,46 @@ class AgentTaskRow(Base):
         default=utc_now,
         server_default=text("CURRENT_TIMESTAMP"),
     )
-    current_plan_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    current_step: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     budgets: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False, default=dict)
-    observation_refs: Mapped[list[str]] = mapped_column(JSON_TYPE, nullable=False, default=list)
-    evidence_refs: Mapped[list[str]] = mapped_column(
-        JSON_TYPE, nullable=False, default=list, server_default=text("'[]'")
-    )
     artifact_refs: Mapped[list[str]] = mapped_column(
         JSON_TYPE, nullable=False, default=list, server_default=text("'[]'")
     )
-    query_fingerprints: Mapped[list[str]] = mapped_column(
-        JSON_TYPE, nullable=False, default=list, server_default=text("'[]'")
-    )
-    result_fingerprints: Mapped[list[str]] = mapped_column(
-        JSON_TYPE, nullable=False, default=list, server_default=text("'[]'")
-    )
-    checkpoint_digest: Mapped[str | None] = mapped_column(String(80))
-    pending_question: Mapped[str | None] = mapped_column(Text)
-    pending_approval_id: Mapped[str | None] = mapped_column(String(64))
-    pending_action_ref: Mapped[str | None] = mapped_column(String(500))
-    pending_action_hash: Mapped[str | None] = mapped_column(String(80))
-    pending_action_kind: Mapped[str | None] = mapped_column(String(32))
-    pending_action_expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
-    repeated_action_fingerprints: Mapped[list[str]] = mapped_column(JSON_TYPE, nullable=False, default=list)
-    no_new_evidence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cancelled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    model_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    tool_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    replans: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    token_usage: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error_code: Mapped[str | None] = mapped_column(String(100))
+    # M1 业务字段：中断摘要与最终结果引用；不保存消息、Todo 或 interrupt 载荷。
+    interrupt_kind: Mapped[str | None] = mapped_column(String(32))
+    interrupt_summary: Mapped[str | None] = mapped_column(Text)
+    result_kind: Mapped[str | None] = mapped_column(String(32))
+    result_ref: Mapped[str | None] = mapped_column(String(500))
+    result_hash: Mapped[str | None] = mapped_column(String(80))
     state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # 保留策略执行标记（M1_FIX_PLAN 修复 5）：幂等重扫依据。
+    checkpoint_purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result_purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    content_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
+class AgentCapabilityLeaseRow(Base):
+    __tablename__ = "agent_capability_leases"
+    __table_args__ = (
+        Index(
+            "ix_agent_capability_leases_expiry",
+            "capability_name",
+            "protocol_version",
+            "lease_expires_at",
+        ),
+    )
+
+    capability_name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), primary_key=True)
+    worker_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    lease_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class TaskEventRow(Base):
@@ -624,6 +597,23 @@ class ToolCallRow(Base):
             "(completed_at IS NOT NULL AND error_code IS NOT NULL AND length(trim(error_code)) > 0)",
             name="failure_terminal_complete",
         ),
+        CheckConstraint(
+            "CASE WHEN result_purged_at IS NOT NULL THEN CASE WHEN status = 'succeeded' "
+            "AND result_ref IS NULL AND result_size IS NULL AND result_expires_at IS NOT NULL "
+            "THEN 1 ELSE 0 END WHEN result_ref IS NULL THEN CASE WHEN result_size IS NULL "
+            "AND result_expires_at IS NULL THEN 1 ELSE 0 END ELSE CASE WHEN "
+            "length(trim(result_ref)) > 0 AND result_size IS NOT NULL AND result_size >= 0 "
+            "AND result_expires_at IS NOT NULL THEN 1 ELSE 0 END END = 1",
+            name="result_reference_valid",
+        ),
+        CheckConstraint(
+            "CASE WHEN status <> 'succeeded' THEN 1 WHEN result_purged_at IS NULL "
+            "THEN CASE WHEN result_ref IS NOT NULL AND length(trim(result_ref)) > 0 "
+            "AND result_size IS NOT NULL AND result_expires_at IS NOT NULL THEN 1 ELSE 0 END "
+            "ELSE CASE WHEN result_ref IS NULL AND result_size IS NULL "
+            "AND result_expires_at IS NOT NULL THEN 1 ELSE 0 END END = 1",
+            name="succeeded_result_reference_complete",
+        ),
         UniqueConstraint("tenant_id", "task_id", "tool_call_id", name="uq_tool_calls_tenant_task_call"),
         UniqueConstraint(
             "tenant_id", "task_id", "tool_name", "idempotency_key",
@@ -632,6 +622,11 @@ class ToolCallRow(Base):
         Index("ix_tool_calls_task", "tenant_id", "task_id", "created_at"),
         Index("ix_tool_calls_task_status", "tenant_id", "task_id", "status"),
         Index("ix_tool_calls_sweeper", "status", "execution_deadline"),
+        Index(
+            "ix_tool_calls_retention",
+            "result_expires_at",
+            "result_purged_at",
+        ),
         Index(
             "uq_tool_calls_consumed_approval",
             "tenant_id",
@@ -646,9 +641,10 @@ class ToolCallRow(Base):
     task_id: Mapped[str] = mapped_column(String(64), nullable=False)
     tenant_id: Mapped[str] = mapped_column(String(200), nullable=False)
     approval_id: Mapped[str | None] = mapped_column(String(64))
-    plan_revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    plan_digest: Mapped[str] = mapped_column(String(80), nullable=False)
-    evidence_digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    # M1 起 READ 工具不再绑定计划修订；WRITE（M2）仍要求完整计划绑定。
+    plan_revision: Mapped[int | None] = mapped_column(Integer)
+    plan_digest: Mapped[str | None] = mapped_column(String(80))
+    evidence_digest: Mapped[str | None] = mapped_column(String(80))
     tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
     tool_version: Mapped[str] = mapped_column(String(80), nullable=False)
     arguments_hash: Mapped[str] = mapped_column(String(80), nullable=False)
@@ -656,6 +652,11 @@ class ToolCallRow(Base):
     mode: Mapped[str] = mapped_column(String(16), nullable=False)
     idempotency_key: Mapped[str | None] = mapped_column(String(200))
     result_hash: Mapped[str | None] = mapped_column(String(80))
+    # M1 可恢复结果引用：完整结果在服务端短期对象中，hash 用于完整性校验。
+    result_ref: Mapped[str | None] = mapped_column(String(500))
+    result_size: Mapped[int | None] = mapped_column(Integer)
+    result_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result_purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     risk_level: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(100))
@@ -685,6 +686,10 @@ class EvidenceRecordRow(Base):
             ondelete="RESTRICT",
         ),
         CheckConstraint("document_version > 0", name="document_version_positive"),
+        CheckConstraint(
+            "evidence_scope IN ('retrieval', 'version_comparison')",
+            name="evidence_scope_valid",
+        ),
         Index("ix_evidence_records_task_query", "tenant_id", "task_id", "query_fingerprint"),
     )
 
@@ -698,6 +703,9 @@ class EvidenceRecordRow(Base):
     chunk_id: Mapped[str] = mapped_column(String(300), nullable=False)
     content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
     source_locator: Mapped[str] = mapped_column(String(500), nullable=False)
+    evidence_scope: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="retrieval", server_default=text("'retrieval'")
+    )
     permission_granted: Mapped[bool] = mapped_column(Boolean, nullable=False)
     supported_claim_ids: Mapped[list[str]] = mapped_column(JSON_TYPE, nullable=False, default=list)
     retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)

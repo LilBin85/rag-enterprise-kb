@@ -23,9 +23,9 @@ class ToolExecutionContext:
     auth: AuthContext
     task_id: str
     tool_call_id: str
-    plan_revision: int
-    plan_digest: str
-    evidence_digest: str
+    plan_revision: int | None
+    plan_digest: str | None
+    evidence_digest: str | None
     idempotency_key: str | None = None
 
 
@@ -230,7 +230,7 @@ def builtin_tool_definitions() -> tuple[ToolDefinition, ...]:
         ),
         ToolDefinition(
             name="compare_document_versions",
-            description="比较两个授权文档版本的块清单与元数据。",
+            description="确定性比较两个当前授权文档版本的受限正文差异。",
             input_schema=_object_schema(
                 {
                     "document_id": {"type": "string", "minLength": 1, "maxLength": 200},
@@ -240,7 +240,7 @@ def builtin_tool_definitions() -> tuple[ToolDefinition, ...]:
                 ["document_id", "left_version", "right_version"],
             ),
             output_schema=read_result,
-            required_permissions=frozenset({Permission.DOCUMENT_READ}),
+            required_permissions=frozenset({Permission.KNOWLEDGE_READ}),
             **read_common,
             **common,
         ),

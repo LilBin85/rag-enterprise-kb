@@ -1,5 +1,1 @@
-"""大模型适配器；模型只产生结构化建议，不获得工具或权限。"""
-
-from rag_kb.infrastructure.llm.task_planner import DeepSeekTaskPlanner
-
-__all__ = ["DeepSeekTaskPlanner"]
+"""大模型适配器包；M1 的唯一任务入口由 ``rag_kb.agent`` 提供。"""

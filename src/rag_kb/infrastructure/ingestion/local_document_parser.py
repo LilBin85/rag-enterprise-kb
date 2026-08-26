@@ -110,14 +110,36 @@ class LocalDocumentParser:
         self._temporary_root = temporary_root
 
     def parse(self, job: ClaimedIngestionJob) -> ParsedDocument:
+        return self.parse_version(
+            tenant_id=job.tenant_id,
+            document_id=job.document_id,
+            version_id=job.version_id,
+            document_version=job.version,
+            source_object_key=job.source_object_key,
+            source_file_name=job.source_file_name,
+            content_hash=job.content_hash,
+        )
+
+    def parse_version(
+        self,
+        *,
+        tenant_id: str,
+        document_id: str,
+        version_id: str,
+        document_version: int,
+        source_object_key: str,
+        source_file_name: str,
+        content_hash: str,
+    ) -> ParsedDocument:
+        """重放已保存版本的原文，并用摄取时的相同规则重建 chunk manifest。"""
         try:
-            raw = self._object_store.read(job.source_object_key)
+            raw = self._object_store.read(source_object_key)
         except (OSError, ValueError) as exc:
             raise DocumentParseError("source_object_unavailable") from exc
-        if _content_hash(raw) != job.content_hash:
+        if _content_hash(raw) != content_hash:
             raise DocumentParseError("source_content_hash_mismatch")
 
-        suffix = Path(job.source_file_name).suffix.lower()
+        suffix = Path(source_file_name).suffix.lower()
         if suffix == ".md":
             try:
                 items = parse_markdown(raw.decode("utf-8", errors="strict"))
@@ -128,15 +150,15 @@ class LocalDocumentParser:
         else:
             raise DocumentParseError("unsupported_source_format")
 
-        chunks = _chunk_items(items, version_id=job.version_id, max_chars=self._max_chars)
+        chunks = _chunk_items(items, version_id=version_id, max_chars=self._max_chars)
         if not chunks:
             raise DocumentParseError("document_parse_empty")
         return ParsedDocument(
-            tenant_id=job.tenant_id,
-            document_id=job.document_id,
-            version_id=job.version_id,
-            document_version=job.version,
-            source_file_name=job.source_file_name,
+            tenant_id=tenant_id,
+            document_id=document_id,
+            version_id=version_id,
+            document_version=document_version,
+            source_file_name=source_file_name,
             chunks=chunks,
             manifest_digest=compute_chunk_manifest_digest(chunks),
         )

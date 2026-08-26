@@ -11,9 +11,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_docker_image_installs_runtime_model_dependencies() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    assert "https://download.pytorch.org/whl/cpu" in dockerfile
-    assert '"torch>=2.13,<3" "torchvision>=0,<1"' in dockerfile
-    assert 'python -m pip install --no-cache-dir ".[models]"' in dockerfile
+    assert "COPY pyproject.toml README.md requirements.txt ./" in dockerfile
+    assert "python -m pip install --no-cache-dir -r requirements.txt" in dockerfile
+    assert "COPY scripts/init_demo_principals.py ./scripts/init_demo_principals.py" in dockerfile
+    assert "COPY scripts/init_agent_checkpointer.py ./scripts/init_agent_checkpointer.py" in dockerfile
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    assert "\n-e .\n" in requirements
+    assert "langgraph-checkpoint-postgres==3.1.2" in requirements
+    assert "psycopg-pool==3.3.1" in requirements
+    assert 'pywin32==312; sys_platform == "win32"' in requirements
 
 
 def test_compose_contains_migration_api_worker_and_health_dependencies() -> None:
@@ -22,8 +28,12 @@ def test_compose_contains_migration_api_worker_and_health_dependencies() -> None
         compose["services"]
     )
     services = compose["services"]
-    assert services["migrate"]["command"] == ["alembic", "upgrade", "head"]
-    assert services["migrate"]["environment"]["RAG_KB_DATABASE_URL"] == services["api"][
+    assert services["migrate"]["command"] == [
+        "/bin/sh",
+        "-c",
+        "alembic upgrade head && python scripts/init_agent_checkpointer.py",
+    ]
+    assert services["migrate"]["environment"]["DATABASE_URL"] == services["api"][
         "environment"
     ]["DATABASE_URL"]
     assert services["api"]["environment"]["DEMO_ROLE_TOKENS"] == "${DEMO_ROLE_TOKENS:-{}}"
@@ -32,6 +42,30 @@ def test_compose_contains_migration_api_worker_and_health_dependencies() -> None
     assert services["worker"]["command"] == ["python", "-m", "rag_kb.worker", "--watch", "--include-tasks"]
     assert services["qdrant-init"]["command"] == ["python", "-m", "rag_kb.qdrant_init"]
     assert services["qdrant-init"]["depends_on"]["qdrant"]["condition"] == "service_healthy"
+    assert services["postgres"]["ports"] == ["127.0.0.1:5432:5432"]
+    assert services["qdrant"]["ports"] == [
+        "127.0.0.1:6333:6333",
+        "127.0.0.1:6334:6334",
+    ]
+    assert services["api"]["ports"] == ["127.0.0.1:8000:8000"]
+    expected_runtime_config = {
+        "DEEPSEEK_BASE_URL": "${DEEPSEEK_BASE_URL:-https://api.deepseek.com}",
+        "DEEPSEEK_MODEL": "${DEEPSEEK_MODEL:-deepseek-v4-flash}",
+        "EMBEDDING_DIM": "${EMBEDDING_DIM:-1024}",
+        "RETRIEVAL_TOP_K": "${RETRIEVAL_TOP_K:-5}",
+        "RETRIEVAL_CANDIDATE_K": "${RETRIEVAL_CANDIDATE_K:-}",
+        "RETRIEVAL_CONTEXT_K": "${RETRIEVAL_CONTEXT_K:-}",
+        "RETRIEVAL_SCORE_THRESHOLD": "${RETRIEVAL_SCORE_THRESHOLD:-}",
+        "RETRIEVAL_CONTEXT_TOKEN_BUDGET": "${RETRIEVAL_CONTEXT_TOKEN_BUDGET:-4000}",
+        "RETRIEVAL_RRF_K": "${RETRIEVAL_RRF_K:-60}",
+        "ENABLE_HYBRID_RETRIEVAL": "${ENABLE_HYBRID_RETRIEVAL:-false}",
+    }
+    for service in ("api", "worker"):
+        assert {
+            name: services[service]["environment"][name]
+            for name in expected_runtime_config
+        } == expected_runtime_config
+    assert services["qdrant-init"]["environment"]["EMBEDDING_DIM"] == "${EMBEDDING_DIM:-1024}"
     for service in ("api", "worker"):
         assert services[service]["depends_on"]["qdrant-init"]["condition"] == (
             "service_completed_successfully"

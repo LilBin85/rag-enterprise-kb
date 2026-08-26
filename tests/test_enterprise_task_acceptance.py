@@ -39,6 +39,6 @@ def test_contract_report_is_consumed_without_claiming_live_model_metrics(tmp_pat
         dataset=Path("data/benchmarks/enterprise_task_evaluation.yaml"),
         config=None,
     )
-    assert report["tool"]["status"] == "passed"
+    assert report["tool"]["status"] == "unverified"
     assert report["model"]["status"] == "unverified"
-    assert next(gate for gate in report["gates"] if gate["name"] == "task_contract")["status"] == "passed"
+    assert next(gate for gate in report["gates"] if gate["name"] == "legacy_task_contract")["status"] == "passed"

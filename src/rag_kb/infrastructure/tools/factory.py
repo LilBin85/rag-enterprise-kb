@@ -5,13 +5,18 @@ from pathlib import Path
 from rag_kb.application.enterprise_retriever import EnterpriseRetriever
 from rag_kb.application.tool_registry import ToolRegistry
 from rag_kb.infrastructure.database.session import Database
+from rag_kb.infrastructure.ingestion.local_document_parser import LocalDocumentParser
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
 from rag_kb.infrastructure.tools.artifacts import LocalArtifactToolAdapter
 from rag_kb.infrastructure.tools.read_tools import DatabaseReadToolAdapter
 
 
 def build_tool_registry(
-    *, database: Database, artifact_root: Path, retriever: EnterpriseRetriever
+    *,
+    database: Database,
+    artifact_root: Path,
+    retriever: EnterpriseRetriever,
+    chunk_max_chars: int = 800,
 ) -> ToolRegistry:
     store = LocalObjectStore(artifact_root)
     return ToolRegistry(
@@ -20,6 +25,11 @@ def build_tool_registry(
                 database,
                 operation=name,
                 retriever=retriever if name == "search_knowledge" else None,
+                source_parser=(
+                    LocalDocumentParser(store, max_chars=chunk_max_chars)
+                    if name == "compare_document_versions"
+                    else None
+                ),
             )
             for name in (
                 "search_knowledge",

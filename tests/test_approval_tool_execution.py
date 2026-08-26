@@ -13,8 +13,8 @@ from rag_kb.application.tool_execution_service import ToolExecutionError, ToolEx
 from rag_kb.application.tool_registry import ToolRegistry, builtin_tool_definitions
 from rag_kb.domain.evidence import canonical_evidence_snapshot
 from rag_kb.domain.identity import AuthContext
-from rag_kb.domain.task_runtime import canonical_fingerprint
-from rag_kb.domain.tasks import TaskMode
+from rag_kb.domain.fingerprints import canonical_fingerprint
+from rag_kb.domain.tasks import TaskBudgets, TaskMode
 from rag_kb.domain.tools import ApprovalPolicy, ToolMode
 from rag_kb.infrastructure.database import Base, build_database
 from rag_kb.infrastructure.database.models import (
@@ -30,7 +30,7 @@ from rag_kb.infrastructure.database.models import (
     PlanRevisionRow,
     ToolCallRow,
 )
-from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
+from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository, TaskLease
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
 from rag_kb.infrastructure.tools.artifacts import LocalArtifactToolAdapter
@@ -121,7 +121,10 @@ def stage5(tmp_path: Path):
         assert work.session is not None
         task = work.session.scalar(select(AgentTaskRow).where(AgentTaskRow.task_id == "task-1"))
         assert task is not None
-        task.current_plan_revision = 1
+        task.status = "running"
+        task.lease_owner = "worker-1"
+        task.lease_expires_at = datetime.now(UTC) + timedelta(seconds=60)
+        task.lease_generation = 1
         work.session.add_all(
             [
                 DocumentRow(tenant_id="tenant-a", document_id="doc-1", title="制度", department="安全", status="active", created_by="requester", projection_generation=1, applied_projection_generation=1, applied_projection_version_id="version-1"),
@@ -144,8 +147,12 @@ def stage5(tmp_path: Path):
                 PlanRevisionRow(plan_revision_id="plan-1", task_id="task-1", tenant_id="tenant-a", revision=1, schema_version=1, plan=plan, plan_digest=plan_digest, evidence_digest=snapshot.digest, status="ready"),
             ]
         )
-    lease = DatabaseTaskRepository(database).claim_task("task-1", worker_id="worker-1", lease_seconds=60)
-    assert lease is not None
+    lease = TaskLease(
+        DatabaseTaskRepository(database).get_task(auth=requester, task_id="task-1"),
+        "worker-1",
+        1,
+        TaskBudgets(),
+    )
     yield database, requester, approver, tmp_path, lease
     database.engine.dispose()
 
@@ -176,6 +183,15 @@ def _binding(database):
         return row.plan_digest, row.evidence_digest
 
 
+def _executor(database, registry, approvals) -> ToolExecutionService:
+    return ToolExecutionService(
+        database,
+        registry,
+        approvals,
+        tool_results=LocalObjectStore(Path(database.engine.url.database).parent / "tool-results"),
+    )
+
+
 def test_any_approval_binding_change_invalidates_execution(stage5) -> None:
     database, requester, approver, _, _lease = stage5
     service, binding = _approved(database, requester, approver)
@@ -199,7 +215,7 @@ def test_approval_requires_authorized_approver_and_write_is_idempotent(stage5) -
     with pytest.raises(ApprovalServiceError, match="approver_permission_denied"):
         service.approve(auth=requester, approval_id=pending.approval_id)
     binding = service.approve(auth=approver, approval_id=pending.approval_id)
-    executor = ToolExecutionService(database, ToolRegistry(adapters={"create_report_artifact": _VerifiedAdapter()}), service)
+    executor = _executor(database, ToolRegistry(adapters={"create_report_artifact": _VerifiedAdapter()}), service)
     first = executor.execute(_request(requester, binding.approval_id, lease))
     second = executor.execute(_request(requester, binding.approval_id, lease))
     assert first.status == second.status == "succeeded"
@@ -211,7 +227,7 @@ def test_approval_requires_authorized_approver_and_write_is_idempotent(stage5) -
 def test_same_approval_can_be_consumed_once_even_with_a_new_idempotency_key(stage5) -> None:
     database, requester, approver, _, lease = stage5
     service, binding = _approved(database, requester, approver)
-    executor = ToolExecutionService(database, ToolRegistry(adapters={"create_report_artifact": _VerifiedAdapter()}), service)
+    executor = _executor(database, ToolRegistry(adapters={"create_report_artifact": _VerifiedAdapter()}), service)
     first = executor.execute(_request(requester, binding.approval_id, lease, key="key-1"))
     assert first.status == "succeeded"
     with pytest.raises(ApprovalServiceError, match="approval_not_approved"):
@@ -226,7 +242,7 @@ def test_acl_revocation_after_approval_rejects_write_before_adapter(stage5) -> N
         assert grant is not None
         session.delete(grant)
     adapter = _CountingAdapter()
-    executor = ToolExecutionService(
+    executor = _executor(
         database,
         ToolRegistry(adapters={"create_report_artifact": adapter}),
         service,
@@ -270,10 +286,18 @@ def test_stale_worker_is_fenced_before_adapter_call(stage5) -> None:
             .where(AgentTaskRow.task_id == "task-1")
             .values(lease_expires_at=datetime.now(UTC) - timedelta(seconds=1))
         )
-    new_lease = DatabaseTaskRepository(database).claim_task("task-1", worker_id="worker-2", lease_seconds=60)
-    assert new_lease is not None and new_lease.lease_generation != old_lease.lease_generation
+    with database.engine.begin() as connection:
+        connection.execute(
+            update(AgentTaskRow)
+            .where(AgentTaskRow.task_id == "task-1")
+            .values(
+                lease_owner="worker-2",
+                lease_expires_at=datetime.now(UTC) + timedelta(seconds=60),
+                lease_generation=old_lease.lease_generation + 1,
+            )
+        )
     adapter = _CountingAdapter()
-    executor = ToolExecutionService(database, ToolRegistry(adapters={"create_report_artifact": adapter}), service)
+    executor = _executor(database, ToolRegistry(adapters={"create_report_artifact": adapter}), service)
     with pytest.raises(ToolExecutionError, match="tool_task_lease_stale"):
         executor.execute(_request(requester, binding.approval_id, old_lease))
     assert adapter.calls == 0
@@ -319,7 +343,11 @@ def test_expired_approval_is_persisted_and_same_binding_can_be_requested_again(s
 def test_write_crash_is_unknown_and_never_success(stage5) -> None:
     database, requester, approver, _, lease = stage5
     service, binding = _approved(database, requester, approver)
-    result = ToolExecutionService(database, ToolRegistry(adapters={"create_report_artifact": _CrashingAdapter()}), service).execute(_request(requester, binding.approval_id, lease))
+    result = _executor(
+        database,
+        ToolRegistry(adapters={"create_report_artifact": _CrashingAdapter()}),
+        service,
+    ).execute(_request(requester, binding.approval_id, lease))
     assert result.status == "unknown" and result.status != "succeeded"
     with database.sessions() as session:
         row = session.scalar(select(ToolCallRow).where(ToolCallRow.tool_call_id == result.tool_call_id))
@@ -330,7 +358,7 @@ def test_unknown_isolated_from_artifact_and_task_after_object_write_failure(stag
     database, requester, approver, _, lease = stage5
     service, binding = _approved(database, requester, approver)
     adapter = LocalArtifactToolAdapter(database, _FailingObjectStore(), artifact_type="report")
-    result = ToolExecutionService(
+    result = _executor(
         database, ToolRegistry(adapters={"create_report_artifact": adapter}), service
     ).execute(_request(requester, binding.approval_id, lease))
     assert result.status == "unknown"
@@ -353,7 +381,7 @@ def test_timed_out_artifact_adapter_cannot_restore_unknown_to_ready(stage5) -> N
     definition = next(
         item for item in builtin_tool_definitions() if item.name == "create_report_artifact"
     ).model_copy(update={"timeout_seconds": 1})
-    executor = ToolExecutionService(
+    executor = _executor(
         database,
         ToolRegistry([definition], adapters={"create_report_artifact": adapter}),
         approval_service,
@@ -401,7 +429,7 @@ def test_artifact_created_after_timeout_is_never_ready(stage5) -> None:
     definition = next(
         item for item in builtin_tool_definitions() if item.name == "create_report_artifact"
     ).model_copy(update={"timeout_seconds": 1})
-    executor = ToolExecutionService(
+    executor = _executor(
         database,
         ToolRegistry([definition], adapters={"create_report_artifact": adapter}),
         approval_service,
@@ -449,7 +477,7 @@ def test_timeout_replaces_stuck_executor_for_next_call(stage5) -> None:
             "timeout_seconds": 1,
         }
     )
-    executor = ToolExecutionService(
+    executor = _executor(
         database,
         ToolRegistry([definition], adapters={"create_report_artifact": adapter}),
         ApprovalService(database),
@@ -461,7 +489,7 @@ def test_timeout_replaces_stuck_executor_for_next_call(stage5) -> None:
     finally:
         adapter.release.set()
 
-    assert first.status == "unknown"
+    assert first.status == "failed"
     assert second.status == "succeeded"
     assert adapter.calls == 2
 
@@ -510,7 +538,7 @@ def test_expired_running_sweeper_persists_unknown_without_adapter_execution(stag
             )
         )
     adapter = _CountingAdapter()
-    service = ToolExecutionService(database, ToolRegistry(adapters={"create_report_artifact": adapter}), ApprovalService(database))
+    service = _executor(database, ToolRegistry(adapters={"create_report_artifact": adapter}), ApprovalService(database))
     assert service.expire_stale_running() == 1
     with database.sessions() as session:
         call = session.scalar(select(ToolCallRow).where(ToolCallRow.tool_call_id == tool_call_id))
@@ -526,7 +554,7 @@ def test_local_artifact_is_server_keyed_exclusive_and_readback_verified(stage5) 
     database, requester, approver, tmp_path, lease = stage5
     service, binding = _approved(database, requester, approver)
     adapter = LocalArtifactToolAdapter(database, LocalObjectStore(tmp_path / "objects"), artifact_type="report")
-    executor = ToolExecutionService(database, ToolRegistry(adapters={"create_report_artifact": adapter}), service)
+    executor = _executor(database, ToolRegistry(adapters={"create_report_artifact": adapter}), service)
     result = executor.execute(_request(requester, binding.approval_id, lease))
     assert result.status == "succeeded" and result.result is not None, result
     assert str(result.result["storage_key"]).startswith("artifacts/")

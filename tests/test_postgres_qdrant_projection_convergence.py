@@ -163,7 +163,7 @@ def _run_ingestion(
     assert result.job_id == expected_job_id
 
 
-@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="未配置 RAG_KB_TEST_POSTGRES_URL")
+@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="postgres_test_url_unconfigured")
 def test_delayed_old_publish_is_exactly_filtered_and_reconciler_converges(
     tmp_path: Path,
 ) -> None:
@@ -179,7 +179,7 @@ def test_delayed_old_publish_is_exactly_filtered_and_reconciler_converges(
     except Exception:
         if client is not None:
             client.close()
-        pytest.skip("Qdrant localhost:6333 unavailable")
+        pytest.skip("qdrant_unavailable")
 
     suffix = uuid4().hex
     tenant_id = f"projection-convergence-{suffix}"

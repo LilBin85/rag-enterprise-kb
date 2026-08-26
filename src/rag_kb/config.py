@@ -9,9 +9,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 
+# M1 Research Agent 预算单一来源：Settings 默认值、build_research_agent 与
+# TaskBudgets 默认值全部由此同步（M1_FIX_PLAN 修复 4）。
+AGENT_MAX_MODEL_CALLS = 12
+AGENT_MAX_TOOL_CALLS = 20
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=ROOT_DIR / ".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=ROOT_DIR / ".env",
+        env_file_encoding="utf-8",
+        env_ignore_empty=True,
+        extra="ignore",
+    )
 
     # DeepSeek(阶段 4 才消费;此处只负责读取与保管)
     deepseek_api_key: str = ""
@@ -54,10 +64,16 @@ class Settings(BaseSettings):
     retrieval_rrf_k: int = Field(default=60, ge=1, le=1000)
     enable_hybrid_retrieval: bool = False
 
-    # 策略比较 Agent:只读工具循环的有界运行参数
-    agent_max_steps: int = Field(default=4, ge=1, le=10)
-    agent_max_tool_calls: int = Field(default=3, ge=1, le=10)
+    # M1 Research Agent:模型/工具调用预算（常量单一来源见文件头）
+    agent_max_model_calls: int = Field(
+        default=AGENT_MAX_MODEL_CALLS, ge=1, le=100
+    )
+    agent_max_tool_calls: int = Field(default=AGENT_MAX_TOOL_CALLS, ge=1, le=100)
     agent_timeout_seconds: int = Field(default=20, ge=1, le=120)
+
+    # 敏感正文保留策略（M1_FIX_PLAN 修复 5）：工具结果与任务结果/checkpoint 过期即清理。
+    tool_result_ttl_seconds: int = Field(default=7 * 24 * 3600, ge=1)
+    task_result_retention_days: int = Field(default=7, ge=1)
 
     # 规划复用检索 tool 上限；模型决策和结构修复另行有界，避免隐式循环。
     planner_max_model_decisions: int = Field(default=6, ge=1, le=10)

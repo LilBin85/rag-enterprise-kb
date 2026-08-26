@@ -11,13 +11,16 @@ from uuid import uuid4
 
 from qdrant_client import QdrantClient
 
+from rag_kb.agent.checkpointer import open_postgres_checkpointer
+from rag_kb.agent.factory import build_research_agent
+from rag_kb.agent.result import AgentResultStore
+from rag_kb.agent.tools import build_research_tools
 from rag_kb.application.ingestion_worker import (
     DocumentRegistryIngestionJobPort,
     IngestionWorker,
 )
 from rag_kb.application.projection_reconciler import ProjectionReconciler
 from rag_kb.application.approval_service import ApprovalService
-from rag_kb.application.pending_action_store import PendingActionStore
 from rag_kb.application.task_worker import TaskWorker
 from rag_kb.application.tool_execution_service import ToolExecutionService
 from rag_kb.application.upload_reconciler import UploadReservationReconciler
@@ -30,8 +33,8 @@ from rag_kb.infrastructure.database.acl_repository import DatabaseAuthorizationP
 from rag_kb.infrastructure.database.task_execution import (
     DatabaseTaskAuthContextPort,
     DatabaseTaskEvidencePort,
-    DatabaseTaskPlanBindingPort,
 )
+from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerRepository
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
 from rag_kb.infrastructure.database.index_projection_metadata import (
     DatabaseDocumentIndexMetadataPort,
@@ -43,7 +46,6 @@ from rag_kb.infrastructure.ingestion.local_document_parser import LocalDocumentP
 from rag_kb.infrastructure.object_store import LocalObjectStore
 from rag_kb.infrastructure.vectorstore.qdrant_document_index import QdrantDocumentIndex
 from rag_kb.infrastructure.vectorstore.qdrant_authorized_search import QdrantAuthorizedSearch
-from rag_kb.infrastructure.llm.task_planner import DeepSeekTaskPlanner, TaskPlannerModelError
 from rag_kb.infrastructure.tools.factory import build_tool_registry
 
 
@@ -55,14 +57,8 @@ _RECOVERY_TIME_BUDGET_SECONDS = 1.0
 _UPLOAD_RESERVATION_GRACE = timedelta(seconds=30)
 
 
-class _UnavailableTaskPlanner:
-    """模型配置缺失时仅关闭任务本身，绝不让摄取循环停摆。"""
-
-    def __init__(self, code: str) -> None:
-        self._code = code
-
-    def next_action(self, state, observations=()):
-        raise TaskPlannerModelError(self._code)
+class TaskAgentConfigurationError(RuntimeError):
+    pass
 
 
 def build_workers(
@@ -107,10 +103,27 @@ def build_upload_reconciler() -> UploadReservationReconciler:
     )
 
 
-def build_task_worker(*, worker_id: str | None = None, planner=None) -> TaskWorker:
-    """构造独立通用任务 worker；只使用固定注册表与持久 pending action。"""
+def _build_research_model(settings):
+    if not settings.deepseek_api_key:
+        raise TaskAgentConfigurationError("task_agent_api_key_missing")
+    from langchain_deepseek import ChatDeepSeek
+
+    return ChatDeepSeek(
+        model=settings.deepseek_model,
+        api_key=settings.deepseek_api_key,
+        base_url=settings.deepseek_base_url,
+        temperature=0,
+        timeout=settings.agent_timeout_seconds,
+        max_retries=1,
+        extra_body={"thinking": {"type": "disabled"}},
+    )
+
+
+def build_task_worker(*, worker_id: str | None = None) -> TaskWorker:
+    """构造唯一的 M1 Research Agent worker 和 PostgreSQL checkpointer。"""
     settings = get_settings()
     database = build_database(settings.database_url)
+    objects = LocalObjectStore(settings.object_store_root)
     embedder = BgeM3Embedder()
     vectors = QdrantAuthorizedSearch(
         QdrantClient(url=settings.qdrant_url),
@@ -132,26 +145,46 @@ def build_task_worker(*, worker_id: str | None = None, planner=None) -> TaskWork
         database=database,
         artifact_root=settings.object_store_root,
         retriever=retriever,
+        chunk_max_chars=settings.chunk_max_chars,
     )
     identity = worker_id or f"{socket.gethostname()}-task-{uuid4().hex[:12]}"
     evidence_validator = DatabaseTaskEvidencePort(database)
     approvals = ApprovalService(database, evidence_validator=evidence_validator)
-    return TaskWorker(
-        DatabaseTaskRepository(database),
-        planner or DeepSeekTaskPlanner(settings, registry),
-        ToolExecutionService(
-            database,
-            registry,
-            approvals,
-            evidence_validator=evidence_validator,
-        ),
+    tools = ToolExecutionService(
+        database,
         registry,
         approvals,
-        DatabaseTaskAuthContextPort(database),
-        DatabaseTaskPlanBindingPort(database),
-        evidence_validator,
-        PendingActionStore(LocalObjectStore(settings.object_store_root)),
+        evidence_validator=evidence_validator,
+        tool_results=objects,
+    )
+    try:
+        checkpointer, connection = open_postgres_checkpointer(settings.database_url)
+    except ValueError as exc:
+        tools.close()
+        raise TaskAgentConfigurationError(str(exc)) from exc
+    try:
+        agent = build_research_agent(
+            _build_research_model(settings),
+            build_research_tools(tools),
+            checkpointer,
+            max_model_calls=settings.agent_max_model_calls,
+            max_tool_calls=settings.agent_max_tool_calls,
+        )
+    except Exception:
+        tools.close()
+        connection.close()
+        raise
+    return TaskWorker(
+        repository=DatabaseTaskRepository(database),
+        auth_contexts=DatabaseTaskAuthContextPort(database),
+        agent=agent,
+        results=AgentResultStore(objects),
+        evidence=EvidenceLedgerRepository(),
+        tools=tools,
+        database=database,
         worker_id=identity,
+        close=connection.close,
+        checkpointer=checkpointer,
     )
 
 
@@ -162,12 +195,9 @@ def run(*, watch: bool, poll_seconds: float, max_jobs: int, include_tasks: bool 
     upload_reconciler = build_upload_reconciler()
     task_worker = None
     if include_tasks:
-        try:
-            task_worker = build_task_worker()
-        except TaskPlannerModelError as exc:
-            # 模型不可用时，领取到的任务会由 TaskWorker 终止为安全失败；摄取仍照常运行。
-            logger.error("通用任务模型不可用 error_code=%s", exc.code)
-            task_worker = build_task_worker(planner=_UnavailableTaskPlanner(exc.code))
+        # Agent 未配置即 fail-fast：宁可进程退出由重启策略兜底，
+        # 也不让任务接口产生“已接受永不执行”的任务。
+        task_worker = build_task_worker()
     queues = [("ingestion", worker), ("projection", reconciler)]
     if task_worker is not None:
         queues.insert(0, ("task", task_worker))
@@ -186,11 +216,20 @@ def run(*, watch: bool, poll_seconds: float, max_jobs: int, include_tasks: bool 
                     expired_queries = task_worker.expire_stale_knowledge_queries(
                         limit=_RECOVERY_BATCH_SIZE
                     )
-                    if expired_tools or expired_queries:
+                    purged_results = task_worker.purge_expired_tool_results(
+                        limit=_RECOVERY_BATCH_SIZE
+                    )
+                    purged_threads = task_worker.purge_finished_task_threads(
+                        limit=_RECOVERY_BATCH_SIZE
+                    )
+                    if expired_tools or expired_queries or purged_results or purged_threads:
                         logger.info(
-                            "过期运行恢复结束 tools=%s knowledge_queries=%s",
+                            "过期运行恢复结束 tools=%s knowledge_queries=%s "
+                            "purged_tool_results=%s purged_task_threads=%s",
                             expired_tools,
                             expired_queries,
+                            purged_results,
+                            purged_threads,
                         )
                 except Exception:
                     logger.error("运行恢复失败 error_code=runtime_sweep_failed")
@@ -222,6 +261,8 @@ def run(*, watch: bool, poll_seconds: float, max_jobs: int, include_tasks: bool 
                 continue
             idle_queues = 0
             if not watch:
+                if task_worker is not None:
+                    task_worker.close()
                 return 0
             time.sleep(poll_seconds)
             continue
@@ -244,6 +285,8 @@ def run(*, watch: bool, poll_seconds: float, max_jobs: int, include_tasks: bool 
         else:
             logger.info("摄取任务结束 status=%s job_id=%s", result.status, result.job_id)
         if processed >= max_jobs and not watch:
+            if task_worker is not None:
+                task_worker.close()
             return 0
 
 

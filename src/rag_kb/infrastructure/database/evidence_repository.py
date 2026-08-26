@@ -28,6 +28,11 @@ class EvidenceLedgerConflict(RuntimeError):
     pass
 
 
+_RETRIEVAL_SCOPE = "retrieval"
+_VERSION_COMPARISON_SCOPE = "version_comparison"
+_EVIDENCE_SCOPES = frozenset({_RETRIEVAL_SCOPE, _VERSION_COMPARISON_SCOPE})
+
+
 class EvidenceLedgerRepository:
     def __init__(self, acl_repository: ACLRepository | None = None) -> None:
         self._acl = acl_repository or ACLRepository()
@@ -40,7 +45,10 @@ class EvidenceLedgerRepository:
         query_fingerprint: str,
         auth: AuthContext,
         candidates: tuple[RetrievalCandidate, ...],
+        evidence_scope: str = _RETRIEVAL_SCOPE,
     ) -> tuple[EvidenceRecord, ...]:
+        if evidence_scope not in _EVIDENCE_SCOPES:
+            raise ValueError("evidence_scope_invalid")
         task = session.scalar(
             select(AgentTaskRow).where(
                 AgentTaskRow.tenant_id == auth.tenant_id,
@@ -63,6 +71,19 @@ class EvidenceLedgerRepository:
         candidate_pairs = {
             (candidate.version_id, candidate.chunk_id) for candidate in candidates
         }
+        scope_conditions = (
+            (
+                DocumentVersionRow.lifecycle_status == "active",
+                DocumentRow.applied_projection_version_id == DocumentVersionRow.version_id,
+                DocumentRow.applied_projection_generation
+                == DocumentVersionRow.applied_projection_generation,
+            )
+            if evidence_scope == _RETRIEVAL_SCOPE
+            else (
+                DocumentVersionRow.lifecycle_status.in_(("active", "superseded")),
+                DocumentVersionRow.applied_projection_generation.is_not(None),
+            )
+        )
         valid_bindings = {
             tuple(row)
             for row in session.execute(
@@ -105,17 +126,13 @@ class EvidenceLedgerRepository:
                     tuple_(ChunkMetadataRow.version_id, ChunkMetadataRow.chunk_id).in_(
                         candidate_pairs
                     ),
-                    DocumentVersionRow.lifecycle_status == "active",
-                    DocumentRow.applied_projection_version_id
-                    == DocumentVersionRow.version_id,
-                    DocumentRow.applied_projection_generation
-                    == DocumentVersionRow.applied_projection_generation,
                     IngestionJobRow.status == "succeeded",
                     IngestionJobRow.projection_generation
                     == DocumentVersionRow.applied_projection_generation,
                     IngestionJobRow.indexed_chunk_count.is_not(None),
                     IngestionJobRow.index_manifest_digest.is_not(None),
                     IngestionJobRow.index_completed_at.is_not(None),
+                    *scope_conditions,
                 )
             )
         }
@@ -150,18 +167,19 @@ class EvidenceLedgerRepository:
         evidence_ids: list[str] = []
         values_list: list[dict[str, object]] = []
         for candidate in candidates:
+            identity = (
+                auth.tenant_id,
+                task_id,
+                query_fingerprint,
+                candidate.version_id,
+                candidate.chunk_id,
+                candidate.content_hash,
+            )
+            if evidence_scope != _RETRIEVAL_SCOPE:
+                identity += (evidence_scope,)
             evidence_id = uuid5(
                 NAMESPACE_URL,
-                "|".join(
-                    (
-                        auth.tenant_id,
-                        task_id,
-                        query_fingerprint,
-                        candidate.version_id,
-                        candidate.chunk_id,
-                        candidate.content_hash,
-                    )
-                ),
+                "|".join(identity),
             ).hex
             evidence_ids.append(evidence_id)
             values_list.append({
@@ -175,6 +193,7 @@ class EvidenceLedgerRepository:
                 "chunk_id": candidate.chunk_id,
                 "content_hash": candidate.content_hash,
                 "source_locator": candidate.source_locator,
+                "evidence_scope": evidence_scope,
                 "permission_granted": True,
                 "supported_claim_ids": [],
                 "retrieved_at": now,
@@ -215,6 +234,7 @@ class EvidenceLedgerRepository:
                 "chunk_id": candidate.chunk_id,
                 "content_hash": candidate.content_hash,
                 "source_locator": candidate.source_locator,
+                "evidence_scope": evidence_scope,
                 "permission_granted": True,
                 "supported_claim_ids": [],
             }
@@ -266,7 +286,13 @@ class EvidenceLedgerRepository:
         if task is None:
             raise EvidenceLedgerConflict("evidence_task_binding_invalid")
         rows = session.execute(
-            select(EvidenceRecordRow, ChunkMetadataRow)
+            select(
+                EvidenceRecordRow,
+                ChunkMetadataRow,
+                DocumentVersionRow,
+                DocumentRow,
+                IngestionJobRow,
+            )
             .join(
                 ChunkMetadataRow,
                 and_(
@@ -286,7 +312,6 @@ class EvidenceLedgerRepository:
                     DocumentVersionRow.document_id == EvidenceRecordRow.document_id,
                     DocumentVersionRow.version == EvidenceRecordRow.document_version,
                     DocumentVersionRow.version_id == EvidenceRecordRow.version_id,
-                    DocumentVersionRow.lifecycle_status == "active",
                 ),
             )
             .join(
@@ -294,9 +319,6 @@ class EvidenceLedgerRepository:
                 and_(
                     DocumentRow.tenant_id == DocumentVersionRow.tenant_id,
                     DocumentRow.document_id == DocumentVersionRow.document_id,
-                    DocumentRow.applied_projection_version_id == DocumentVersionRow.version_id,
-                    DocumentRow.applied_projection_generation
-                    == DocumentVersionRow.applied_projection_generation,
                 ),
             )
             .join(
@@ -304,12 +326,6 @@ class EvidenceLedgerRepository:
                 and_(
                     IngestionJobRow.tenant_id == DocumentVersionRow.tenant_id,
                     IngestionJobRow.version_id == DocumentVersionRow.version_id,
-                    IngestionJobRow.status == "succeeded",
-                    IngestionJobRow.projection_generation
-                    == DocumentVersionRow.applied_projection_generation,
-                    IngestionJobRow.indexed_chunk_count.is_not(None),
-                    IngestionJobRow.index_manifest_digest.is_not(None),
-                    IngestionJobRow.index_completed_at.is_not(None),
                 ),
             )
             .where(
@@ -319,13 +335,36 @@ class EvidenceLedgerRepository:
                 EvidenceRecordRow.permission_granted.is_(True),
             )
         ).all()
-        by_id = {evidence.evidence_id: (evidence, metadata) for evidence, metadata in rows}
+        by_id = {}
+        for evidence, metadata, version, document, job in rows:
+            current_retrieval = (
+                evidence.evidence_scope == _RETRIEVAL_SCOPE
+                and version.lifecycle_status == "active"
+                and document.applied_projection_version_id == version.version_id
+                and document.applied_projection_generation == version.applied_projection_generation
+            )
+            historical_comparison = (
+                evidence.evidence_scope == _VERSION_COMPARISON_SCOPE
+                and version.lifecycle_status in {"active", "superseded"}
+            )
+            if not (
+                (current_retrieval or historical_comparison)
+                and job.status == "succeeded"
+                and job.projection_generation == version.applied_projection_generation
+                and job.indexed_chunk_count is not None
+                and job.index_manifest_digest is not None
+                and job.index_completed_at is not None
+            ):
+                continue
+            by_id[evidence.evidence_id] = (evidence, metadata)
         if set(by_id) != set(evidence_ids):
             raise EvidenceLedgerConflict("evidence_ledger_binding_invalid")
         allowed_document_ids = self._acl.authorized_document_ids(
             session,
             auth=auth,
-            document_ids=frozenset(evidence.document_id for evidence, _metadata in rows),
+            document_ids=frozenset(
+                evidence.document_id for evidence, _metadata in by_id.values()
+            ),
             permission=Permission.KNOWLEDGE_READ,
         )
         citations: list[Citation] = []

@@ -268,7 +268,6 @@ class KnowledgeQueryService:
             )
             .values(
                 status=status,
-                current_node="terminal",
                 last_error_code=error_code,
                 lease_owner=None,
                 lease_expires_at=None,

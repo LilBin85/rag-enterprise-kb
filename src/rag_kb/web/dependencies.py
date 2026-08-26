@@ -1,7 +1,7 @@
 """HTTP 依赖装配；不得在构造函数中执行迁移或下载模型。"""
 
 from functools import lru_cache
-from typing import Annotated, Protocol
+from typing import Annotated, Generator, Protocol
 from uuid import uuid4
 
 from fastapi import Depends, Header, HTTPException
@@ -12,11 +12,14 @@ from rag_kb.config import get_settings
 from rag_kb.application.approval_service import ApprovalService
 from rag_kb.application.query_service import KnowledgeQueryService
 from rag_kb.application.task_query_service import DatabaseTaskQueryService
+from rag_kb.application.task_result_service import TaskResultService
+from rag_kb.agent.result import AgentResultStore
 from rag_kb.application.document_service import DocumentService
 from rag_kb.domain.identity import AuthContext
 from rag_kb.infrastructure.auth.providers import DemoTokenIdentityProvider, IdentityProvider
 from rag_kb.infrastructure.database import build_database
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
+from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerRepository
 from rag_kb.infrastructure.object_store import LocalObjectStore
 from rag_kb.infrastructure.vectorstore.qdrant_collection import (
     validate_document_collection,
@@ -24,7 +27,7 @@ from rag_kb.infrastructure.vectorstore.qdrant_collection import (
 from rag_kb.infrastructure.vectorstore.qdrant_document_index import QdrantDocumentDeletion
 
 
-EXPECTED_DATABASE_REVISION = "20260824_0009"
+EXPECTED_DATABASE_REVISION = "20260826_0012"
 
 
 class ReadinessFailure(RuntimeError):
@@ -173,6 +176,34 @@ def build_task_repository() -> DatabaseTaskRepository:
 @lru_cache
 def build_task_query_service() -> DatabaseTaskQueryService:
     return DatabaseTaskQueryService(build_database(get_settings().database_url))
+
+
+@lru_cache
+def build_agent_result_store() -> AgentResultStore:
+    return AgentResultStore(LocalObjectStore(get_settings().object_store_root))
+
+
+def build_task_result_service() -> TaskResultService:
+    settings = get_settings()
+    return TaskResultService(
+        build_database(settings.database_url),
+        AgentResultStore(LocalObjectStore(settings.object_store_root)),
+        EvidenceLedgerRepository(),
+    )
+
+
+def build_task_resume_worker() -> Generator[object, None, None]:
+    """每次 continue 独占一个 checkpointer 连接，答案只进入受控 Command。"""
+    from rag_kb.worker import TaskAgentConfigurationError, build_task_worker
+
+    try:
+        worker = build_task_worker(worker_id=f"api-resume-{uuid4().hex[:12]}")
+    except TaskAgentConfigurationError as exc:
+        raise HTTPException(status_code=503, detail="Research Agent 暂不可用") from exc
+    try:
+        yield worker
+    finally:
+        worker.close()
 
 
 @lru_cache

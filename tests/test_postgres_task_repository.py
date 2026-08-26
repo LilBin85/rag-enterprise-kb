@@ -1,4 +1,4 @@
-"""真实 PostgreSQL 的任务领取、CAS 与 lease generation 栅栏。"""
+"""真实 PostgreSQL 的 M1 Research 领取与 lease generation 栅栏。"""
 
 from __future__ import annotations
 
@@ -10,23 +10,20 @@ import pytest
 from sqlalchemy import text
 
 from rag_kb.domain.identity import AuthContext
-from rag_kb.domain.tasks import TaskMode, TaskNode
+from rag_kb.domain.tasks import TaskMode
 from rag_kb.infrastructure.database import build_database
-from rag_kb.infrastructure.database.task_repository import (
-    DatabaseTaskRepository,
-    TaskRepositoryError,
-)
+from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository, TaskRepositoryError
 
 
 POSTGRES_TEST_URL = os.environ.get("RAG_KB_TEST_POSTGRES_URL")
 
 
-@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="未配置 RAG_KB_TEST_POSTGRES_URL")
+@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="postgres_test_url_unconfigured")
 def test_postgres_concurrent_claim_and_expired_lease_fencing() -> None:
     assert POSTGRES_TEST_URL is not None
     database = build_database(POSTGRES_TEST_URL)
     suffix = uuid4().hex
-    tenant_id = f"task-runtime-{suffix}"
+    tenant_id = f"task-agent-{suffix}"
     user_id = f"owner-{suffix}"
     task_id = f"task-{suffix}"
     auth = AuthContext(
@@ -62,10 +59,8 @@ def test_postgres_concurrent_claim_and_expired_lease_fencing() -> None:
         )
 
         def claim(index: int):
-            return DatabaseTaskRepository(database).claim_task(
-                task_id,
-                worker_id=f"worker-{index}-{suffix}",
-                lease_seconds=30,
+            return DatabaseTaskRepository(database).claim_next(
+                worker_id=f"worker-{index}-{suffix}", lease_seconds=30
             )
 
         with ThreadPoolExecutor(max_workers=4) as executor:
@@ -82,21 +77,11 @@ def test_postgres_concurrent_claim_and_expired_lease_fencing() -> None:
                 ),
                 {"tenant": tenant_id, "task": task_id},
             )
-        second = repository.claim_task(
-            task_id,
-            worker_id=f"recovery-{suffix}",
-            lease_seconds=30,
-        )
+        second = repository.claim_next(worker_id=f"recovery-{suffix}", lease_seconds=30)
         assert second is not None
         assert second.lease_generation == first.lease_generation + 1
         with pytest.raises(TaskRepositoryError, match="task_lease_generation_stale"):
-            repository.checkpoint(
-                first,
-                first.state.model_copy(update={"current_node": TaskNode.CLASSIFY_GOAL}),
-                event_type="stale_checkpoint",
-                trace_id=f"trace-{suffix}",
-                run_id=f"run-{suffix}",
-            )
+            repository.refresh_lease(first)
     finally:
         with database.engine.begin() as connection:
             connection.execute(

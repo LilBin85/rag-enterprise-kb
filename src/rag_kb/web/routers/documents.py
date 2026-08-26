@@ -50,15 +50,15 @@ async def read_upload_limited(file: UploadFile) -> bytes:
     return content
 
 
-@router.post("/documents", response_model=DocumentUploadResult, status_code=202)
-async def create_document(
-    file: Annotated[UploadFile, File()],
-    metadata: Annotated[str, Form()],
-    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
-    auth: Annotated[AuthContext, Depends(resolve_auth_context)],
-    service: Annotated[DocumentService, Depends(build_document_service)],
+async def _register_upload(
+    *,
+    parsed: DocumentUploadMetadata,
+    file: UploadFile,
+    idempotency_key: str,
+    auth: AuthContext,
+    service: DocumentService,
+    expect_existing: bool,
 ) -> DocumentUploadResult:
-    parsed = parse_metadata(metadata)
     content = await read_upload_limited(file)
     try:
         return await run_in_threadpool(
@@ -70,6 +70,7 @@ async def create_document(
             content=content,
             idempotency_key=idempotency_key,
             auth=auth,
+            expect_existing=expect_existing,
         )
     except DocumentAccessDenied as exc:
         raise HTTPException(status_code=403, detail="无权写入文档") from exc
@@ -97,12 +98,54 @@ async def create_document(
             if code == "idempotency_key_reused_with_different_request"
             else code
         )
-        raise HTTPException(
-            status_code=409,
-            detail={"code": code, "message": message},
-        ) from exc
+        raise HTTPException(status_code=409, detail={"code": code, "message": message}) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/documents", response_model=DocumentUploadResult, status_code=202)
+async def create_document(
+    file: Annotated[UploadFile, File()],
+    metadata: Annotated[str, Form()],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+    auth: Annotated[AuthContext, Depends(resolve_auth_context)],
+    service: Annotated[DocumentService, Depends(build_document_service)],
+) -> DocumentUploadResult:
+    parsed = parse_metadata(metadata)
+    return await _register_upload(
+        parsed=parsed,
+        file=file,
+        idempotency_key=idempotency_key,
+        auth=auth,
+        service=service,
+        expect_existing=False,
+    )
+
+
+@router.post(
+    "/documents/{document_id}/versions",
+    response_model=DocumentUploadResult,
+    status_code=202,
+)
+async def create_document_version(
+    document_id: str,
+    file: Annotated[UploadFile, File()],
+    metadata: Annotated[str, Form()],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+    auth: Annotated[AuthContext, Depends(resolve_auth_context)],
+    service: Annotated[DocumentService, Depends(build_document_service)],
+) -> DocumentUploadResult:
+    parsed = parse_metadata(metadata)
+    if parsed.document_id != document_id:
+        raise HTTPException(status_code=422, detail="metadata 文档标识不匹配")
+    return await _register_upload(
+        parsed=parsed,
+        file=file,
+        idempotency_key=idempotency_key,
+        auth=auth,
+        service=service,
+        expect_existing=True,
+    )
 
 
 @router.get("/documents/{document_id}", response_model=DocumentResult)

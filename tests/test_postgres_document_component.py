@@ -27,7 +27,7 @@ from rag_kb.infrastructure.ingestion.local_document_parser import LocalDocumentP
 POSTGRES_TEST_URL = os.environ.get("RAG_KB_TEST_POSTGRES_URL")
 
 
-@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="未配置 RAG_KB_TEST_POSTGRES_URL")
+@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="postgres_test_url_unconfigured")
 def test_postgres_concurrent_upload_and_activation(tmp_path: Path) -> None:
     assert POSTGRES_TEST_URL is not None
     database = build_database(POSTGRES_TEST_URL)

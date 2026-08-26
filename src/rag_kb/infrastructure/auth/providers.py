@@ -16,6 +16,22 @@ _DEMO_USER_PERMISSIONS = (
 )
 
 
+def demo_token_principals(
+    role_tokens: Mapping[str, str], *, tenant_id: str = "local-demo"
+) -> dict[str, Principal]:
+    """构造本地演示令牌与主体的唯一映射，供初始化入口复用。"""
+    return {
+        token: Principal(
+            tenant_id=tenant_id,
+            user_id=f"demo-{role}",
+            roles=frozenset({role}),
+            attributes={"permissions": list(_DEMO_USER_PERMISSIONS)},
+        )
+        for role, token in role_tokens.items()
+        if token
+    }
+
+
 class IdentityProvider(Protocol):
     def authenticate(self, token: str, *, request_id: str) -> AuthContext | None: ...
 
@@ -33,17 +49,7 @@ class DemoTokenIdentityProvider:
         *,
         tenant_id: str = "local-demo",
     ) -> "DemoTokenIdentityProvider":
-        principals = {
-            token: Principal(
-                tenant_id=tenant_id,
-                user_id=f"demo-{role}",
-                roles=frozenset({role}),
-                attributes={"permissions": list(_DEMO_USER_PERMISSIONS)},
-            )
-            for role, token in role_tokens.items()
-            if token
-        }
-        return cls(principals)
+        return cls(demo_token_principals(role_tokens, tenant_id=tenant_id))
 
     def authenticate(self, token: str, *, request_id: str) -> AuthContext | None:
         matched: Principal | None = None

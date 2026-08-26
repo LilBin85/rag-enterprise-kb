@@ -7,14 +7,13 @@
 ## 架构与运行模式
 
 - `knowledge_query`：一次授权检索、证据账本记录、受约束回答。拒答分两层：数量/锚点等字面缺失在检索层确定性拦截，主谓语义充分性由回答模型 verdict 判定；引用一律以证据账本复核兜底。
-- `research`：可暂停、继续、取消的多步研究任务；每步由显式 `NextAction` 和持久 checkpoint 驱动。
-- `controlled_action`：读工具检索后提出写动作；固定六工具注册表中的写工具必须绑定当前任务、计划、证据、主体、参数摘要和未过期批准。
+- `research`：唯一公开任务模式。`create_agent` 以 `thread_id = task_id` 使用 PostgreSQL checkpointer 恢复消息、ToolMessage、Todo 和 interrupt/resume；任务表只保存业务生命周期、中断摘要和结果引用。
 
 摄取采用三阶段投影切换：先按新 generation 分批构建并回读校验 Qdrant 投影，再发布新世代可见，最后在单个 SQL 事务中以原绑定为前置条件 CAS 激活版本并精确绑定新世代，绑定成功后才清理旧投影。切换窗口内，检索仍只使用 PostgreSQL 当前绑定的 `projection_key`；旧 worker 不能倒退当前世代。
 
 worker 对任务、摄取和投影队列轮转调度，并周期执行有界的上传预留、过期工具调用和同步问答租约回收。详细恢复语义见[架构说明](docs/architecture.md)。
 
-固定工具为 `search_knowledge`、`fetch_evidence`、`list_document_versions`、`compare_document_versions`、`create_report_artifact`、`create_work_item_draft`。写工具只允许服务端生成对象键，不能接收路径、URL、shell、SQL 或任意外部调用。
+Research Agent 只暴露 `search_knowledge`、`fetch_evidence`、`list_document_versions`、`compare_document_versions` 四个 READ 工具。模型只能使用服务端注入的身份上下文，不能传递 tenant、权限、lease 或对象存储路径。
 
 详见：[架构说明](docs/architecture.md)、[威胁模型](docs/threat-model.md)、[迁移说明](docs/migration.md)、[使用指南](使用指南.md)。
 
@@ -36,7 +35,8 @@ docker compose up --build -d
 conda activate rag-kb
 docker compose up -d qdrant
 $env:RAG_KB_DATABASE_URL = "postgresql+psycopg://<用户>:<密码>@localhost:5432/<数据库>"
-alembic upgrade head                 # 当前迁移目标：20260824_0009
+alembic upgrade head                 # 当前迁移目标：20260825_0010
+python scripts/init_agent_checkpointer.py
 python -m rag_kb.qdrant_init         # 幂等创建并校验企业 Qdrant schema
 .\scripts\start_api.ps1             # FastAPI :8000
 conda run -n rag-kb --no-capture-output python -m rag_kb.worker --watch --include-tasks
@@ -52,9 +52,10 @@ conda run -n rag-kb --no-capture-output python -m rag_kb.worker --watch --includ
 ## API
 
 - `POST /v1/knowledge/query`：服务端身份问答。
-- `POST /v1/documents`：multipart 上传，必须带 `Idempotency-Key`，返回 `202`。
+- `POST /v1/documents`：multipart 上传新文档，必须带 `Idempotency-Key`，返回 `202`。
+- `POST /v1/documents/{document_id}/versions`：上传同一文档的新版本；路径和 metadata 的 `document_id` 必须一致，并使用新的 `Idempotency-Key`。
 - `GET /v1/documents/{document_id}`、`GET /v1/ingestion-jobs/{job_id}`：租户与 ACL 约束的查询。
-- 任务接口位于 `/v1/tasks`；暂停、继续、取消、批准和恢复由持久状态图处理。
+- `POST /v1/tasks` 仅接受 `research`；`GET /v1/tasks/{task_id}/result` 返回经服务端重验的 citation，`/continue` 只恢复服务端确认的澄清 interrupt。
 
 身份来自 `Authorization: Bearer ...` 或本地演示 `X-Demo-Role-Token`，角色不能由请求正文提升。应用只提供版本化 `/v1` 业务接口。
 
@@ -63,18 +64,30 @@ conda run -n rag-kb --no-capture-output python -m rag_kb.worker --watch --includ
 ```powershell
 conda run -n rag-kb --no-capture-output python -m pytest -q `
   tests/test_database_migrations.py `
-  tests/test_worker_runtime.py `
-  tests/test_ingestion_worker.py `
-  tests/test_projection_reconciler.py `
-  tests/test_qdrant_document_index.py `
-  tests/test_approval_tool_execution.py `
-  tests/test_stage3_acl_evidence.py
+  tests/test_agent_checkpointer.py `
+  tests/test_task_agent.py `
+  tests/test_task_worker_recovery.py `
+  tests/test_v1_documents_api.py
 
 conda run -n rag-kb --no-capture-output python -m pytest -q
 
 # 仅在 RAG_KB_TEST_POSTGRES_URL 已配置且 Qdrant 可达时运行
 conda run -n rag-kb --no-capture-output python -m pytest -q `
+  tests/test_postgres_agent_checkpointer.py `
   tests/test_postgres_qdrant_projection_convergence.py
+
+# 真实模型验证：先创建独立 PostgreSQL 数据库、m1_e2e_ 前缀的 Qdrant collection
+# 和独立对象目录；执行结束后删除这些临时资源。
+conda run -n rag-kb --no-capture-output python scripts/smoke_m1_research_e2e.py `
+  --allow-live `
+  --database-url "postgresql+psycopg://<用户>:<密码>@localhost:5432/<临时数据库>" `
+  --qdrant-url "http://localhost:6333" `
+  --qdrant-collection "m1_e2e_<唯一标识>" `
+  --object-store-root "data/local/e2e/m1_e2e_<唯一标识>" `
+  --hf-home "$env:HF_HOME" `
+  --previous-source "data/corpus/sources/员工休假制度-v1.md" `
+  --source "data/corpus/sources/员工休假制度-v2.md" `
+  --report "docs/acceptance/m1-research-e2e.json"
 
 conda run -n rag-kb --no-capture-output python scripts/benchmark_enterprise_retrieval.py `
   --dataset data/benchmarks/retrieval_acceptance_v2.yaml `
@@ -83,14 +96,13 @@ conda run -n rag-kb --no-capture-output python scripts/benchmark_enterprise_retr
 conda run -n rag-kb --no-capture-output python scripts/build_project_acceptance_report.py `
   --pytest-xml data/local/acceptance/pytest-stage9.xml `
   --retrieval-report data/local/benchmarks/enterprise-retrieval-stage9-sufficiency-aligned.json `
-  --task-report data/local/benchmarks/enterprise-task-evaluation.json `
-  --model-report data/local/acceptance/task-model-live-smoke.json `
+  --m1-e2e-report docs/acceptance/m1-research-e2e.json `
   --dataset data/benchmarks/retrieval_acceptance_v2.yaml `
   --config pyproject.toml `
   --output docs/acceptance/latest.json
 ```
 
-文档不预填当前工作树的通过数量。结果以实际命令输出和重新生成的机器报告为准；脚本不会从文档继承指标或填充缺失数字。
+M1 严格真实 E2E 已在隔离资源上验证 V1/V2 上传和精确四工具轨迹；全量 pytest、Docker 构建、检索质量和最终 verdict 仍必须以最新生成的机器报告为准。脚本不会从文档继承指标或填充缺失数字。
 
 ## 目录边界
 
