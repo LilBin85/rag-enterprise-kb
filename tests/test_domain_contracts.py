@@ -100,10 +100,11 @@ def test_task_state_binds_interrupt_and_research_result_to_status() -> None:
         )
 
 
-def test_task_budgets_enforce_nonnegative_and_positive_runtime_bounds() -> None:
-    assert TaskBudgets(max_model_calls=0, max_tool_calls=0).max_model_calls == 0
+def test_task_budgets_require_positive_call_and_runtime_bounds() -> None:
     with pytest.raises(ValidationError):
-        TaskBudgets(max_model_calls=-1)
+        TaskBudgets(max_model_calls=0)
+    with pytest.raises(ValidationError):
+        TaskBudgets(max_tool_calls=0)
     with pytest.raises(ValidationError):
         TaskBudgets(max_runtime_seconds=0)
 

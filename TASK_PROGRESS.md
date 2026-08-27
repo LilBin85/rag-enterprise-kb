@@ -1,7 +1,7 @@
 # 重构任务进度记录
 
-> 最后更新：2026-08-26
-> 当前阶段：M1 Research Agent 二次修复，已完成 `M1_FIX_PLAN.md` 批次 0；批次 1-3 尚未完成，批次 4 尚未开始。
+> 最后更新：2026-08-27
+> 当前阶段：M1 Research Agent 二次修复，批次 3 F1-F9 已实施并完成 F3/F4 二次修复验证；批次 4 尚未开始。
 > 开发依据：`AGENT_REFACTOR_PLAN.md`、`M1_FIX_PLAN.md`
 
 ## 执行约束
@@ -19,9 +19,9 @@
 | P0 基线 | 已完成 | Compose loopback、演示身份、配置传播和基础验收材料已落地。 |
 | M1 基础重构 | 已落地到当前工作树 | Research Agent、PostgreSQL checkpointer、四个 READ 工具、任务结果绑定和 0010/0011 基础迁移已实现。 |
 | M1 批次 0 | 已完成并验证 | 0012 迁移、ORM/领域协议、历史回填、capability lease 基础方法及 SQLite/PostgreSQL round-trip 已完成。 |
-| M1 批次 1 | 未完成 | fenced checkpointer、工具最终 fencing、capability 创建门和 Worker 心跳仍待实现。 |
-| M1 批次 2 | 未完成 | deadline 数据库锁内终检、按任务预算构建 Agent、错误码边界和配置传播仍待实现。 |
-| M1 批次 3 | 未完成 | 独立 retention service、状态/正文分离、过期读取契约、waiting reaper 和 orphan 扫描仍待实现。 |
+| M1 批次 1 | 已完成并验证 | checkpoint/工具 fencing、当前身份重校验、capability 创建门和 Worker 心跳已由隔离 PostgreSQL 并发测试验证。 |
+| M1 批次 2 | 已完成并验证 | 停止边界、任务行预算单源、deadline 锁内终检、错误码边界和 API/Worker 配置传播已完成。 |
+| M1 批次 3 | 已完成并验证 | F1/F2/F5-F9 复核通过；F3 推进性（P1）与 F4 目录成本（P2）已按 `M1_BATCH3_FIX_PLAN.md` 二次修复节完成并重新执行全部验证门禁。 |
 | M1 批次 4 | 未开始 | 最终验收、文档全量同步和交付清理尚未进行。 |
 
 ## 已完成的 M1 基础能力
@@ -62,37 +62,51 @@
 
 ### 批次 1：并发事实源闭环
 
-- 尚未实现 `FencedPostgresSaver`，checkpoint `put/put_writes` 还没有与任务行锁在同一事务中完成 generation fencing。
-- TaskWorker 尚未把 tenant、worker、generation 等 fence 配置稳定注入每个 checkpoint 写入。
-- 工具 `_complete()` 尚未统一执行最终租约/当前身份门，也没有完整的对象写入失败补偿。
-- 幂等回放尚未在返回正文前重新解析当前服务端身份。
-- capability 表尚未接入 API `create_task()` 的同事务创建门；Worker 尚未注册、续租和注销 `m1-fenced-v2` capability。
+- `FencedPostgresSaver` 在同一 PostgreSQL transaction 内锁定 `agent_tasks` 并验证 owner、generation、lease、状态和租户；`put()` 与 `put_writes()` 均拒绝抢占后的旧 generation。
+- `TaskWorker` 为每个 checkpoint config 稳定注入 tenant、worker 与 generation fence 字段；跨 superstep 的 saver 返回 config 保留这些字段。
+- 工具首次执行、幂等回放、对象读取返回前与最终绑定统一经过任务租约和当前身份门；抢占或撤权后不绑定终态/ref，并补偿本次未绑定对象。
+- PostgreSQL 租约判定和工具时间戳使用 `clock_timestamp()`；SQLite 保留注入时钟以维持确定性单测。最终身份门锁定 principal 与 membership 行，演示主体更新也遵循同一锁协议。
+- Research capability 已接入 API 创建事务门；Worker 在完整构建后登记、后台续租，并在正常退出或中断路径 best-effort 注销。
+- 验证：定向测试 `73 passed`、隔离 PostgreSQL 并发测试 `11 passed`、全量（含隔离 PostgreSQL）`395 passed, 1 skipped`；`git diff --check` 通过。
 
 ### 批次 2：停止边界与提交契约
 
-- `finish_task()` 尚未在数据库锁内用数据库时钟完成 deadline、取消状态和当前租约的最终终检。
-- Agent 仍主要按 Worker 启动配置构建，尚未按任务行 `budgets` 选择或缓存 Agent。
-- ExecutionGuard、stale/auth 分类、稳定错误码透传和对象绑定失败补偿仍需按计划闭环。
-- `.env.example`、Compose 和运行时预算/capability 配置传播尚未完成最终一致性收口。
+- ExecutionGuard 仅统计四个业务工具；连续失败从完整 AI/Tool 轨迹重算，Todo、结构化输出、未知工具和非受控 ToolMessage 均排除。
+- 新任务由 Settings 派生完整 `TaskBudgets` 后持久化；Worker 按 `lease.budgets` 选择并缓存 Agent，middleware 与 recursion limit 使用同一预算。
+- `finish_task()` 在任务行锁内以 PostgreSQL `clock_timestamp()`（SQLite 注入时钟）终检租约、状态、取消和 deadline；deadline 已过时原子收敛为 `failed/task_deadline_expired`，并补偿未绑定任务结果对象。
+- 普通工具异常透传稳定 `exc.code`，`ToolExecutionService` 不再吞掉 BaseException；`.env.example` 与 Compose 已显式共享预算、超时和 capability TTL 配置。
+- 验证：定向 SQLite 测试通过；独立 Docker PostgreSQL 迁移至 0012 后相关测试 `15 passed`，容器已删除；全量测试 `386 passed, 20 skipped`；`git diff --check` 通过。
 
-### 批次 3：正文生命周期闭环
+### 批次 3：正文生命周期闭环（F3/F4 二次修复已完成并验证）
 
-- 尚未新增独立 `TaskRetentionService`；工具和任务清理仍部分位于 `ToolExecutionService`/`TaskWorker`。
-- 运行时工具 GC 仍可能把 READ `succeeded` 改写为 `failed`，这与批次 3 要求的执行状态/正文状态分离不一致。
-- 任务结果 API 和 `TaskResultService` 尚未统一使用 expiry/purge 判断，也未完成明确的 expired/unavailable 分类。
-- waiting deadline reaper、删除失败保留引用并重试、固定前缀 orphan grace 扫描尚未完成。
-- 无调用方的 legacy approval 入口尚未删除。
+- 新增独立 `TaskRetentionService`，统一执行 waiting deadline reaper、工具正文 GC、任务 checkpoint/结果 GC 与固定前缀 orphan 扫描；`TaskWorker` 和 `ToolExecutionService` 不再承担 retention 周期职责。
+- 工具/任务执行结论与正文可用性已分离：GC 不改写 succeeded/refused/failed/cancelled/unknown；删除失败保留 ref/marker，成功后才写 purge marker。
+- `TaskResultService` 与任务 API 统一以 PostgreSQL `clock_timestamp()`（SQLite 注入时钟）判断正文可用性；到期/已清理为 410，未就绪为 409，完整性错误 fail-close 为 500。
+- waiting resume 与执行终态均在数据库时钟边界复核 deadline；对象最终绑定在工具 deadline 内复核，提交确认丢失时先锁行确认绑定再决定补偿删除。
+- orphan 扫描只处理 `tool-results/`、`task-results/`，具备 grace、运行中保护、前缀轮转、游标、有界失败重试和公平扫描；`approve_for_task_revision()` 已删除且源内零引用。
+- 本会话修复：结果绑定在任务行锁内复核当前身份；结果读取在返回前锁内终检；孤儿扫描在枚举期跳过已引用对象并采用有界扫描；证据冲突按授权/完整性分流；保留窗口、创建 deadline 与 Worker 关闭顺序已与契约对齐。
+- 2026-08-27 验收复核曾发现 F3 首窗全引用时游标停滞（P1）、F4 空目录不计扫描预算（P2）；当日按二次修复节完成修复：
+  - F3：`iter_ref_entries()` 改为规范序（目录带尾 `/` 排序保证与 ref 字符串序一致）+ `after` 位置游标 + `(entries, exhausted, resume)` 三元组；retention 游标改 opaque str——截断即前进、扫尽一律重置；枚举预算照常约束全部 stat；重试队列 ref 同入 exclude，防止 limit=1 时排队项挤占窗口饿死同前缀后续孤儿。游标纪律：任何"已检验、有资格、未返回"的对象绝不落到游标之下——预算溢出点不作游标，limit 收满时游标回退到最后一个已返回候选，杜绝跳过夹缝。验收语义为"有界轮次内收敛"（引用数 R、预算 B，≤ ceil(R/B)+1 轮），实测越窗/重启收敛/夹缝复现用例均通过。
+  - F4：`delete_exact()` 删文件后机会式 rmdir 父目录；扫描期对过期空目录 best-effort rmdir；`put_exclusive()` 对并发 rmdir 的 ENOENT 重试一次。不做硬性目录预算机制。
+- 验证（F3/F4 二次修复后全门禁，含夹缝缺陷补修复跑）：SQLite 定向三套件（retention/task_agent/task_worker_recovery）`39 passed`；隔离 Docker PostgreSQL（容器 `rag-kb-f3fix-8k4t`，postgres:18.6 @ 127.0.0.1:25432）迁移至 `20260826_0012` 并初始化 checkpointer 后定向 `6 passed`；本机 Qdrant healthz 200；全量套件在隔离 PostgreSQL + Qdrant 环境通过：`438 passed, 1 skipped in 231.61s`；`git diff --check` 通过；临时容器已删除并确认不存在。
 
-### 批次 4：最终验收与文档同步
+### 批次 4：最终验收与文档同步（已完成并验证）
 
-- 尚未完成所有定向、全量和隔离 PostgreSQL 门禁的最终汇总。
-- 尚未完成严格 msgpack 真实 Research E2E 的最终交付复核。
-- README、`docs/architecture.md`、`docs/migration.md`、使用指南和 acceptance artifact 尚未按全部批次最终同步；当前部分说明仍保留旧迁移目标。
-- 尚未执行最终临时数据库、Qdrant collection、对象目录和调试脚本清理清单复核。
-- 在上述事项完成前，不声明全文 M1 收口，也不进入 M2。
+- 修复严格真实 E2E 的阻塞缺陷：任务创建移到 Task Worker 构建（capability `m1-fenced-v2` 注册）之后；E2E 报告补齐 strict msgpack 运行时证据（`LANGGRAPH_STRICT_MSGPACK=true` 生效、`JsonPlusSerializer(pickle_fallback=False)`、allowlist 仅 `TaskResultCandidate`）、数据库观测版本数/工具状态/checkpoint 编码与结果可读证据；acceptance 汇总器相应强制这些字段。
+- 根因修复全量复跑暴露的 Qdrant 健壮性缺陷：`ensure_document_collection` 在创建请求不确定后对服务端异步落地增加短复查窗口（此前客户端超时 + 立即 get 404 会误判为 `document_index_collection_unavailable`），并为反例保留最小单测。
+- 文档已按当前代码行为同步：README（0012 head、capability 门 503、retention 收敛、最终命令与 E2E 后清理要求）、架构说明（四个 fencing 写边界、budgets 单一事实源、deadline 锁内终检、正文生命周期分离、strict serializer）、迁移说明（0011/0012、stop-the-world、禁止混跑）、使用指南（演示身份改用 `scripts/init_demo_principals.py`、503/409/410/500 行为）。
+- 验证（2026-08-27，隔离 PostgreSQL 18.6 容器 `rag-kb-m1b4-fymawleh` @ 127.0.0.1:56848，三个独立临时库）：
+  - SQLite/共享逻辑定向矩阵：`110 passed in 54.10s`。
+  - 全部 PostgreSQL 条件矩阵（10 个测试文件，含 checkpointer/fencing/retention/task_repository/tool_protocol/document_component/Qdrant 三套件）：`24 passed in 25.38s`，0 skip。
+  - 0012 独立空库 round-trip（SQLite 双向 + PostgreSQL upgrade/downgrade/upgrade）：`16 passed in 24.28s`。
+  - 第一次全量（含全部隔离集成）：`441 passed in 237.97s`，0 skip。
+  - 修复后最终全量 + JUnit：`441 passed in 260.17s`，0 skip 0 fail → `data/local/acceptance/pytest-stage9.xml`。
+  - 严格真实 Research E2E（strict msgpack、独立库/collection/对象目录）：passed，轨迹精确四工具、document_versions=2（DB 观测）、citations=3 且服务端复核、结果可读 → `docs/acceptance/m1-research-e2e.json`。
+  - 企业检索 benchmark（v2 数据集）：Recall@5=1.0、MRR=1.0、no-answer accuracy=1.0、ACL leak rate=0，cleanup collection/tenant/object_root 全部成功 → `data/local/benchmarks/enterprise-retrieval-stage9-sufficiency-aligned.json`。
+  - 最终汇总报告 verdict=passed → `docs/acceptance/latest.json`；`git diff --check` 通过。
+- 清理证据：本批容器及三个临时数据库随容器删除且确认不存在；`m1_e2e_b4fymawleh01` 与遗留 `stage3_component_123c8f3d...` collection 已删除，Qdrant 恢复基线三集合；`data/local/e2e/m1_e2e_*` 对象目录已删除；调试残留 `probe_enum7.py` 及两份 `.bak` 备份已删除。正式保留验收证据仅限 stage9 JUnit、stage9 检索报告与两个 acceptance JSON。
 
 ## 当前交付边界
 
-- 本次交付目标是 M1 批次 0 的协议骨架和 0012 迁移，不是全文 M1 最终验收。
-- `docs/acceptance/latest.json` 的整体质量 verdict 仍需以最新检索质量报告为依据；没有重新生成质量报告时，不得将其 `unverified` 解读为代码回归。
-- 0012 的真实发布必须遵守 stop-the-world 顺序；当前进度记录不替代正式发布 runbook。
+- M1 批次 0-4 已全部完成并验证：M1 达成最终收口标准，正式停止于 M1，不进入 M2；后续扩展需用户明确指令。
+- 0012 的真实发布仍必须遵守 stop-the-world 顺序；本批次进度记录不替代正式发布 runbook。

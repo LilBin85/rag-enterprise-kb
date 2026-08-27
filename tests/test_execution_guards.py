@@ -25,9 +25,15 @@ from rag_kb.application.tool_execution_service import (
     ToolExecutionService,
 )
 from rag_kb.application.tool_registry import ToolRegistry, builtin_tool_definitions
-from rag_kb.config import AGENT_MAX_MODEL_CALLS, AGENT_MAX_TOOL_CALLS, Settings
+from rag_kb.config import Settings
 from rag_kb.domain.identity import AuthContext
-from rag_kb.domain.tasks import TaskBudgets, TaskMode, TaskStatus
+from rag_kb.domain.tasks import (
+    DEFAULT_MAX_MODEL_CALLS,
+    DEFAULT_MAX_TOOL_CALLS,
+    TaskBudgets,
+    TaskMode,
+    TaskStatus,
+)
 from rag_kb.infrastructure.database import Base, build_database
 from rag_kb.infrastructure.database.models import (
     AgentTaskRow,
@@ -42,12 +48,18 @@ from rag_kb.infrastructure.object_store.local import LocalObjectStore
 # ---------- 修复 4：ExecutionGuardMiddleware 停止边界 ----------
 
 
-def _tool_message(call_id: str, *, failed: bool) -> ToolMessage:
+def _tool_message(
+    call_id: str,
+    *,
+    failed: bool,
+    tool_name: str = "search_knowledge",
+) -> ToolMessage:
     payload = {
+        "tool_name": tool_name,
         "status": "failed" if failed else "succeeded",
         "error_code": "tool_timeout" if failed else None,
     }
-    return ToolMessage(json.dumps(payload), tool_call_id=call_id)
+    return ToolMessage(json.dumps(payload), tool_call_id=call_id, name=tool_name)
 
 
 def _state(*messages: object) -> dict[str, object]:
@@ -61,8 +73,11 @@ def _call(name: str, args: dict[str, object], call_id: str) -> AIMessage:
 def test_three_consecutive_failed_tool_messages_stop_the_agent() -> None:
     guard = ExecutionGuardMiddleware()
     messages = (
+        _call("search_knowledge", {"query": "a"}, "a"),
         _tool_message("a", failed=True),
+        _call("search_knowledge", {"query": "b"}, "b"),
         _tool_message("b", failed=True),
+        _call("search_knowledge", {"query": "c"}, "c"),
         _tool_message("c", failed=True),
     )
 
@@ -70,9 +85,15 @@ def test_three_consecutive_failed_tool_messages_stop_the_agent() -> None:
         guard.before_model(_state(*messages), runtime=None)
 
     # 少于 3 条连续失败不触发；非连续失败也不累计。
-    guard.before_model(_state(*messages[:2]), runtime=None)
+    guard.before_model(_state(*messages[:4]), runtime=None)
     guard.before_model(
-        _state(_tool_message("a", failed=True), _call("search_knowledge", {}, "x")), runtime=None
+        _state(
+            _tool_message("a", failed=True),
+            _tool_message("b", failed=False),
+            _tool_message("c", failed=True),
+            _tool_message("d", failed=True),
+        ),
+        runtime=None,
     )
 
 
@@ -82,6 +103,7 @@ def test_repeated_same_arguments_tool_call_stops_the_agent() -> None:
         _call("search_knowledge", {"query": "q"}, "1"),
         _call("search_knowledge", {"query": "q"}, "2"),
     )
+    guard.before_model(_state(repeated[0]), runtime=None)
     with pytest.raises(AgentGuardError, match="agent_repeated_tool_call"):
         guard.before_model(_state(*repeated), runtime=None)
 
@@ -90,6 +112,32 @@ def test_repeated_same_arguments_tool_call_stops_the_agent() -> None:
         _call("search_knowledge", {"query": "其他"}, "2"),
     )
     guard.before_model(_state(*different_args), runtime=None)
+
+
+def test_guard_ignores_todo_structured_unknown_and_uncontrolled_tool_messages() -> None:
+    guard = ExecutionGuardMiddleware()
+    ignored_failures = (
+        *(
+            _tool_message(str(index), failed=True, tool_name="write_todos")
+            for index in range(3)
+        ),
+        *(
+            _tool_message(str(index), failed=True, tool_name="TaskResultCandidate")
+            for index in range(3, 6)
+        ),
+        ToolMessage("not-json", tool_call_id="ignored", name="search_knowledge"),
+    )
+    guard.before_model(_state(*ignored_failures), runtime=None)
+
+    ignored_calls = (
+        _call("write_todos", {"todos": []}, "todo-1"),
+        _call("write_todos", {"todos": []}, "todo-2"),
+        _call("TaskResultCandidate", {}, "result-1"),
+        _call("TaskResultCandidate", {}, "result-2"),
+        _call("unknown_tool", {}, "unknown-1"),
+        _call("unknown_tool", {}, "unknown-2"),
+    )
+    guard.before_model(_state(*ignored_calls), runtime=None)
 
 
 def test_guard_rescans_full_history_after_checkpoint_restore() -> None:
@@ -112,7 +160,13 @@ def test_agent_factory_registers_execution_guard_and_budget_defaults_match_confi
     original = factory_module.create_agent
     factory_module.create_agent = lambda **kwargs: captured.update(kwargs) or "agent"
     try:
-        build_research_agent("model", ["tool"], "checkpointer")
+        build_research_agent(
+            "model",
+            ["tool"],
+            "checkpointer",
+            max_model_calls=DEFAULT_MAX_MODEL_CALLS,
+            max_tool_calls=DEFAULT_MAX_TOOL_CALLS,
+        )
     finally:
         factory_module.create_agent = original
 
@@ -121,8 +175,8 @@ def test_agent_factory_registers_execution_guard_and_budget_defaults_match_confi
 
     settings = Settings()
     budgets = TaskBudgets()
-    assert settings.agent_max_model_calls == AGENT_MAX_MODEL_CALLS == budgets.max_model_calls
-    assert settings.agent_max_tool_calls == AGENT_MAX_TOOL_CALLS == budgets.max_tool_calls
+    assert settings.agent_max_model_calls == DEFAULT_MAX_MODEL_CALLS == budgets.max_model_calls
+    assert settings.agent_max_tool_calls == DEFAULT_MAX_TOOL_CALLS == budgets.max_tool_calls
 
 
 # ---------- 修复 4 P0：deadline 在 invoke 期间过期的终检 ----------
@@ -170,6 +224,11 @@ class _DeadlineExpiresAfterInvokeRepository(DatabaseTaskRepository):
     def __init__(self, database, agent: _SnapshotAgent) -> None:
         super().__init__(database)
         self._agent = agent
+        self.current_time_calls = 0
+
+    def current_time(self) -> datetime:
+        self.current_time_calls += 1
+        return super().current_time()
 
     def refresh_lease(self, lease, *, lease_seconds=None):
         refreshed = super().refresh_lease(lease, lease_seconds=lease_seconds)
@@ -197,10 +256,11 @@ def test_deadline_expiring_during_invoke_fails_task_without_succeeding(tmp_path:
     repository.create_task(auth=_auth(), goal="研究", task_mode=TaskMode.RESEARCH, task_id="task-a")
     agent = _SnapshotAgent()
 
+    repository = _DeadlineExpiresAfterInvokeRepository(database, agent)
     worker = TaskWorker(
-        repository=_DeadlineExpiresAfterInvokeRepository(database, agent),
+        repository=repository,
         auth_contexts=_AuthContexts(),
-        agent=agent,
+        agent_for=lambda _budgets: agent,
         results=AgentResultStore(LocalObjectStore(tmp_path / "objects")),
         evidence=EvidenceLedgerRepository(),
         tools=SimpleNamespace(close=lambda: None),
@@ -213,6 +273,7 @@ def test_deadline_expiring_during_invoke_fails_task_without_succeeding(tmp_path:
     assert outcome.status == "failed"
     assert outcome.error_code == "task_deadline_expired"
     assert repository.get_task(auth=_auth(), task_id="task-a").status is TaskStatus.FAILED
+    assert repository.current_time_calls >= 2
 
 
 # ---------- 修复 6：refused 结果契约 ----------
@@ -294,6 +355,51 @@ def test_read_tool_error_code_survives_into_execution_result(tmp_path: Path) -> 
 
     assert result.status == "failed"
     assert result.error_code == "document_version_not_found"
+
+
+def test_tool_execution_does_not_swallow_keyboard_interrupt(tmp_path: Path) -> None:
+    database = build_database(f"sqlite+pysqlite:///{(tmp_path / 'interrupt.sqlite3').as_posix()}")
+    Base.metadata.create_all(database.engine)
+    with database.sessions.begin() as session:
+        session.add(TenantRow(tenant_id="tenant-a", name="tenant-a"))
+        session.flush()
+        session.add(PrincipalRow(tenant_id="tenant-a", user_id="owner-a", roles=[], attributes=_auth().attributes))
+    repository = DatabaseTaskRepository(database)
+    repository.create_task(auth=_auth(), goal="研究", task_mode=TaskMode.RESEARCH, task_id="task-a")
+    lease = repository.claim_next(worker_id="worker-a", lease_seconds=60)
+    assert lease is not None
+
+    class InterruptingAdapter:
+        def execute(self, _arguments, _context):
+            raise KeyboardInterrupt
+
+        def verify(self, _result, _context) -> bool:
+            return False
+
+    definition = next(
+        item for item in builtin_tool_definitions() if item.name == "search_knowledge"
+    )
+    service = ToolExecutionService(
+        database,
+        ToolRegistry([definition], adapters={"search_knowledge": InterruptingAdapter()}),
+        ApprovalService(database),
+        tool_results=LocalObjectStore(tmp_path / "tool-results"),
+    )
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            service.execute(
+                ToolExecutionRequest(
+                    auth=_auth(),
+                    task_id="task-a",
+                    tool_name="search_knowledge",
+                    arguments={"query": "q"},
+                    worker_id=lease.worker_id,
+                    lease_generation=lease.lease_generation,
+                    idempotency_key="interrupt-key",
+                )
+            )
+    finally:
+        service.close()
 
 
 def test_retryable_classification_follows_whitelist() -> None:

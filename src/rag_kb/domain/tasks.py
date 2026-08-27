@@ -5,8 +5,6 @@ from enum import StrEnum
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
-from rag_kb.config import AGENT_MAX_MODEL_CALLS, AGENT_MAX_TOOL_CALLS
-
 
 class TaskMode(StrEnum):
     KNOWLEDGE_QUERY = "knowledge_query"
@@ -40,19 +38,24 @@ _RESEARCH_TERMINAL_STATUSES = frozenset(
     }
 )
 
+DEFAULT_MAX_MODEL_CALLS = 12
+DEFAULT_MAX_TOOL_CALLS = 20
+DEFAULT_MAX_RUNTIME_SECONDS = 600
+DEFAULT_TOOL_TIMEOUT_SECONDS = 30
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class TaskBudgets(StrictModel):
-    """业务级执行预算；默认值与 Settings/build_research_agent 同源（config 常量）。"""
+    """业务级执行预算；Settings 只决定新建任务的持久默认值。"""
 
-    max_model_calls: int = Field(default=AGENT_MAX_MODEL_CALLS, ge=0)
-    max_tool_calls: int = Field(default=AGENT_MAX_TOOL_CALLS, ge=0)
-    max_runtime_seconds: int = Field(default=600, ge=1)
+    max_model_calls: int = Field(default=DEFAULT_MAX_MODEL_CALLS, ge=1)
+    max_tool_calls: int = Field(default=DEFAULT_MAX_TOOL_CALLS, ge=1)
+    max_runtime_seconds: int = Field(default=DEFAULT_MAX_RUNTIME_SECONDS, ge=1)
     max_context_tokens: int = Field(default=32_000, ge=1)
-    tool_timeout_seconds: int = Field(default=30, ge=1)
+    tool_timeout_seconds: int = Field(default=DEFAULT_TOOL_TIMEOUT_SECONDS, ge=1)
 
 
 class TaskState(StrictModel):

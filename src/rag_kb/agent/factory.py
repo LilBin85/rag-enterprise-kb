@@ -14,7 +14,6 @@ from langchain.agents.structured_output import ToolStrategy
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
-from rag_kb.config import AGENT_MAX_MODEL_CALLS, AGENT_MAX_TOOL_CALLS
 from rag_kb.agent.context import AgentRunContext
 from rag_kb.agent.middleware import (
     ClarificationInterruptMiddleware,
@@ -30,8 +29,8 @@ def build_research_agent(
     tools: list[BaseTool],
     checkpointer: BaseCheckpointSaver,
     *,
-    max_model_calls: int = AGENT_MAX_MODEL_CALLS,
-    max_tool_calls: int = AGENT_MAX_TOOL_CALLS,
+    max_model_calls: int,
+    max_tool_calls: int,
 ) -> Any:
     """编译研究 Agent：结构化结果 + 线程短期记忆 + 调用限制，全部 fail-closed。"""
     return create_agent(

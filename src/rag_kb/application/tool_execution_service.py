@@ -10,7 +10,7 @@ import logging
 from threading import Lock
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from rag_kb.application.approval_service import (
@@ -46,9 +46,21 @@ from rag_kb.infrastructure.object_store.local import LocalObjectStore, ObjectCon
 
 logger = logging.getLogger(__name__)
 
-# 工具执行中的致命错误码：失租/身份失效的旧 Worker 必须立即终止，
-# 禁止渲染 ToolMessage 继续模型循环或回写 checkpoint。
-_FATAL_TOOL_CODES = {"tool_task_lease_stale", "task_auth_context_changed"}
+# 失租与身份失效都必须中止图执行，避免继续写 ToolMessage/checkpoint；
+# 但 TaskWorker 只可把前者视为 stale，后者仍应在持租约时失败关闭。
+_STALE_TOOL_CODES = frozenset({"tool_task_lease_stale", "task_checkpoint_lease_stale"})
+_AUTH_TOOL_CODES = frozenset(
+    {
+        "task_auth_context_changed",
+        "task_auth_context_binding_mismatch",
+        "task_principal_unavailable",
+    }
+)
+_FATAL_TOOL_CODES = _STALE_TOOL_CODES | _AUTH_TOOL_CODES
+
+
+def _aware_datetime(value: datetime | None) -> datetime | None:
+    return value.replace(tzinfo=UTC) if value is not None and value.tzinfo is None else value
 
 
 def _default_tool_result_ttl_seconds() -> int:
@@ -123,8 +135,12 @@ class ToolExecutionService:
         registered = self._registry.get(request.tool_name)
         definition = registered.definition
         self._registry.validate_input(registered, request.arguments)
+        arguments_hash = arguments_fingerprint(request.arguments)
+        principal_hash = principal_fingerprint(request.auth)
+        # 首次执行也从任务行锁内重建当前身份，不能只信任 invoke 开始时快照。
+        current_auth = self._current_execution_auth(request, principal_hash=principal_hash)
         permissions = frozenset(
-            permission for permission in Permission if request.auth.has_permission(permission)
+            permission for permission in Permission if current_auth.has_permission(permission)
         )
         self._registry.authorize(
             request.tool_name,
@@ -150,11 +166,6 @@ class ToolExecutionService:
                 )
                 raise
 
-        arguments_hash = arguments_fingerprint(request.arguments)
-        principal_hash = principal_fingerprint(request.auth)
-        # 幂等回读之前先过租约门：失租 Worker 连旧结果都不得回放。
-        with self._database.sessions() as session:
-            self._require_active_lease(session, request)
         duplicate = self._existing_idempotent_result(
             request, registered, arguments_hash, principal_hash
         )
@@ -195,27 +206,34 @@ class ToolExecutionService:
                         )
                 executor.shutdown(wait=False, cancel_futures=True)
             return self._complete(
+                request,
                 tool_call_id,
                 status="unknown" if definition.mode is ToolMode.WRITE else "failed",
                 error_code="tool_timeout",
             )
-        except BaseException as exc:
+        except Exception as exc:
             logger.error("受控工具执行失败 error_type=%s", type(exc).__name__)
             status = "unknown" if definition.mode is ToolMode.WRITE else "failed"
             code = getattr(exc, "code", None)
             if not isinstance(code, str) or not code:
                 code = f"tool_execution_failed_{type(exc).__name__.lower()}"
-            return self._complete(tool_call_id, status=status, error_code=code)
+            return self._complete(request, tool_call_id, status=status, error_code=code)
         try:
             self._registry.validate_output(registered, result)
             verified = registered.adapter.verify(result, context)
-        except BaseException:
+        except Exception:
             verified = False
         if not verified:
             status = "unknown" if definition.mode is ToolMode.WRITE else "failed"
-            return self._complete(tool_call_id, status=status, error_code="tool_result_unverified")
+            return self._complete(
+                request,
+                tool_call_id,
+                status=status,
+                error_code="tool_result_unverified",
+            )
         result_hash = canonical_fingerprint("tool_result", result)
         return self._complete(
+            request,
             tool_call_id,
             status="succeeded",
             result_hash=result_hash,
@@ -226,6 +244,19 @@ class ToolExecutionService:
         with self._executor_lock:
             self._executor.shutdown(wait=False, cancel_futures=True)
 
+    def _execution_now(self, session) -> datetime:
+        if session.get_bind().dialect.name != "postgresql":
+            return self._now()
+        value = session.scalar(select(func.clock_timestamp()))
+        if not isinstance(value, datetime):
+            raise RuntimeError("database_clock_unavailable")
+        return _aware_datetime(value) or value
+
+    def _execution_clock_expression(self, session):
+        if session.get_bind().dialect.name == "postgresql":
+            return func.clock_timestamp()
+        return self._now()
+
     def _existing_idempotent_result(
         self,
         request: ToolExecutionRequest,
@@ -235,40 +266,32 @@ class ToolExecutionService:
     ) -> ToolExecutionResult | None:
         if request.idempotency_key is None:
             return None
-        with self._database.sessions() as session:
-            row = session.scalar(
-                select(ToolCallRow).where(
+        with UnitOfWork(self._database) as work:
+            assert work.session is not None
+            self._require_current_execution_context(
+                work.session, request, principal_hash=principal_hash
+            )
+            row = work.session.scalar(
+                select(ToolCallRow)
+                .where(
                     ToolCallRow.tenant_id == request.auth.tenant_id,
                     ToolCallRow.task_id == request.task_id,
                     ToolCallRow.tool_name == request.tool_name,
                     ToolCallRow.idempotency_key == request.idempotency_key,
                 )
+                .with_for_update()
             )
             if row is None:
                 return None
-            binding = (
-                row.plan_revision,
-                row.plan_digest,
-                row.evidence_digest,
-                row.tool_version,
-                row.arguments_hash,
-                row.principal_hash,
+            self._validate_idempotency_binding(
+                row, request, registered, arguments_hash, principal_hash
             )
-            expected = (
-                request.plan_revision,
-                request.plan_digest,
-                request.evidence_digest,
-                registered.definition.version,
-                arguments_hash,
-                principal_hash,
-            )
-            if binding != expected:
-                raise ToolExecutionError("idempotency_key_conflict")
-            expires_at = row.result_expires_at
-            if expires_at is not None and expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=UTC)
-            if row.status == "succeeded" and expires_at is not None and expires_at <= self._now():
-                # TTL 已过：正文视为不存在，绝不凭 hash 回放（不可重试）。
+            now = self._execution_now(work.session)
+            expires_at = _aware_datetime(row.result_expires_at)
+            if row.status == "succeeded" and (
+                row.result_purged_at is not None
+                or expires_at is not None and expires_at <= now
+            ):
                 return ToolExecutionResult(
                     tool_call_id=row.tool_call_id,
                     status="failed",
@@ -276,54 +299,103 @@ class ToolExecutionService:
                     error_code="tool_result_expired",
                     duplicate=True,
                 )
-            readback: dict[str, object] | None = None
-            if row.status == "succeeded":
-                if not row.result_ref or self._tool_results is None:
-                    return ToolExecutionResult(
-                        tool_call_id=row.tool_call_id,
-                        status="failed" if row.mode == "read" else "unknown",
-                        result_hash=row.result_hash,
-                        error_code="tool_result_readback_failed",
-                        duplicate=True,
-                    )
-                try:
-                    parsed = json.loads(self._tool_results.read(row.result_ref))
-                    if (
-                        not isinstance(parsed, dict)
-                        or canonical_fingerprint("tool_result", parsed) != row.result_hash
-                    ):
-                        parsed = None
-                except (OSError, ValueError, json.JSONDecodeError):
-                    parsed = None
-                if parsed is None:
-                    # 不可解引用或校验失败的成功结果不得凭 hash 伪装正文。
-                    return ToolExecutionResult(
-                        tool_call_id=row.tool_call_id,
-                        status="failed",
-                        result_hash=row.result_hash,
-                        error_code="tool_result_readback_failed",
-                        duplicate=True,
-                    )
-                readback = parsed
+            if row.status != "succeeded":
+                return ToolExecutionResult(
+                    tool_call_id=row.tool_call_id,
+                    status=row.status if row.status != "running" else (
+                        "failed" if row.mode == "read" else "unknown"
+                    ),
+                    result_hash=row.result_hash,
+                    result_ref=row.result_ref,
+                    error_code=(
+                        "previous_execution_in_progress"
+                        if row.status == "running"
+                        else row.error_code
+                    ),
+                    duplicate=True,
+                )
+            if not row.result_ref or self._tool_results is None:
+                return ToolExecutionResult(
+                    tool_call_id=row.tool_call_id,
+                    status="failed" if row.mode == "read" else "unknown",
+                    result_hash=row.result_hash,
+                    error_code="tool_result_readback_failed",
+                    duplicate=True,
+                )
+            tool_call_id = row.tool_call_id
+            mode = row.mode
+            result_ref = row.result_ref
+            result_hash = row.result_hash
+            historical_principal_hash = row.principal_hash
+
+        try:
+            parsed = json.loads(self._tool_results.read(result_ref))
+            if (
+                not isinstance(parsed, dict)
+                or canonical_fingerprint("tool_result", parsed) != result_hash
+            ):
+                parsed = None
+        except (OSError, ValueError, json.JSONDecodeError):
+            parsed = None
+
+        # 对象读取不受数据库事务保护；返回正文前必须再次重过租约和当前身份门。
+        with UnitOfWork(self._database) as work:
+            assert work.session is not None
+            self._require_current_execution_context(
+                work.session,
+                request,
+                principal_hash=principal_hash,
+                historical_principal_hash=historical_principal_hash,
+            )
+            latest = work.session.scalar(
+                select(ToolCallRow)
+                .where(
+                    ToolCallRow.tool_call_id == tool_call_id,
+                    ToolCallRow.tenant_id == request.auth.tenant_id,
+                    ToolCallRow.task_id == request.task_id,
+                )
+                .with_for_update()
+            )
+            now = self._execution_now(work.session)
+            if (
+                latest is None
+                or latest.status != "succeeded"
+                or latest.result_ref != result_ref
+                or latest.result_hash != result_hash
+                or latest.result_purged_at is not None
+                or (
+                    _aware_datetime(latest.result_expires_at) is not None
+                    and _aware_datetime(latest.result_expires_at) <= now
+                )
+            ):
+                return ToolExecutionResult(
+                    tool_call_id=tool_call_id,
+                    status="failed" if mode == "read" else "unknown",
+                    result_hash=result_hash,
+                    error_code="tool_result_expired",
+                    duplicate=True,
+                )
+        if parsed is None:
+            # 不可解引用或校验失败的成功结果不得凭 hash 伪装正文。
             return ToolExecutionResult(
-                tool_call_id=row.tool_call_id,
-                status=row.status if row.status != "running" else (
-                    "failed" if row.mode == "read" else "unknown"
-                ),
-                result_hash=row.result_hash,
-                result_ref=row.result_ref,
-                result=readback,
-                error_code=(
-                    "previous_execution_in_progress"
-                    if row.status == "running"
-                    else row.error_code
-                ),
+                tool_call_id=tool_call_id,
+                status="failed" if mode == "read" else "unknown",
+                result_hash=result_hash,
+                error_code="tool_result_readback_failed",
                 duplicate=True,
             )
+        return ToolExecutionResult(
+            tool_call_id=tool_call_id,
+            status="succeeded",
+            result_hash=result_hash,
+            result_ref=result_ref,
+            result=parsed,
+            duplicate=True,
+        )
 
     def _require_active_lease(
         self, session, request: ToolExecutionRequest
-    ) -> AgentTaskRow | None:
+    ) -> AgentTaskRow:
         """租约 fencing 共享校验：owner/generation/expiry + cancelled + deadline。"""
         task = session.scalar(
             select(AgentTaskRow)
@@ -335,7 +407,8 @@ class ToolExecutionService:
             .with_for_update()
         )
         if task is None:
-            return None
+            raise ToolExecutionError("tool_task_missing")
+        now = self._execution_now(session)
         lease_expires_at = task.lease_expires_at
         if lease_expires_at is not None and lease_expires_at.tzinfo is None:
             lease_expires_at = lease_expires_at.replace(tzinfo=UTC)
@@ -343,15 +416,84 @@ class ToolExecutionService:
             task.lease_owner != request.worker_id
             or task.lease_generation != request.lease_generation
             or lease_expires_at is None
-            or lease_expires_at <= self._now()
+            or lease_expires_at <= now
         ):
             raise ToolExecutionError("tool_task_lease_stale")
         deadline = task.deadline
         if deadline is not None and deadline.tzinfo is None:
             deadline = deadline.replace(tzinfo=UTC)
-        if task.cancelled or deadline is not None and deadline <= self._now():
+        if (
+            task.cancelled
+            or task.status not in {"planning", "running"}
+            or deadline is not None and deadline <= now
+        ):
             raise ToolExecutionError("tool_task_not_executable")
         return task
+
+    def _current_execution_auth(
+        self, request: ToolExecutionRequest, *, principal_hash: str
+    ) -> AuthContext:
+        with UnitOfWork(self._database) as work:
+            assert work.session is not None
+            _, current_auth = self._require_current_execution_context(
+                work.session, request, principal_hash=principal_hash
+            )
+            return current_auth
+
+    def _require_current_execution_context(
+        self,
+        session,
+        request: ToolExecutionRequest,
+        *,
+        principal_hash: str,
+        historical_principal_hash: str | None = None,
+    ) -> tuple[AgentTaskRow, AuthContext]:
+        """共享任务行锁门：当前租约、当前身份和历史主体绑定必须同时成立。"""
+        task = self._require_active_lease(session, request)
+        try:
+            current_auth = current_task_auth(
+                session,
+                task=task,
+                auth_context_ref=task.auth_context_ref,
+                request_id=request.auth.request_id,
+            )
+        except TaskExecutionContextError as exc:
+            raise ToolExecutionError(getattr(exc, "code", str(exc))) from exc
+        current_principal_hash = principal_fingerprint(current_auth)
+        if (
+            current_principal_hash != principal_hash
+            or historical_principal_hash is not None
+            and current_principal_hash != historical_principal_hash
+        ):
+            raise ToolExecutionError("task_auth_context_changed")
+        return task, current_auth
+
+    @staticmethod
+    def _validate_idempotency_binding(
+        row: ToolCallRow,
+        request: ToolExecutionRequest,
+        registered: RegisteredTool,
+        arguments_hash: str,
+        principal_hash: str,
+    ) -> None:
+        if row.principal_hash != principal_hash:
+            raise ToolExecutionError("task_auth_context_changed")
+        binding = (
+            row.plan_revision,
+            row.plan_digest,
+            row.evidence_digest,
+            row.tool_version,
+            row.arguments_hash,
+        )
+        expected = (
+            request.plan_revision,
+            request.plan_digest,
+            request.evidence_digest,
+            registered.definition.version,
+            arguments_hash,
+        )
+        if binding != expected:
+            raise ToolExecutionError("idempotency_key_conflict")
 
     def _persist_running(
         self,
@@ -366,7 +508,9 @@ class ToolExecutionService:
         try:
             with UnitOfWork(self._database) as work:
                 assert work.session is not None
-                task = self._require_active_lease(work.session, request)
+                task, current_auth = self._require_current_execution_context(
+                    work.session, request, principal_hash=principal_hash
+                )
                 plan = None
                 if definition.mode is ToolMode.WRITE:
                     plan = work.session.scalar(
@@ -378,22 +522,8 @@ class ToolExecutionService:
                             PlanRevisionRow.evidence_digest == request.evidence_digest,
                         ).with_for_update()
                     )
-                if task is None or (
-                    definition.mode is ToolMode.WRITE and plan is None
-                ):
+                if definition.mode is ToolMode.WRITE and plan is None:
                     raise ToolExecutionError("tool_plan_binding_invalid")
-                # 逐工具身份重解析：行锁内重建当前身份，角色/组撤销立即生效。
-                try:
-                    current_auth = current_task_auth(
-                        work.session,
-                        task=task,
-                        auth_context_ref=task.auth_context_ref,
-                        request_id=request.auth.request_id,
-                    )
-                except TaskExecutionContextError as exc:
-                    raise ToolExecutionError(getattr(exc, "code", str(exc))) from exc
-                if principal_fingerprint(current_auth) != principal_hash:
-                    raise ToolExecutionError("task_auth_context_changed")
                 if definition.mode is ToolMode.WRITE:
                     if task.task_mode != "controlled_action":
                         raise ToolExecutionError("write_task_mode_denied")
@@ -435,6 +565,7 @@ class ToolExecutionService:
                         tool_version=definition.version,
                         arguments_hash=arguments_hash,
                     )
+                now = self._execution_now(work.session)
                 work.session.add(
                     ToolCallRow(
                         tool_call_id=tool_call_id,
@@ -452,9 +583,8 @@ class ToolExecutionService:
                         idempotency_key=request.idempotency_key,
                         risk_level=definition.risk_level.value,
                         status="running",
-                        created_at=self._now(),
-                        execution_deadline=self._now()
-                        + timedelta(seconds=definition.timeout_seconds),
+                        created_at=now,
+                        execution_deadline=now + timedelta(seconds=definition.timeout_seconds),
                     )
                 )
                 if approval is not None:
@@ -545,6 +675,7 @@ class ToolExecutionService:
 
     def _complete(
         self,
+        request: ToolExecutionRequest,
         tool_call_id: str,
         *,
         status: str,
@@ -552,105 +683,150 @@ class ToolExecutionService:
         result_hash: str | None = None,
         result: dict[str, object] | None = None,
     ) -> ToolExecutionResult:
+        principal_hash = principal_fingerprint(request.auth)
         with UnitOfWork(self._database) as work:
             assert work.session is not None
-            row = work.session.scalar(
-                select(ToolCallRow).where(ToolCallRow.tool_call_id == tool_call_id).with_for_update()
+            self._require_current_execution_context(
+                work.session, request, principal_hash=principal_hash
             )
-            if row is None or row.status != "running":
-                raise ToolExecutionError("tool_call_state_conflict")
-            final_status = status
-            final_error = error_code
-            final_hash = result_hash
-            result_ref: str | None = None
-            result_size: int | None = None
-            result_expires_at = None
-            if status == "succeeded" and result is None:
-                final_status = "failed" if row.mode == "read" else "unknown"
-                final_error = "tool_result_missing"
-                final_hash = None
-            elif status == "succeeded" and self._tool_results is None:
-                final_status = "failed" if row.mode == "read" else "unknown"
-                final_error = "tool_result_store_unavailable"
-                final_hash = None
-            elif status == "succeeded" and result is not None:
-                assert self._tool_results is not None
-                payload = json.dumps(
-                    result, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-                ).encode("utf-8")
-                result_ref = f"tool-results/{row.task_id}/{tool_call_id}.json"
-                try:
-                    self._tool_results.put_exclusive(result_ref, payload)
-                except ObjectConflictError:
-                    try:
-                        existing = json.loads(self._tool_results.read(result_ref))
-                    except (OSError, ValueError, json.JSONDecodeError):
-                        existing = None
-                    if (
-                        not isinstance(existing, dict)
-                        or canonical_fingerprint("tool_result", existing) != result_hash
-                    ):
-                        final_status = "failed" if row.mode == "read" else "unknown"
-                        final_error = "tool_result_persist_conflict"
-                        final_hash = None
-                        result_ref = None
-                    else:
-                        result_size = len(payload)
-                        result_expires_at = self._now() + timedelta(
-                            seconds=self._tool_result_ttl_seconds
-                        )
-                except (OSError, ValueError):
-                    # ponytail: READ 结果无法持久化时可安全失败；WRITE 副作用已发生，
-                    # 因而保持 unknown 交由人工收敛（计划 §6.11）。
-                    logger.error("工具结果对象持久化失败 tool_call_id=%s", tool_call_id)
-                    final_status = "failed" if row.mode == "read" else "unknown"
-                    final_error = "tool_result_persist_failed"
-                    final_hash = None
-                    result_ref = None
-                else:
-                    result_size = len(payload)
-                    result_expires_at = self._now() + timedelta(
-                        seconds=self._tool_result_ttl_seconds
-                    )
-            now = self._now()
-            row.status = final_status
-            row.result_hash = final_hash
-            row.error_code = final_error
-            row.result_ref = result_ref
-            row.result_size = result_size
-            row.result_expires_at = result_expires_at
-            row.completed_at = now
-            row.verified_at = now if final_status == "succeeded" else None
-            task = work.session.scalar(
-                select(AgentTaskRow)
+            row = work.session.scalar(
+                select(ToolCallRow)
                 .where(
-                    AgentTaskRow.tenant_id == row.tenant_id,
-                    AgentTaskRow.task_id == row.task_id,
+                    ToolCallRow.tool_call_id == tool_call_id,
+                    ToolCallRow.tenant_id == request.auth.tenant_id,
+                    ToolCallRow.task_id == request.task_id,
                 )
                 .with_for_update()
             )
-            if task is None:
-                raise ToolExecutionError("tool_task_missing")
-            if row.mode == "write" and final_status == "unknown":
-                for artifact in work.session.scalars(
-                    select(ArtifactRow).where(
-                        ArtifactRow.tenant_id == row.tenant_id,
-                        ArtifactRow.task_id == row.task_id,
-                        ArtifactRow.tool_call_id == row.tool_call_id,
-                        ArtifactRow.status.in_(("creating", "ready")),
-                    )
+            if row is None or row.status != "running":
+                raise ToolExecutionError("tool_call_state_conflict")
+            if row.principal_hash != principal_hash:
+                raise ToolExecutionError("task_auth_context_changed")
+            task_id = row.task_id
+            mode = row.mode
+
+        final_status = status
+        final_error = error_code
+        final_hash = result_hash
+        result_ref: str | None = None
+        result_size: int | None = None
+        result_expires_at = None
+        result_to_discard: str | None = None
+        wrote_result = False
+        if status == "succeeded" and (result is None or result_hash is None):
+            final_status = "failed" if mode == "read" else "unknown"
+            final_error = "tool_result_missing"
+            final_hash = None
+        elif status == "succeeded" and self._tool_results is None:
+            final_status = "failed" if mode == "read" else "unknown"
+            final_error = "tool_result_store_unavailable"
+            final_hash = None
+        elif status == "succeeded" and result is not None:
+            assert self._tool_results is not None
+            payload = json.dumps(
+                result, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            result_ref = f"tool-results/{task_id}/{tool_call_id}.json"
+            try:
+                self._tool_results.put_exclusive(result_ref, payload)
+                wrote_result = True
+            except ObjectConflictError:
+                try:
+                    existing = json.loads(self._tool_results.read(result_ref))
+                except (OSError, ValueError, json.JSONDecodeError):
+                    existing = None
+                if (
+                    not isinstance(existing, dict)
+                    or canonical_fingerprint("tool_result", existing) != result_hash
                 ):
-                    artifact.status = "unknown"
-                task.status = "unknown"
-                task.last_error_code = final_error
-                task.lease_owner = None
-                task.lease_expires_at = None
-                task.state_version += 1
-            elif row.mode == "write" and final_status == "succeeded" and result is not None:
-                storage_key = result.get("storage_key")
-                if isinstance(storage_key, str) and storage_key not in task.artifact_refs:
-                    task.artifact_refs = [*task.artifact_refs, storage_key]
+                    final_status = "failed" if mode == "read" else "unknown"
+                    final_error = "tool_result_persist_conflict"
+                    final_hash = None
+                    result_ref = None
+            except (OSError, ValueError):
+                # ponytail: READ 结果无法持久化时可安全失败；WRITE 副作用已发生，
+                # 因而保持 unknown 交由人工收敛（计划 §6.11）。
+                logger.error("工具结果对象持久化失败 tool_call_id=%s", tool_call_id)
+                final_status = "failed" if mode == "read" else "unknown"
+                final_error = "tool_result_persist_failed"
+                final_hash = None
+                result_ref = None
+            else:
+                result_size = len(payload)
+            if result_ref is not None and result_size is None:
+                result_size = len(payload)
+
+        try:
+            with UnitOfWork(self._database) as work:
+                assert work.session is not None
+                task, _ = self._require_current_execution_context(
+                    work.session, request, principal_hash=principal_hash
+                )
+                row = work.session.scalar(
+                    select(ToolCallRow)
+                    .where(
+                        ToolCallRow.tool_call_id == tool_call_id,
+                        ToolCallRow.tenant_id == request.auth.tenant_id,
+                        ToolCallRow.task_id == request.task_id,
+                    )
+                    .with_for_update()
+                )
+                if row is None or row.status != "running":
+                    raise ToolExecutionError("tool_call_state_conflict")
+                if row.principal_hash != principal_hash:
+                    raise ToolExecutionError("task_auth_context_changed")
+                now = self._execution_now(work.session)
+                execution_deadline = _aware_datetime(row.execution_deadline)
+                if (
+                    result_ref is not None
+                    and execution_deadline is not None
+                    and execution_deadline <= now
+                ):
+                    result_to_discard = result_ref
+                    final_status = "failed" if row.mode == "read" else "unknown"
+                    final_error = "execution_deadline_expired"
+                    final_hash = None
+                    result_ref = None
+                    result_size = None
+                if result_ref is not None:
+                    result_expires_at = now + timedelta(
+                        seconds=self._tool_result_ttl_seconds
+                    )
+                row.status = final_status
+                row.result_hash = final_hash
+                row.error_code = final_error
+                row.result_ref = result_ref
+                row.result_size = result_size
+                row.result_expires_at = result_expires_at
+                row.completed_at = now
+                row.verified_at = now if final_status == "succeeded" else None
+                if row.mode == "write" and final_status == "unknown":
+                    for artifact in work.session.scalars(
+                        select(ArtifactRow).where(
+                            ArtifactRow.tenant_id == row.tenant_id,
+                            ArtifactRow.task_id == row.task_id,
+                            ArtifactRow.tool_call_id == row.tool_call_id,
+                            ArtifactRow.status.in_(("creating", "ready")),
+                        )
+                    ):
+                        artifact.status = "unknown"
+                    task.status = "unknown"
+                    task.last_error_code = final_error
+                    task.lease_owner = None
+                    task.lease_expires_at = None
                     task.state_version += 1
+                elif row.mode == "write" and final_status == "succeeded" and result is not None:
+                    storage_key = result.get("storage_key")
+                    if isinstance(storage_key, str) and storage_key not in task.artifact_refs:
+                        task.artifact_refs = [*task.artifact_refs, storage_key]
+                        task.state_version += 1
+        except Exception:
+            cleanup_ref = result_to_discard or result_ref
+            if wrote_result and cleanup_ref is not None:
+                self._delete_unbound_result(cleanup_ref, tool_call_id)
+            raise
+        if wrote_result and result_to_discard is not None:
+            self._delete_unbound_result(result_to_discard, tool_call_id)
         return ToolExecutionResult(
             tool_call_id=tool_call_id,
             status=final_status,
@@ -660,29 +836,55 @@ class ToolExecutionService:
             error_code=final_error,
         )
 
+    def _delete_unbound_result(self, result_ref: str, tool_call_id: str) -> None:
+        if self._result_is_bound(result_ref, tool_call_id):
+            return
+        assert self._tool_results is not None
+        try:
+            self._tool_results.delete_exact(result_ref)
+        except OSError:
+            logger.error("未绑定工具结果补偿删除失败 tool_call_id=%s", tool_call_id)
+
+    def _result_is_bound(self, result_ref: str, tool_call_id: str) -> bool:
+        try:
+            with UnitOfWork(self._database) as work:
+                assert work.session is not None
+                row = work.session.scalar(
+                    select(ToolCallRow)
+                    .where(ToolCallRow.tool_call_id == tool_call_id)
+                    .with_for_update()
+                )
+                return row is not None and row.result_ref == result_ref
+        except Exception:
+            # 提交确认丢失时不能猜测未绑定；保留对象交给孤儿扫描收敛。
+            logger.error("工具结果绑定状态确认失败 tool_call_id=%s", tool_call_id)
+            return True
+
     def expire_stale_running(self, *, limit: int = 100) -> int:
         """崩溃恢复清理器只收敛状态，绝不重放工具。"""
         if limit < 1:
             raise ValueError("invalid_sweeper_limit")
         with UnitOfWork(self._database) as work:
             assert work.session is not None
+            clock = self._execution_clock_expression(work.session)
             rows = tuple(
                 work.session.scalars(
                     select(ToolCallRow)
                     .where(
                         ToolCallRow.status == "running",
-                        ToolCallRow.execution_deadline <= self._now(),
+                        ToolCallRow.execution_deadline <= clock,
                     )
                     .order_by(ToolCallRow.execution_deadline)
                     .limit(limit)
                     .with_for_update(skip_locked=True)
                 )
             )
+            now = self._execution_now(work.session)
             for row in rows:
                 # READ 崩溃可安全收敛为 failed；WRITE 副作用未知必须保持 unknown。
                 row.status = "failed" if row.mode == "read" else "unknown"
                 row.error_code = "execution_deadline_expired"
-                row.completed_at = self._now()
+                row.completed_at = now
                 if row.mode == "write":
                     for artifact in work.session.scalars(
                         select(ArtifactRow).where(
@@ -708,48 +910,3 @@ class ToolExecutionService:
                         task.lease_expires_at = None
                         task.state_version += 1
             return len(rows)
-
-    def purge_expired_tool_results(self, *, limit: int = 100) -> int:
-        """删除过期工具结果对象并置 result_ref=NULL；hash 保留供审计。
-
-        幂等可重扫：已清理行的 result_ref 为空，天然不再命中。
-        """
-        if limit < 1:
-            raise ValueError("invalid_sweeper_limit")
-        if self._tool_results is None:
-            return 0
-        purged = 0
-        while purged < limit:
-            with UnitOfWork(self._database) as work:
-                assert work.session is not None
-                rows = tuple(
-                    work.session.scalars(
-                        select(ToolCallRow)
-                        .where(
-                            ToolCallRow.result_ref.is_not(None),
-                            ToolCallRow.result_expires_at <= self._now(),
-                        )
-                        .order_by(ToolCallRow.result_expires_at)
-                        .limit(min(25, limit - purged))
-                        .with_for_update(skip_locked=True)
-                    )
-                )
-                if not rows:
-                    break
-                for row in rows:
-                    try:
-                        self._tool_results.delete_exact(row.result_ref)
-                    except OSError:
-                        # 对象缺失不阻塞收敛；引用仍会被置空，避免永久重扫。
-                        logger.error(
-                            "工具结果对象删除失败 tool_call_id=%s", row.tool_call_id
-                        )
-                    # succeeded 行必须携带完整结果引用（CHECK），TTL 清理后
-                    # 按模式收敛终态：READ 失败、WRITE 保持 unknown。
-                    row.status = "unknown" if row.mode == "write" else "failed"
-                    row.error_code = "tool_result_expired"
-                    row.result_ref = None
-                    row.result_size = None
-                    row.result_expires_at = None
-                    purged += 1
-        return purged

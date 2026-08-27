@@ -1,5 +1,6 @@
 """M1 Research Agent 任务接口。"""
 
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -34,7 +35,7 @@ def _require(auth: AuthContext, permission: Permission) -> None:
         raise HTTPException(status_code=403, detail="任务权限不足")
 
 
-def _task_response(state: TaskState) -> TaskResponse:
+def _task_response(*, state: TaskState, now: datetime) -> TaskResponse:
     return TaskResponse(
         task_id=state.task_id,
         goal=state.goal,
@@ -43,7 +44,7 @@ def _task_response(state: TaskState) -> TaskResponse:
         state_version=state.state_version,
         interrupt_kind=state.interrupt_kind,
         interrupt_summary=state.interrupt_summary,
-        result_available=bool(state.result_ref and state.result_hash),
+        result_available=state.result_available(now=now),
         cancelled=state.cancelled,
     )
 
@@ -51,6 +52,8 @@ def _task_response(state: TaskState) -> TaskResponse:
 def _repository_error(exc: TaskRepositoryError) -> HTTPException:
     if exc.code == "task_not_found":
         return HTTPException(status_code=404, detail="任务不存在")
+    if exc.code == "research_agent_unavailable":
+        return HTTPException(status_code=503, detail="Research Agent 暂不可用")
     if exc.code in {
         "task_state_conflict",
         "task_not_waiting_for_user",
@@ -72,7 +75,10 @@ def create_task(
     _require(auth, Permission.TASK_CREATE)
     try:
         return _task_response(
-            repository.create_task(auth=auth, goal=request.goal, task_mode=request.task_mode)
+            state=repository.create_task(
+                auth=auth, goal=request.goal, task_mode=request.task_mode
+            ),
+            now=repository.current_time(),
         )
     except TaskRepositoryError as exc:
         raise _repository_error(exc) from exc
@@ -88,7 +94,10 @@ def get_task(
 ) -> TaskResponse:
     _require(auth, Permission.TASK_READ)
     try:
-        return _task_response(repository.get_task(auth=auth, task_id=task_id))
+        return _task_response(
+            state=repository.get_task(auth=auth, task_id=task_id),
+            now=repository.current_time(),
+        )
     except TaskRepositoryError as exc:
         raise _repository_error(exc) from exc
 
@@ -107,7 +116,11 @@ def get_result(
         raise _repository_error(exc) from exc
     try:
         return results.read(auth=auth, state=state)
-    except TaskResultError:
+    except TaskResultError as exc:
+        if exc.code == "task_result_expired":
+            raise HTTPException(status_code=410, detail="任务结果已过期") from None
+        if exc.code in {"task_result_integrity_failed", "task_result_binding_invalid"}:
+            raise HTTPException(status_code=500, detail="任务结果校验失败") from None
         raise HTTPException(status_code=409, detail="任务结果不可用") from None
 
 
@@ -127,7 +140,10 @@ def continue_task(
             expected_state_version=request.expected_state_version,
             answer=request.answer,
         )
-        return _task_response(repository.get_task(auth=auth, task_id=task_id))
+        return _task_response(
+            state=repository.get_task(auth=auth, task_id=task_id),
+            now=repository.current_time(),
+        )
     except TaskRepositoryError as exc:
         raise _repository_error(exc) from exc
     except ValueError as exc:
@@ -144,11 +160,12 @@ def cancel_task(
     _require(auth, Permission.TASK_READ)
     try:
         return _task_response(
-            repository.cancel(
+            state=repository.cancel(
                 auth=auth,
                 task_id=task_id,
                 expected_state_version=request.expected_state_version,
-            )
+            ),
+            now=repository.current_time(),
         )
     except TaskRepositoryError as exc:
         raise _repository_error(exc) from exc

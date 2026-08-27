@@ -255,35 +255,6 @@ class ApprovalService:
             raise ApprovalServiceError(invalid_code)
         return binding
 
-    def approve_for_task_revision(
-        self,
-        *,
-        auth: AuthContext,
-        task_id: str,
-        plan_revision: int,
-    ) -> ApprovalBinding:
-        """旧接口只给 task/revision；仅在唯一 pending 批准时安全适配。"""
-        self.expire_due(tenant_id=auth.tenant_id)
-        with self._database.sessions() as session:
-            ids = tuple(
-                session.scalars(
-                    select(ApprovalRow.approval_id).where(
-                        ApprovalRow.tenant_id == auth.tenant_id,
-                        ApprovalRow.task_id == task_id,
-                        ApprovalRow.plan_revision == plan_revision,
-                        ApprovalRow.status == "pending",
-                    )
-                )
-            )
-        if len(ids) != 1:
-            raise ApprovalServiceError("approval_binding_ambiguous")
-        return self.approve(
-            auth=auth,
-            approval_id=ids[0],
-            expected_task_id=task_id,
-            expected_plan_revision=plan_revision,
-        )
-
     def validate_in_session(
         self,
         session,

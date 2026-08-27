@@ -59,6 +59,14 @@ def test_compose_contains_migration_api_worker_and_health_dependencies() -> None
         "RETRIEVAL_CONTEXT_TOKEN_BUDGET": "${RETRIEVAL_CONTEXT_TOKEN_BUDGET:-4000}",
         "RETRIEVAL_RRF_K": "${RETRIEVAL_RRF_K:-60}",
         "ENABLE_HYBRID_RETRIEVAL": "${ENABLE_HYBRID_RETRIEVAL:-false}",
+        "AGENT_MAX_MODEL_CALLS": "${AGENT_MAX_MODEL_CALLS:-12}",
+        "AGENT_MAX_TOOL_CALLS": "${AGENT_MAX_TOOL_CALLS:-20}",
+        "AGENT_MAX_RUNTIME_SECONDS": "${AGENT_MAX_RUNTIME_SECONDS:-600}",
+        "AGENT_TIMEOUT_SECONDS": "${AGENT_TIMEOUT_SECONDS:-20}",
+        "AGENT_CAPABILITY_LEASE_SECONDS": "${AGENT_CAPABILITY_LEASE_SECONDS:-30}",
+        "TOOL_RESULT_TTL_SECONDS": "${TOOL_RESULT_TTL_SECONDS:-604800}",
+        "TASK_RESULT_RETENTION_DAYS": "${TASK_RESULT_RETENTION_DAYS:-7}",
+        "RESULT_OBJECT_ORPHAN_GRACE_SECONDS": "${RESULT_OBJECT_ORPHAN_GRACE_SECONDS:-3600}",
     }
     for service in ("api", "worker"):
         assert {
@@ -87,6 +95,22 @@ def test_compose_contains_migration_api_worker_and_health_dependencies() -> None
             "target": "/home/ragkb/.cache/huggingface",
             "read_only": True,
         }
+
+
+def test_example_agent_budget_configuration_matches_runtime_defaults() -> None:
+    example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "AGENT_MAX_STEPS" not in example
+    for line in (
+        "AGENT_MAX_MODEL_CALLS=12",
+        "AGENT_MAX_TOOL_CALLS=20",
+        "AGENT_MAX_RUNTIME_SECONDS=600",
+        "AGENT_TIMEOUT_SECONDS=20",
+        "AGENT_CAPABILITY_LEASE_SECONDS=30",
+        "TOOL_RESULT_TTL_SECONDS=604800",
+        "TASK_RESULT_RETENTION_DAYS=7",
+        "RESULT_OBJECT_ORPHAN_GRACE_SECONDS=3600",
+    ):
+        assert line in example
 
 
 def test_readme_and_usage_use_same_v1_startup_and_acceptance_targets() -> None:

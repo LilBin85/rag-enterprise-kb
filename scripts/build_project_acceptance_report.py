@@ -68,11 +68,18 @@ def m1_e2e_status(parse_status: str, value: dict[str, Any] | None) -> str:
     status = observed_report_status(parse_status, value)
     if status != "passed" or value is None:
         return status
+    strict = value.get("strict_msgpack")
     if (
         value.get("execution_mode") != "live_postgres_msgpack"
-        or value.get("document_version_endpoint") != "/v1/documents/{document_id}/versions"
+        or not isinstance(strict, dict)
+        or strict.get("runtime_flag") is not True
+        or strict.get("pickle_fallback") is not False
+        or not isinstance(value.get("document_version_endpoint"), str)
         or value.get("document_versions") != 2
+        or value.get("tool_calls") != 4
         or value.get("tool_trace") != _M1_RESEARCH_TOOL_TRACE
+        or "pickle" in (value.get("checkpoint_encodings") or [])
+        or value.get("result_readable") is not True
         or not isinstance(value.get("citation_count"), int)
         or value["citation_count"] < 1
     ):
@@ -268,7 +275,7 @@ def build_report(*, pytest_xml: Path | None, retrieval_report: Path | None, task
         "config": status_object(config_status, {"path": str(config) if config else None}),
         "samples": status_object("passed" if dataset_status == "available" else "unverified", {"dataset": "observed_only"}),
         "outcomes": status_object("failed" if has_failure else "passed" if not has_unverified else "unverified", {"pytest": pytest_data, "retrieval": retrieval_data or {}, "legacy_task": task_data or {}, "legacy_model": model_data or {}, "m1_research_e2e": m1_e2e_data or {}}),
-        "model": status_object(m1_e2e_report_status, {key: m1_e2e_data.get(key) for key in ("execution_mode", "citation_count") if m1_e2e_data and m1_e2e_data.get(key) is not None}), "tool": status_object(m1_e2e_report_status, {"tool_trace": m1_e2e_data.get("tool_trace")} if m1_e2e_data else {}), "latency": status_object(latency_status, latency_values),
+        "model": status_object(m1_e2e_report_status, {key: m1_e2e_data.get(key) for key in ("execution_mode", "citation_count", "strict_msgpack") if m1_e2e_data and m1_e2e_data.get(key) is not None}), "tool": status_object(m1_e2e_report_status, {"tool_trace": m1_e2e_data.get("tool_trace"), "tool_calls": m1_e2e_data.get("tool_calls")} if m1_e2e_data else {}), "latency": status_object(latency_status, latency_values),
         "security": status_object(security_status, security_values), "quality": status_object(quality_status, quality_values), "cost": status_object("unverified", {}),
         "gates": [
             {"name": "pytest", "status": pytest_status if pytest_status in {"passed", "failed"} else "unverified", "evidence": [str(pytest_xml) if pytest_xml else "missing"]},

@@ -11,9 +11,9 @@
 
 摄取采用三阶段投影切换：先按新 generation 分批构建并回读校验 Qdrant 投影，再发布新世代可见，最后在单个 SQL 事务中以原绑定为前置条件 CAS 激活版本并精确绑定新世代，绑定成功后才清理旧投影。切换窗口内，检索仍只使用 PostgreSQL 当前绑定的 `projection_key`；旧 worker 不能倒退当前世代。
 
-worker 对任务、摄取和投影队列轮转调度，并周期执行有界的上传预留、过期工具调用和同步问答租约回收。详细恢复语义见[架构说明](docs/architecture.md)。
+worker 对任务、摄取和投影队列轮转调度，并周期执行有界的上传预留回收与正文保留收敛：过期的 waiting 任务自动终止，工具结果、任务 checkpoint/结果和固定前缀孤儿对象按 TTL 幂等清理且不改写历史执行终态（详细边界见[架构说明](docs/architecture.md)）。
 
-Research Agent 只暴露 `search_knowledge`、`fetch_evidence`、`list_document_versions`、`compare_document_versions` 四个 READ 工具。模型只能使用服务端注入的身份上下文，不能传递 tenant、权限、lease 或对象存储路径。
+Research Agent 只暴露 `search_knowledge`、`fetch_evidence`、`list_document_versions`、`compare_document_versions` 四个 READ 工具。模型只能使用服务端注入的身份上下文，不能传递 tenant、权限、lease 或对象存储路径。只有持有 `m1-fenced-v2` capability lease 的 Worker 可领取任务；无兼容 capability 时 `POST /v1/tasks` 返回 503，同步知识查询、文档接口和全局 readiness 不受影响。
 
 详见：[架构说明](docs/architecture.md)、[威胁模型](docs/threat-model.md)、[迁移说明](docs/migration.md)、[使用指南](使用指南.md)。
 
@@ -35,7 +35,7 @@ docker compose up --build -d
 conda activate rag-kb
 docker compose up -d qdrant
 $env:RAG_KB_DATABASE_URL = "postgresql+psycopg://<用户>:<密码>@localhost:5432/<数据库>"
-alembic upgrade head                 # 当前迁移目标：20260825_0010
+alembic upgrade head                 # 当前迁移目标：20260826_0012
 python scripts/init_agent_checkpointer.py
 python -m rag_kb.qdrant_init         # 幂等创建并校验企业 Qdrant schema
 .\scripts\start_api.ps1             # FastAPI :8000
@@ -77,7 +77,10 @@ conda run -n rag-kb --no-capture-output python -m pytest -q `
   tests/test_postgres_qdrant_projection_convergence.py
 
 # 真实模型验证：先创建独立 PostgreSQL 数据库、m1_e2e_ 前缀的 Qdrant collection
-# 和独立对象目录；执行结束后删除这些临时资源。
+# 和独立对象目录；执行结束后删除这些临时资源。环境变量 LANGGRAPH_STRICT_MSGPACK=true
+# 会同时启用 LangGraph 运行时 allowlist 与 schema 推导白名单；脚本还会核验
+# checkpoint serializer 的 pickle_fallback=false 并拒绝 pickle 编码落库。
+$env:LANGGRAPH_STRICT_MSGPACK = "true"
 conda run -n rag-kb --no-capture-output python scripts/smoke_m1_research_e2e.py `
   --allow-live `
   --database-url "postgresql+psycopg://<用户>:<密码>@localhost:5432/<临时数据库>" `
@@ -106,4 +109,4 @@ M1 严格真实 E2E 已在隔离资源上验证 V1/V2 上传和精确四工具�
 
 ## 目录边界
 
-`src/rag_kb/` 为新应用；`tests/` 为分层回归；`schemas/` 为机器契约；`scripts/` 为可复现入口；`data/benchmarks/` 为任务集。用户的 `.obsidian/`、`output/`、面试材料和历史验收报告均属于受保护资产，不在迁移中删除或覆盖。
+`src/rag_kb/` 为新应用；`tests/` 为分层回归；`schemas/` 为机器契约；`scripts/` 为可复现入口；`data/benchmarks/` 为任务集。用户的 `.obsidian/`、`output/`、面试材料和历史验收报告均属于受保护资产，不在迁移中删除或覆盖。E2E 结束后，调用方必须删除本次创建的临时 PostgreSQL 数据库、`m1_e2e_*` Qdrant collection 和 `data/local/e2e/m1_e2e_*` 对象目录；正式保留的验收证据只有 `docs/acceptance/m1-research-e2e.json`、`docs/acceptance/latest.json`、`data/local/acceptance/pytest-stage9.xml` 和对应的 stage9 检索报告。

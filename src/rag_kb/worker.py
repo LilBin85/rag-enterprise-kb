@@ -6,7 +6,9 @@ import argparse
 from datetime import UTC, datetime, timedelta
 import logging
 import socket
+import threading
 import time
+from typing import Any
 from uuid import uuid4
 
 from qdrant_client import QdrantClient
@@ -21,12 +23,14 @@ from rag_kb.application.ingestion_worker import (
 )
 from rag_kb.application.projection_reconciler import ProjectionReconciler
 from rag_kb.application.approval_service import ApprovalService
+from rag_kb.application.task_retention_service import TaskRetentionService
 from rag_kb.application.task_worker import TaskWorker
 from rag_kb.application.tool_execution_service import ToolExecutionService
 from rag_kb.application.upload_reconciler import UploadReservationReconciler
 from rag_kb.application.enterprise_retriever import EnterpriseRetriever
 from rag_kb.application.tool_registry import ToolRegistry
-from rag_kb.config import get_settings, resolve_retrieval_limits
+from rag_kb.config import get_settings, resolve_retrieval_limits, task_budgets_from_settings
+from rag_kb.domain.tasks import TaskBudgets
 from rag_kb.embedder import BgeM3Embedder
 from rag_kb.infrastructure.database import build_database
 from rag_kb.infrastructure.database.acl_repository import DatabaseAuthorizationPort
@@ -35,7 +39,11 @@ from rag_kb.infrastructure.database.task_execution import (
     DatabaseTaskEvidencePort,
 )
 from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerRepository
-from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
+from rag_kb.infrastructure.database.task_repository import (
+    DatabaseTaskRepository,
+    RESEARCH_AGENT_CAPABILITY_NAME,
+    RESEARCH_AGENT_PROTOCOL_VERSION,
+)
 from rag_kb.infrastructure.database.index_projection_metadata import (
     DatabaseDocumentIndexMetadataPort,
 )
@@ -59,6 +67,65 @@ _UPLOAD_RESERVATION_GRACE = timedelta(seconds=30)
 
 class TaskAgentConfigurationError(RuntimeError):
     pass
+
+
+class _CapabilityLeaseHeartbeat:
+    """独立于任务 invoke 的 Research Worker 能力租约心跳。"""
+
+    def __init__(
+        self,
+        repository: DatabaseTaskRepository,
+        *,
+        worker_id: str,
+        lease_seconds: int,
+    ) -> None:
+        self._repository = repository
+        self._worker_id = worker_id
+        self._lease_seconds = lease_seconds
+        self._interval = lease_seconds / 3
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._repository.register_capability(
+            capability_name=RESEARCH_AGENT_CAPABILITY_NAME,
+            protocol_version=RESEARCH_AGENT_PROTOCOL_VERSION,
+            worker_id=self._worker_id,
+            lease_seconds=self._lease_seconds,
+        )
+        self._thread = threading.Thread(
+            target=self._run,
+            daemon=True,
+            name="rag-kb-capability-lease",
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            try:
+                self._repository.renew_capability(
+                    capability_name=RESEARCH_AGENT_CAPABILITY_NAME,
+                    protocol_version=RESEARCH_AGENT_PROTOCOL_VERSION,
+                    worker_id=self._worker_id,
+                    lease_seconds=self._lease_seconds,
+                )
+            except Exception:
+                logger.error("Research Agent capability 心跳失败")
+                self._stop.set()
+
+    def close(self) -> None:
+        self._stop.set()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join()
+            self._thread = None
+        try:
+            self._repository.unregister_capability(
+                capability_name=RESEARCH_AGENT_CAPABILITY_NAME,
+                protocol_version=RESEARCH_AGENT_PROTOCOL_VERSION,
+                worker_id=self._worker_id,
+            )
+        except Exception:
+            logger.error("Research Agent capability 注销失败")
 
 
 def build_workers(
@@ -119,7 +186,9 @@ def _build_research_model(settings):
     )
 
 
-def build_task_worker(*, worker_id: str | None = None) -> TaskWorker:
+def build_task_worker(
+    *, worker_id: str | None = None, publish_capability: bool = True
+) -> TaskWorker:
     """构造唯一的 M1 Research Agent worker 和 PostgreSQL checkpointer。"""
     settings = get_settings()
     database = build_database(settings.database_url)
@@ -163,29 +232,91 @@ def build_task_worker(*, worker_id: str | None = None) -> TaskWorker:
         tools.close()
         raise TaskAgentConfigurationError(str(exc)) from exc
     try:
-        agent = build_research_agent(
-            _build_research_model(settings),
-            build_research_tools(tools),
-            checkpointer,
-            max_model_calls=settings.agent_max_model_calls,
-            max_tool_calls=settings.agent_max_tool_calls,
-        )
+        model = _build_research_model(settings)
+        research_tools = build_research_tools(tools)
+        agents: dict[tuple[int, int], Any] = {}
+
+        def agent_for(budgets: TaskBudgets) -> Any:
+            key = (budgets.max_model_calls, budgets.max_tool_calls)
+            if key not in agents:
+                agents[key] = build_research_agent(
+                    model,
+                    research_tools,
+                    checkpointer,
+                    max_model_calls=budgets.max_model_calls,
+                    max_tool_calls=budgets.max_tool_calls,
+                )
+            return agents[key]
+
+        # Capability 仅代表默认预算 Agent 已经可用；其他持久预算按需编译并缓存。
+        agent_for(task_budgets_from_settings(settings))
     except Exception:
         tools.close()
         connection.close()
         raise
-    return TaskWorker(
-        repository=DatabaseTaskRepository(database),
+    repository = DatabaseTaskRepository(database)
+    capability: _CapabilityLeaseHeartbeat | None = None
+
+    def close() -> None:
+        try:
+            if capability is not None:
+                capability.close()
+        finally:
+            connection.close()
+
+    worker = TaskWorker(
+        repository=repository,
         auth_contexts=DatabaseTaskAuthContextPort(database),
-        agent=agent,
+        agent_for=agent_for,
         results=AgentResultStore(objects),
         evidence=EvidenceLedgerRepository(),
         tools=tools,
         database=database,
         worker_id=identity,
-        close=connection.close,
-        checkpointer=checkpointer,
+        close=close,
     )
+    if publish_capability:
+        try:
+            capability = _CapabilityLeaseHeartbeat(
+                repository,
+                worker_id=identity,
+                lease_seconds=settings.agent_capability_lease_seconds,
+            )
+            capability.start()
+        except Exception as exc:
+            worker.close()
+            raise TaskAgentConfigurationError("task_agent_capability_registration_failed") from exc
+        except BaseException:
+            try:
+                worker.close()
+            except Exception:
+                logger.error("Research Agent capability 启动清理失败")
+            raise
+    return worker
+
+
+def build_task_retention() -> TaskRetentionService:
+    """构造独立周期保留服务，不与正在执行的 Agent 共享 checkpointer 连接。"""
+    settings = get_settings()
+    database = build_database(settings.database_url)
+    objects = LocalObjectStore(settings.object_store_root)
+    try:
+        checkpointer, connection = open_postgres_checkpointer(settings.database_url)
+    except ValueError as exc:
+        raise TaskAgentConfigurationError(str(exc)) from exc
+    try:
+        return TaskRetentionService(
+            database=database,
+            repository=DatabaseTaskRepository(database),
+            objects=objects,
+            results=AgentResultStore(objects),
+            checkpointer=checkpointer,
+            orphan_grace_seconds=settings.result_object_orphan_grace_seconds,
+            close=connection.close,
+        )
+    except Exception:
+        connection.close()
+        raise
 
 
 def run(*, watch: bool, poll_seconds: float, max_jobs: int, include_tasks: bool = False) -> int:
@@ -194,100 +325,123 @@ def run(*, watch: bool, poll_seconds: float, max_jobs: int, include_tasks: bool 
     worker, reconciler = build_workers()
     upload_reconciler = build_upload_reconciler()
     task_worker = None
-    if include_tasks:
-        # Agent 未配置即 fail-fast：宁可进程退出由重启策略兜底，
-        # 也不让任务接口产生“已接受永不执行”的任务。
-        task_worker = build_task_worker()
-    queues = [("ingestion", worker), ("projection", reconciler)]
-    if task_worker is not None:
-        queues.insert(0, ("task", task_worker))
-    processed = 0
-    queue_index = 0
-    idle_queues = 0
-    next_recovery_at = 0.0
-    while True:
-        now = time.monotonic()
-        if now >= next_recovery_at:
-            if task_worker is not None:
+    task_retention = None
+    try:
+        if include_tasks:
+            # Agent 未配置即 fail-fast：宁可进程退出由重启策略兜底，
+            # 也不让任务接口产生“已接受永不执行”的任务。
+            task_worker = build_task_worker()
+            task_retention = build_task_retention()
+        queues = [("ingestion", worker), ("projection", reconciler)]
+        if task_worker is not None:
+            queues.insert(0, ("task", task_worker))
+        processed = 0
+        queue_index = 0
+        idle_queues = 0
+        next_recovery_at = 0.0
+        while True:
+            now = time.monotonic()
+            if now >= next_recovery_at:
+                if task_worker is not None:
+                    try:
+                        assert task_retention is not None
+                        expired_tools = task_worker.expire_stale_tool_calls(
+                            limit=_RECOVERY_BATCH_SIZE
+                        )
+                        expired_queries = task_worker.expire_stale_knowledge_queries(
+                            limit=_RECOVERY_BATCH_SIZE
+                        )
+                        expired_waiting = task_retention.expire_waiting_tasks(
+                            limit=_RECOVERY_BATCH_SIZE
+                        )
+                        purged_results = task_retention.purge_expired_tool_results(
+                            limit=_RECOVERY_BATCH_SIZE
+                        )
+                        purged_content = task_retention.purge_finished_task_content(
+                            limit=_RECOVERY_BATCH_SIZE
+                        )
+                        purged_orphans = task_retention.purge_orphaned_result_objects(
+                            limit=_RECOVERY_BATCH_SIZE
+                        )
+                        if (
+                            expired_tools
+                            or expired_queries
+                            or expired_waiting
+                            or purged_results
+                            or purged_content
+                            or purged_orphans
+                        ):
+                            logger.info(
+                                "过期运行恢复结束 tools=%s knowledge_queries=%s "
+                                "waiting_tasks=%s purged_tool_results=%s "
+                                "purged_task_content=%s purged_orphans=%s",
+                                expired_tools,
+                                expired_queries,
+                                expired_waiting,
+                                purged_results,
+                                purged_content,
+                                purged_orphans,
+                            )
+                    except Exception:
+                        logger.error("运行恢复失败 error_code=runtime_sweep_failed")
                 try:
-                    expired_tools = task_worker.expire_stale_tool_calls(
-                        limit=_RECOVERY_BATCH_SIZE
+                    upload_result = upload_reconciler.reconcile(
+                        older_than=datetime.now(UTC) - _UPLOAD_RESERVATION_GRACE,
+                        limit=_RECOVERY_BATCH_SIZE,
+                        time_budget_seconds=_RECOVERY_TIME_BUDGET_SECONDS,
                     )
-                    expired_queries = task_worker.expire_stale_knowledge_queries(
-                        limit=_RECOVERY_BATCH_SIZE
-                    )
-                    purged_results = task_worker.purge_expired_tool_results(
-                        limit=_RECOVERY_BATCH_SIZE
-                    )
-                    purged_threads = task_worker.purge_finished_task_threads(
-                        limit=_RECOVERY_BATCH_SIZE
-                    )
-                    if expired_tools or expired_queries or purged_results or purged_threads:
+                    if upload_result.scanned:
                         logger.info(
-                            "过期运行恢复结束 tools=%s knowledge_queries=%s "
-                            "purged_tool_results=%s purged_task_threads=%s",
-                            expired_tools,
-                            expired_queries,
-                            purged_results,
-                            purged_threads,
+                            "上传预留恢复结束 scanned=%s recovered=%s missing=%s mismatched=%s failed=%s",
+                            upload_result.scanned,
+                            upload_result.recovered,
+                            upload_result.missing_objects,
+                            upload_result.content_mismatches,
+                            upload_result.failed,
                         )
                 except Exception:
-                    logger.error("运行恢复失败 error_code=runtime_sweep_failed")
-            try:
-                upload_result = upload_reconciler.reconcile(
-                    older_than=datetime.now(UTC) - _UPLOAD_RESERVATION_GRACE,
-                    limit=_RECOVERY_BATCH_SIZE,
-                    time_budget_seconds=_RECOVERY_TIME_BUDGET_SECONDS,
-                )
-                if upload_result.scanned:
-                    logger.info(
-                        "上传预留恢复结束 scanned=%s recovered=%s missing=%s mismatched=%s failed=%s",
-                        upload_result.scanned,
-                        upload_result.recovered,
-                        upload_result.missing_objects,
-                        upload_result.content_mismatches,
-                        upload_result.failed,
-                    )
-            except Exception:
-                logger.error("上传预留恢复失败 error_code=upload_reconciliation_failed")
-            next_recovery_at = time.monotonic() + _RECOVERY_INTERVAL_SECONDS
+                    logger.error("上传预留恢复失败 error_code=upload_reconciliation_failed")
+                next_recovery_at = time.monotonic() + _RECOVERY_INTERVAL_SECONDS
 
-        queue_name, current_worker = queues[queue_index]
-        queue_index = (queue_index + 1) % len(queues)
-        result = current_worker.run_once()
-        if result.status == "idle":
-            idle_queues += 1
-            if idle_queues < len(queues):
+            queue_name, current_worker = queues[queue_index]
+            queue_index = (queue_index + 1) % len(queues)
+            result = current_worker.run_once()
+            if result.status == "idle":
+                idle_queues += 1
+                if idle_queues < len(queues):
+                    continue
+                idle_queues = 0
+                if not watch:
+                    return 0
+                time.sleep(poll_seconds)
                 continue
-            idle_queues = 0
-            if not watch:
-                if task_worker is not None:
-                    task_worker.close()
-                return 0
-            time.sleep(poll_seconds)
-            continue
 
-        idle_queues = 0
-        processed += 1
-        if queue_name == "task":
-            logger.info(
-                "通用任务结束 status=%s task_id=%s error_code=%s",
-                result.status,
-                result.task_id,
-                result.error_code,
-            )
-        elif queue_name == "projection":
-            logger.info(
-                "投影收敛结束 status=%s document_id=%s",
-                result.status,
-                result.document_id,
-            )
-        else:
-            logger.info("摄取任务结束 status=%s job_id=%s", result.status, result.job_id)
-        if processed >= max_jobs and not watch:
+            idle_queues = 0
+            processed += 1
+            if queue_name == "task":
+                logger.info(
+                    "通用任务结束 status=%s task_id=%s error_code=%s",
+                    result.status,
+                    result.task_id,
+                    result.error_code,
+                )
+            elif queue_name == "projection":
+                logger.info(
+                    "投影收敛结束 status=%s document_id=%s",
+                    result.status,
+                    result.document_id,
+                )
+            else:
+                logger.info("摄取任务结束 status=%s job_id=%s", result.status, result.job_id)
+            if processed >= max_jobs and not watch:
+                return 0
+    finally:
+        try:
             if task_worker is not None:
                 task_worker.close()
-            return 0
+        finally:
+            if task_retention is not None:
+                task_retention.close()
 
 
 def main() -> int:

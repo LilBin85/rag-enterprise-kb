@@ -7,6 +7,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from rag_kb.domain.identity import Permission
 
 
+TOOL_TIMEOUT_CEILING_SECONDS = 300
+
+
 class ToolMode(StrEnum):
     READ = "read"
     WRITE = "write"
@@ -35,7 +38,7 @@ class ToolDefinition(BaseModel):
     required_permissions: frozenset[Permission]
     mode: ToolMode
     risk_level: RiskLevel
-    timeout_seconds: int = Field(ge=1, le=300)
+    timeout_seconds: int = Field(ge=1, le=TOOL_TIMEOUT_CEILING_SECONDS)
     idempotent: bool
     approval_policy: ApprovalPolicy
     result_verifier: str

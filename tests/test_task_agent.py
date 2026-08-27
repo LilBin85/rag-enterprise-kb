@@ -28,7 +28,13 @@ from rag_kb.application.tool_registry import ToolRegistry, builtin_tool_definiti
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.tasks import TaskMode, TaskState, TaskStatus
 from rag_kb.infrastructure.database import Base, build_database
-from rag_kb.infrastructure.database.models import PrincipalRow, TenantRow, ToolCallRow
+from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerConflict
+from rag_kb.infrastructure.database.models import (
+    AgentTaskRow,
+    PrincipalRow,
+    TenantRow,
+    ToolCallRow,
+)
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
 from rag_kb.models import Citation
@@ -89,7 +95,13 @@ def test_agent_factory_configures_only_research_tools_and_m1_guards(monkeypatch)
     captured: dict[str, object] = {}
     monkeypatch.setattr(factory, "create_agent", lambda **kwargs: captured.update(kwargs) or "agent")
 
-    result = factory.build_research_agent("model", ["tool"], "checkpointer")
+    result = factory.build_research_agent(
+        "model",
+        ["tool"],
+        "checkpointer",
+        max_model_calls=2,
+        max_tool_calls=3,
+    )
 
     assert result == "agent"
     assert captured["tools"] == ["tool"]
@@ -105,6 +117,8 @@ def test_agent_factory_configures_only_research_tools_and_m1_guards(monkeypatch)
         "ModelCallLimitMiddleware",
         "ToolCallLimitMiddleware",
     ]
+    assert captured["middleware"][-2].thread_limit == 2
+    assert captured["middleware"][-1].thread_limit == 3
 
 
 def test_research_tools_are_exactly_four_and_use_trusted_context() -> None:
@@ -126,6 +140,24 @@ def test_research_tools_are_exactly_four_and_use_trusted_context() -> None:
     assert payload["content"] == [{"text": "可见正文"}]
     assert payload["result_ref"] == "server-tool-call"
     assert "tenant_id" not in message
+
+
+def test_research_tool_preserves_code_from_unexpected_exception() -> None:
+    class CodedError(RuntimeError):
+        code = "adapter_backend_unavailable"
+
+    class CodedExecutor:
+        def execute(self, _request):
+            raise CodedError()
+
+    message = _execute_read_tool(
+        "search_knowledge",
+        {"query": "采购制度", "limit": 5},
+        SimpleNamespace(context=_context(), tool_call_id="model-call-1"),
+        CodedExecutor(),
+    )
+
+    assert json.loads(message)["error_code"] == "adapter_backend_unavailable"
 
 
 def test_research_tool_hides_and_accepts_injected_runtime() -> None:
@@ -330,11 +362,25 @@ def test_result_read_revalidates_current_evidence_and_citation_binding() -> None
             self.citations = citations
 
         def citations_from_ledger(self, _session, **_kwargs):
+            if isinstance(self.citations, Exception):
+                raise self.citations
             return self.citations
 
     class Database:
+        engine = SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
+
         def sessions(self):
-            return nullcontext(object())
+            return nullcontext(
+                SimpleNamespace(
+                    scalar=lambda _statement: SimpleNamespace(
+                        status=TaskStatus.SUCCEEDED.value,
+                        result_purged_at=None,
+                        content_expires_at=state.content_expires_at,
+                        result_ref=state.result_ref,
+                        result_hash=state.result_hash,
+                    )
+                )
+            )
 
     service = TaskResultService(Database(), ResultStore(), Evidence((citation,)))
     assert service.read(auth=_auth(), state=state) == result
@@ -342,3 +388,146 @@ def test_result_read_revalidates_current_evidence_and_citation_binding() -> None
     revoked = TaskResultService(Database(), ResultStore(), Evidence(()))
     with pytest.raises(TaskResultError, match="task_result_binding_invalid"):
         revoked.read(auth=_auth(), state=state)
+
+    for conflict_code, expected_code in (
+        ("duplicate_evidence_id", "task_result_binding_invalid"),
+        ("evidence_authorization_stale", "task_result_evidence_unavailable"),
+    ):
+        conflicted = TaskResultService(
+            Database(),
+            ResultStore(),
+            Evidence(EvidenceLedgerConflict(conflict_code)),
+        )
+        with pytest.raises(TaskResultError, match=expected_code):
+            conflicted.read(auth=_auth(), state=state)
+
+
+def test_result_read_rejects_expired_body_before_object_read() -> None:
+    now = datetime.now(UTC)
+    state = TaskState(
+        task_id="task-a",
+        auth_context_ref="auth",
+        goal="比较制度",
+        task_mode=TaskMode.RESEARCH,
+        status=TaskStatus.REFUSED,
+        result_kind="research",
+        result_ref="task-results/task-a/result.json",
+        result_hash="sha256:" + "a" * 64,
+        content_expires_at=now - timedelta(seconds=1),
+    )
+
+    class ResultStore:
+        def read_task_result(self, _ref, _hash):
+            raise AssertionError("expired result must not be read")
+
+    database = SimpleNamespace(engine=SimpleNamespace(dialect=SimpleNamespace(name="sqlite")))
+    service = TaskResultService(database, ResultStore(), now=lambda: now)
+    with pytest.raises(TaskResultError, match="task_result_expired"):
+        service.read(auth=_auth(), state=state)
+
+
+@pytest.mark.parametrize(
+    ("change", "error_code"),
+    [
+        ("expired", "task_result_expired"),
+        ("purged", "task_result_expired"),
+        ("rebound", "task_result_binding_invalid"),
+    ],
+)
+def test_result_read_rechecks_task_binding_after_object_read(
+    tmp_path: Path, change: str, error_code: str
+) -> None:
+    now = datetime(2026, 8, 27, 10, 0, tzinfo=UTC)
+    database = build_database(f"sqlite+pysqlite:///{(tmp_path / 'result.sqlite3').as_posix()}")
+    Base.metadata.create_all(database.engine)
+    with database.sessions.begin() as session:
+        session.add(TenantRow(tenant_id="tenant-a", name="tenant-a"))
+        session.flush()
+        session.add(
+            PrincipalRow(
+                tenant_id="tenant-a",
+                user_id="owner-a",
+                roles=[],
+                attributes=_auth().attributes,
+            )
+        )
+    repository = DatabaseTaskRepository(database)
+    repository.create_task(
+        auth=_auth(),
+        goal="读取结果竞态",
+        task_mode=TaskMode.RESEARCH,
+        task_id="task-a",
+    )
+    result_ref = "task-results/task-a/result.json"
+    result_hash = "sha256:" + "a" * 64
+    with database.sessions.begin() as session:
+        row = session.get(AgentTaskRow, "task-a")
+        assert row is not None
+        row.status = TaskStatus.REFUSED.value
+        row.result_kind = "research"
+        row.result_ref = result_ref
+        row.result_hash = result_hash
+        row.content_expires_at = now + timedelta(days=1)
+    state = repository.get_task(auth=_auth(), task_id="task-a")
+    result = TaskResult(
+        task_id="task-a",
+        status="refused",
+        refusal_code="insufficient_evidence",
+        stop_reason="no_evidence",
+        created_at=now,
+    )
+
+    class ResultStore:
+        def read_task_result(self, _ref, _hash):
+            with database.sessions.begin() as session:
+                row = session.get(AgentTaskRow, "task-a")
+                assert row is not None
+                if change == "expired":
+                    row.content_expires_at = now - timedelta(seconds=1)
+                elif change == "purged":
+                    row.result_purged_at = now
+                    row.result_ref = None
+                else:
+                    row.result_ref = "task-results/task-a/rebound.json"
+            return result
+
+    service = TaskResultService(database, ResultStore(), now=lambda: now)
+    with pytest.raises(TaskResultError, match=error_code):
+        service.read(auth=_auth(), state=state)
+
+
+def test_result_read_uses_postgres_clock_for_expiry() -> None:
+    database_now = datetime(2026, 8, 25, 10, 0, tzinfo=UTC)
+    state = TaskState(
+        task_id="task-a",
+        auth_context_ref="auth",
+        goal="比较制度",
+        task_mode=TaskMode.RESEARCH,
+        status=TaskStatus.REFUSED,
+        result_kind="research",
+        result_ref="task-results/task-a/result.json",
+        result_hash="sha256:" + "a" * 64,
+        content_expires_at=database_now - timedelta(seconds=1),
+    )
+
+    class Session:
+        def scalar(self, _statement):
+            return database_now
+
+    class Database:
+        engine = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+        def sessions(self):
+            return nullcontext(Session())
+
+    class ResultStore:
+        def read_task_result(self, _ref, _hash):
+            raise AssertionError("expired result must not be read")
+
+    service = TaskResultService(
+        Database(),
+        ResultStore(),
+        now=lambda: database_now - timedelta(days=1),
+    )
+    with pytest.raises(TaskResultError, match="task_result_expired"):
+        service.read(auth=_auth(), state=state)

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
+import rag_kb.application.tool_execution_service as tool_execution_module
 from rag_kb.agent.context import AgentRunContext
 from rag_kb.agent.result import AgentResultStore
 from rag_kb.agent.tools import _execute_read_tool
@@ -193,6 +194,172 @@ def test_role_revocation_fails_next_tool_call_closed(research) -> None:
         )
 
 
+def test_replay_rechecks_current_identity_before_reading_result(research, monkeypatch) -> None:
+    """撤权后的同 key 回放必须在对象读取前失败，不能泄露已保存正文。"""
+    database, repository, service, adapter = research
+    lease = repository.claim_next(worker_id="worker-a", lease_seconds=60)
+    assert lease is not None
+    assert service.execute(_request(lease, "call-1")).status == "succeeded"
+    with database.sessions.begin() as session:
+        principal = session.get(PrincipalRow, {"tenant_id": "tenant-a", "user_id": "owner-a"})
+        assert principal is not None
+        principal.roles = ["revoked-away"]
+
+    assert service._tool_results is not None
+
+    def unreadable(_ref: str) -> bytes:
+        raise AssertionError("撤权回放不得读取对象正文")
+
+    monkeypatch.setattr(service._tool_results, "read", unreadable)
+    with pytest.raises(ToolExecutionError, match="task_auth_context_changed"):
+        service.execute(_request(lease, "call-1"))
+    assert adapter.calls == 1
+
+
+def test_integrity_replay_rechecks_current_identity(research, monkeypatch) -> None:
+    """提交后报 IntegrityError 的竞态回放也必须重新经过当前身份门。"""
+    database, repository, service, adapter = research
+    lease = repository.claim_next(worker_id="worker-a", lease_seconds=60)
+    assert lease is not None
+    real_unit_of_work = tool_execution_module.UnitOfWork
+
+    class CommitThenIntegrityError:
+        exits = 0
+
+        def __init__(self, current_database) -> None:
+            self._inner = real_unit_of_work(current_database)
+
+        def __enter__(self):
+            return self._inner.__enter__()
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            self._inner.__exit__(exc_type, exc, traceback)
+            type(self).exits += 1
+            if type(self).exits == 3:
+                with database.sessions.begin() as session:
+                    principal = session.get(
+                        PrincipalRow, {"tenant_id": "tenant-a", "user_id": "owner-a"}
+                    )
+                    assert principal is not None
+                    principal.roles = ["revoked-away"]
+                from sqlalchemy.exc import IntegrityError
+
+                raise IntegrityError("injected_duplicate", {}, RuntimeError("duplicate"))
+            return False
+
+    monkeypatch.setattr(tool_execution_module, "UnitOfWork", CommitThenIntegrityError)
+    with pytest.raises(ToolExecutionError, match="task_auth_context_changed"):
+        service.execute(_request(lease, "call-race"))
+    assert adapter.calls == 0
+
+
+def test_unbound_object_is_compensated_when_final_fence_turns_stale(research) -> None:
+    """对象写入后、最终绑定前抢占时，删除本次未绑定对象并保留 running 审计行。"""
+    database, repository, service, adapter = research
+    lease = repository.claim_next(worker_id="worker-a", lease_seconds=60)
+    assert lease is not None
+    assert service._tool_results is not None
+
+    class PreemptingStore(LocalObjectStore):
+        def put_exclusive(self, storage_key: str, content: bytes) -> None:
+            super().put_exclusive(storage_key, content)
+            with database.sessions.begin() as session:
+                task = session.get(AgentTaskRow, "task-a")
+                assert task is not None
+                task.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            next_lease = repository.claim_next(worker_id="worker-b", lease_seconds=60)
+            assert next_lease is not None
+
+    store = PreemptingStore(service._tool_results.root)
+    service._tool_results = store
+    with pytest.raises(ToolExecutionError, match="tool_task_lease_stale"):
+        service.execute(_request(lease, "compensated-call"))
+    assert adapter.calls == 1
+    assert tuple(store.root.rglob("*.json")) == ()
+    with database.sessions() as session:
+        row = session.scalar(select(ToolCallRow).where(ToolCallRow.task_id == "task-a"))
+        assert row is not None
+        assert row.status == "running"
+        assert row.result_ref is None
+
+
+def test_final_binding_rejects_expired_tool_deadline(research) -> None:
+    database, repository, service, adapter = research
+    lease = repository.claim_next(worker_id="worker-a", lease_seconds=60)
+    assert lease is not None
+    assert service._tool_results is not None
+
+    class ExpiringStore(LocalObjectStore):
+        def put_exclusive(self, storage_key: str, content: bytes) -> None:
+            super().put_exclusive(storage_key, content)
+            with database.sessions.begin() as session:
+                row = session.scalar(select(ToolCallRow).where(ToolCallRow.task_id == "task-a"))
+                assert row is not None
+                row.execution_deadline = datetime.now(UTC) - timedelta(seconds=1)
+
+    store = ExpiringStore(service._tool_results.root)
+    service._tool_results = store
+
+    result = service.execute(_request(lease, "expired-call"))
+
+    assert adapter.calls == 1
+    assert result.status == "failed"
+    assert result.error_code == "execution_deadline_expired"
+    assert result.result_ref is None
+    assert tuple(store.root.rglob("*.json")) == ()
+    with database.sessions() as session:
+        row = session.scalar(select(ToolCallRow).where(ToolCallRow.task_id == "task-a"))
+        assert row is not None
+        assert row.status == "failed"
+        assert row.error_code == "execution_deadline_expired"
+        assert row.result_ref is None and row.result_hash is None
+
+
+def test_bound_tool_result_survives_commit_acknowledgement_loss(research, monkeypatch) -> None:
+    database, repository, service, _adapter = research
+    lease = repository.claim_next(worker_id="worker-a", lease_seconds=60)
+    assert lease is not None
+    real_unit_of_work = tool_execution_module.UnitOfWork
+
+    class CommitThenAcknowledgementLost:
+        injected = False
+
+        def __init__(self, current_database) -> None:
+            self._inner = real_unit_of_work(current_database)
+
+        def __enter__(self):
+            return self._inner.__enter__()
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            self._inner.__exit__(exc_type, exc, traceback)
+            if exc_type is None and not type(self).injected:
+                with database.sessions() as session:
+                    bound = session.scalar(
+                        select(ToolCallRow.tool_call_id).where(
+                            ToolCallRow.task_id == "task-a",
+                            ToolCallRow.status == "succeeded",
+                            ToolCallRow.result_ref.is_not(None),
+                        )
+                    )
+                if bound is not None:
+                    type(self).injected = True
+                    raise RuntimeError("commit_acknowledgement_lost")
+            return False
+
+    monkeypatch.setattr(tool_execution_module, "UnitOfWork", CommitThenAcknowledgementLost)
+
+    with pytest.raises(RuntimeError, match="commit_acknowledgement_lost"):
+        service.execute(_request(lease, "ack-lost-call"))
+
+    assert CommitThenAcknowledgementLost.injected is True
+    assert service._tool_results is not None
+    with database.sessions() as session:
+        row = session.scalar(select(ToolCallRow).where(ToolCallRow.task_id == "task-a"))
+        assert row is not None and row.result_ref is not None
+        result_ref = row.result_ref
+    assert service._tool_results.read(result_ref)
+
+
 def test_fatal_code_propagates_through_read_tool_adapter() -> None:
     """致命码直接 raise 穿透 middleware；非致命码仍渲染为失败 ToolMessage。"""
 
@@ -260,11 +427,11 @@ class _FixedAuthContexts:
         return _auth()
 
 
-def _fencing_worker(database, agent) -> TaskWorker:
+def _fencing_worker(database, agent, *, repository=None) -> TaskWorker:
     return TaskWorker(
-        repository=DatabaseTaskRepository(database),
+        repository=repository or DatabaseTaskRepository(database),
         auth_contexts=_FixedAuthContexts(),
-        agent=agent,
+        agent_for=lambda _budgets: agent,
         results=AgentResultStore(LocalObjectStore(Path(database.engine.url.database).parent / "objects")),
         evidence=EvidenceLedgerRepository(),
         tools=SimpleNamespace(close=lambda: None),
@@ -300,7 +467,7 @@ def test_worker_returns_stale_on_fatal_code_without_touching_business_state(tmp_
 
 
 def test_non_fatal_tool_error_still_fails_task_safely(tmp_path: Path) -> None:
-    """非致命工具异常不适用 stale 规则；resolve 路径的身份失效必须收敛终态。"""
+    """身份失效在租约仍有效时失败关闭，不能与 stale 混为一类。"""
     database = build_database(f"sqlite+pysqlite:///{(tmp_path / 'safe.sqlite3').as_posix()}")
     Base.metadata.create_all(database.engine)
     with database.sessions.begin() as session:
@@ -319,10 +486,55 @@ def test_non_fatal_tool_error_still_fails_task_safely(tmp_path: Path) -> None:
     repository.create_task(auth=_auth(), goal="研究二", task_mode=TaskMode.RESEARCH, task_id="task-b")
     outcome = _fencing_worker(
         database,
+        _RaisingAgent(ToolExecutionError("task_auth_context_changed")),
+    ).run_once()
+    assert outcome.status == "failed"
+    assert outcome.error_code == "task_auth_context_changed"
+
+    repository.create_task(auth=_auth(), goal="研究三", task_mode=TaskMode.RESEARCH, task_id="task-c")
+    outcome = _fencing_worker(
+        database,
         _RaisingAgent(TaskExecutionContextError("task_auth_context_changed")),
     ).run_once()
     assert outcome.status == "failed"
     assert outcome.error_code == "task_auth_context_changed"
+
+
+def test_auth_failure_returns_stale_when_failure_close_loses_lease(tmp_path: Path) -> None:
+    """身份错误后若终态收敛时已失租，不能把新 Worker 的任务写成 failed。"""
+    database = build_database(f"sqlite+pysqlite:///{(tmp_path / 'auth-stale.sqlite3').as_posix()}")
+    Base.metadata.create_all(database.engine)
+    with database.sessions.begin() as session:
+        session.add(TenantRow(tenant_id="tenant-a", name="tenant-a"))
+        session.flush()
+        session.add(PrincipalRow(tenant_id="tenant-a", user_id="owner-a", roles=[], attributes=_auth().attributes))
+
+    class PreemptingFailureRepository(DatabaseTaskRepository):
+        def finish_task(self, lease, *, status, **kwargs):
+            if status is TaskStatus.FAILED:
+                with database.sessions.begin() as session:
+                    task = session.get(AgentTaskRow, "task-a")
+                    assert task is not None
+                    task.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+                replacement = self.claim_next(worker_id="worker-b", lease_seconds=60)
+                assert replacement is not None
+            return super().finish_task(lease, status=status, **kwargs)
+
+    repository = PreemptingFailureRepository(database)
+    repository.create_task(auth=_auth(), goal="研究", task_mode=TaskMode.RESEARCH, task_id="task-a")
+    outcome = _fencing_worker(
+        database,
+        _RaisingAgent(ToolExecutionError("task_auth_context_changed")),
+        repository=repository,
+    ).run_once()
+
+    assert outcome.status == "stale"
+    assert outcome.error_code == "task_lease_generation_stale"
+    with database.sessions() as session:
+        task = session.get(AgentTaskRow, "task-a")
+        assert task is not None
+        assert task.status == TaskStatus.RUNNING.value
+        assert task.lease_owner == "worker-b"
 
 
 class _RecordingEvidence(EvidenceLedgerRepository):
@@ -399,7 +611,7 @@ def test_settle_revalidates_citations_with_latest_identity(tmp_path: Path) -> No
     worker = TaskWorker(
         repository=repository,
         auth_contexts=_RotatingAuthContexts(),
-        agent=SucceededAgent(),
+        agent_for=lambda _budgets: SucceededAgent(),
         results=AgentResultStore(LocalObjectStore(tmp_path / "objects")),
         evidence=evidence,
         tools=SimpleNamespace(close=lambda: None),

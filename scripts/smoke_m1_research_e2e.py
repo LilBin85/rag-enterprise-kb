@@ -126,29 +126,97 @@ def _initialize() -> None:
     sync_demo_principals(build_database(settings.database_url), settings.demo_role_tokens)
 
 
-def _tool_call_names(task_id: str) -> tuple[str, ...]:
-    from sqlalchemy import select
+def _observed_task_facts(task_id: str, document_id: str) -> dict[str, object]:
+    """从真实数据库观测工具轨迹、版本数与 checkpoint 编码；不做任何推断。"""
+    from sqlalchemy import select, text
 
     from rag_kb.config import get_settings
     from rag_kb.infrastructure.database import build_database
-    from rag_kb.infrastructure.database.models import ToolCallRow
+    from rag_kb.infrastructure.database.models import (
+        DocumentRow,
+        DocumentVersionRow,
+        ToolCallRow,
+    )
 
     database = build_database(get_settings().database_url)
     try:
         with database.sessions() as session:
-            return tuple(
-                session.scalars(
-                    select(ToolCallRow.tool_name)
-                    .where(ToolCallRow.task_id == task_id)
-                    .order_by(ToolCallRow.created_at)
+            rows = session.execute(
+                select(ToolCallRow.tool_name, ToolCallRow.status)
+                .where(ToolCallRow.task_id == task_id)
+                .order_by(ToolCallRow.created_at, ToolCallRow.tool_call_id)
+            ).all()
+            versions = session.scalar(
+                select(DocumentVersionRow.version)
+                .join(
+                    DocumentRow,
+                    (DocumentRow.tenant_id == DocumentVersionRow.tenant_id)
+                    & (DocumentRow.document_id == DocumentVersionRow.document_id),
                 )
+                .where(
+                    DocumentRow.document_id == document_id,
+                    DocumentVersionRow.lifecycle_status.in_(["active", "superseded"]),
+                )
+                .order_by(DocumentVersionRow.version.desc())
+                .limit(1)
             )
+            encodings = sorted(
+                {
+                    value
+                    for value in session.execute(
+                        text(
+                            "SELECT DISTINCT type FROM ("
+                            "SELECT type FROM checkpoint_blobs WHERE thread_id = :tid "
+                            "UNION SELECT type FROM checkpoint_writes WHERE thread_id = :tid"
+                            ") AS encodings WHERE type IS NOT NULL"
+                        ),
+                        {"tid": task_id},
+                    ).scalars()
+                }
+            )
+        return {
+            "tool_trace": [row.tool_name for row in rows],
+            "tool_statuses": [row.status for row in rows],
+            "document_versions": int(versions) if versions is not None else 0,
+            "checkpoint_encodings": encodings,
+        }
     finally:
         database.engine.dispose()
 
 
+def _check_serializer_is_strict() -> dict[str, object]:
+    """证明 LANGGRAPH_STRICT_MSGPACK 与显式禁用 pickle 的实际运行配置。"""
+    from langgraph.checkpoint.serde import _msgpack as langgraph_msgpack
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+    from rag_kb.agent.checkpointer import (
+        _TASK_CHECKPOINT_MSGPACK_TYPES,
+        task_checkpoint_serializer,
+    )
+
+    configured_flag = os.environ.get("LANGGRAPH_STRICT_MSGPACK", "").strip().lower()
+    if configured_flag not in ("1", "true", "yes"):
+        raise SmokeError("langgraph_strict_msgpack_env_required")
+    if not langgraph_msgpack.STRICT_MSGPACK_ENABLED:
+        raise SmokeError("langgraph_runtime_strict_not_enabled")
+    serializer = task_checkpoint_serializer()
+    if not isinstance(serializer, JsonPlusSerializer) or serializer.pickle_fallback:
+        raise SmokeError("checkpoint_pickle_fallback_must_be_disabled")
+    allowlist = sorted(f"{module}.{name}" for module, name in _TASK_CHECKPOINT_MSGPACK_TYPES)
+    if allowlist != ["rag_kb.agent.result.TaskResultCandidate"]:
+        raise SmokeError("checkpoint_allowlist_invalid")
+    return {
+        "runtime_flag": True,
+        "serializer": type(serializer).__name__,
+        "pickle_fallback": False,
+        "allowed_msgpack_modules": allowlist,
+        "saver_package": "langgraph-checkpoint-postgres==3.1.2",
+    }
+
+
 def run(args: argparse.Namespace) -> dict[str, object]:
     _require_isolated_inputs(args)
+    serializer_evidence = _check_serializer_is_strict()
     demo_token = secrets.token_urlsafe(24)
     _configure_environment(args, demo_token)
     _initialize()
@@ -247,32 +315,32 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             if update_job.get("status") != "succeeded":
                 raise SmokeError("updated_ingestion_status_invalid")
 
-            task = _expect(
-                client.post(
-                    "/v1/tasks",
-                    headers=headers,
-                    json={
-                        "task_mode": "research",
-                        "goal": (
-                            f"第一轮只调用 list_document_versions 确认文档 {document_id} 的版本，"
-                            "等待它的 ToolMessage 后，第二轮只调用 compare_document_versions 比较版本 1 和 2 的年假变化；"
-                            "第三轮只调用 search_knowledge 找出当前版本员工入职满 1 年后的带薪年假天数；"
-                            "第四轮只调用 fetch_evidence 获取支撑结论的证据。禁止并行或同轮调用多个工具。"
-                            "完成这些步骤后，仅依据工具内容回答，并返回 evidence_ids。"
-                        ),
-                    },
-                ),
-                202,
-                "tasks",
-            )
-            task_id = task.get("task_id")
-            if not isinstance(task_id, str):
-                raise SmokeError("task_id_missing")
-
+            # capability 必须先于任务创建注册，否则 m1-fenced-v2 门会拒绝新任务。
             from rag_kb.worker import build_task_worker
 
             worker = build_task_worker(worker_id="m1-e2e-task")
             try:
+                task = _expect(
+                    client.post(
+                        "/v1/tasks",
+                        headers=headers,
+                        json={
+                            "task_mode": "research",
+                            "goal": (
+                                f"第一轮只调用 list_document_versions 确认文档 {document_id} 的版本，"
+                                "等待它的 ToolMessage 后，第二轮只调用 compare_document_versions 比较版本 1 和 2 的年假变化；"
+                                "第三轮只调用 search_knowledge 找出当前版本员工入职满 1 年后的带薪年假天数；"
+                                "第四轮只调用 fetch_evidence 获取支撑结论的证据。禁止并行或同轮调用多个工具。"
+                                "完成这些步骤后，仅依据工具内容回答，并返回 evidence_ids。"
+                            ),
+                        },
+                    ),
+                    202,
+                    "tasks",
+                )
+                task_id = task.get("task_id")
+                if not isinstance(task_id, str):
+                    raise SmokeError("task_id_missing")
                 outcome = worker.run_once()
             finally:
                 worker.close()
@@ -289,11 +357,16 @@ def run(args: argparse.Namespace) -> dict[str, object]:
 
         evidence_ids = result.get("evidence_ids")
         citations = result.get("citations")
+        answer = result.get("answer")
         if not isinstance(evidence_ids, list) or not evidence_ids:
             raise SmokeError("result_evidence_missing")
         if not isinstance(citations, list) or len(citations) != len(evidence_ids):
             raise SmokeError("result_citations_invalid")
-        tool_names = _tool_call_names(task_id)
+        if not isinstance(answer, str) or not answer.strip():
+            raise SmokeError("result_answer_missing")
+        facts = _observed_task_facts(task_id, document_id)
+        tool_names = tuple(facts["tool_trace"])
+        tool_statuses = facts["tool_statuses"]
         expected_tool_trace = (
             "list_document_versions",
             "compare_document_versions",
@@ -302,16 +375,26 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         )
         if tool_names != expected_tool_trace:
             raise SmokeError("research_tool_trace_invalid")
+        if any(status != "succeeded" for status in tool_statuses):
+            raise SmokeError("research_tool_not_succeeded")
+        if facts["document_versions"] != 2:
+            raise SmokeError(f"document_versions_observed_{facts['document_versions']}")
+        encodings = facts["checkpoint_encodings"]
+        if any(encoding == "pickle" for encoding in encodings):
+            raise SmokeError("checkpoint_pickle_encoding_observed")
         return {
             "status": "passed",
             "execution_mode": "live_postgres_msgpack",
+            "strict_msgpack": serializer_evidence,
+            "checkpoint_encodings": sorted(encodings),
             "document_version_endpoint": "/v1/documents/{document_id}/versions",
-            "document_versions": 2,
+            "document_versions": facts["document_versions"],
             "tool_trace": list(tool_names),
             "task_id": task_id,
             "document_id": document_id,
             "tool_calls": len(tool_names),
             "citation_count": len(citations),
+            "result_readable": True,
         }
     finally:
         server.should_exit = True

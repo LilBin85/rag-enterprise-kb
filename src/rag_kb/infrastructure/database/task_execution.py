@@ -45,9 +45,13 @@ def current_task_auth(
     request_id: str,
 ) -> AuthContext:
     """重建当前服务端身份；与冻结摘要不符即视为身份已变更。"""
-    principal = session.get(
-        PrincipalRow,
-        {"tenant_id": task.tenant_id, "user_id": task.user_id},
+    principal = session.scalar(
+        select(PrincipalRow)
+        .where(
+            PrincipalRow.tenant_id == task.tenant_id,
+            PrincipalRow.user_id == task.user_id,
+        )
+        .with_for_update()
     )
     if principal is None or not principal.active:
         raise TaskExecutionContextError("task_principal_unavailable")
@@ -56,7 +60,7 @@ def current_task_auth(
             select(GroupMembershipRow.group_id).where(
                 GroupMembershipRow.tenant_id == task.tenant_id,
                 GroupMembershipRow.user_id == task.user_id,
-            )
+            ).order_by(GroupMembershipRow.group_id).with_for_update()
         )
     )
     values = {

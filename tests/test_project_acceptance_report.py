@@ -138,6 +138,8 @@ def test_m1_e2e_requires_the_exact_live_research_trace(tmp_path: Path) -> None:
             {
                 "status": "passed",
                 "execution_mode": "live_postgres_msgpack",
+                "strict_msgpack": {"runtime_flag": True, "pickle_fallback": False},
+                "checkpoint_encodings": ["msgpack"],
                 "document_version_endpoint": "/v1/documents/{document_id}/versions",
                 "document_versions": 2,
                 "tool_trace": [
@@ -146,7 +148,9 @@ def test_m1_e2e_requires_the_exact_live_research_trace(tmp_path: Path) -> None:
                     "search_knowledge",
                     "fetch_evidence",
                 ],
+                "tool_calls": 4,
                 "citation_count": 1,
+                "result_readable": True,
             }
         ),
         encoding="utf-8",
@@ -162,10 +166,78 @@ def test_m1_e2e_requires_the_exact_live_research_trace(tmp_path: Path) -> None:
     )
 
     assert report["model"]["status"] == "passed"
+    assert report["model"]["values"]["strict_msgpack"] == {
+        "runtime_flag": True,
+        "pickle_fallback": False,
+    }
     assert report["tool"]["values"]["tool_trace"] == [
         "list_document_versions",
         "compare_document_versions",
         "search_knowledge",
         "fetch_evidence",
     ]
+    assert report["tool"]["values"]["tool_calls"] == 4
     assert next(item for item in report["gates"] if item["name"] == "m1_research_e2e")["status"] == "passed"
+
+
+def test_m1_e2e_hardcoded_legacy_report_fails_new_gates(tmp_path: Path) -> None:
+    """缺少 strict 证据、tool_calls 或可读结果时，旧式硬编码报告必须判 failed。"""
+    import pytest as _pytest
+
+    from scripts.build_project_acceptance_report import m1_e2e_status
+
+    legacy = {
+        "status": "passed",
+        "execution_mode": "live_postgres_msgpack",
+        "document_version_endpoint": "/v1/documents/{document_id}/versions",
+        "document_versions": 2,
+        "tool_trace": [
+            "list_document_versions",
+            "compare_document_versions",
+            "search_knowledge",
+            "fetch_evidence",
+        ],
+        "citation_count": 5,
+    }
+
+    assert m1_e2e_status("passed", legacy) == "failed"
+
+    for mutation in (
+        {**legacy, "strict_msgpack": {"runtime_flag": True, "pickle_fallback": False}},
+        {
+            **legacy,
+            "strict_msgpack": {"runtime_flag": True, "pickle_fallback": False},
+            "tool_calls": 3,
+        },
+        {
+            **legacy,
+            "strict_msgpack": {"runtime_flag": True, "pickle_fallback": True},
+            "tool_calls": 4,
+        },
+        {
+            **legacy,
+            "strict_msgpack": {"runtime_flag": True, "pickle_fallback": False},
+            "tool_calls": 4,
+            "checkpoint_encodings": ["msgpack", "pickle"],
+        },
+        {
+            **legacy,
+            "strict_msgpack": {"runtime_flag": True, "pickle_fallback": False},
+            "tool_calls": 4,
+            "result_readable": False,
+        },
+    ):
+        assert m1_e2e_status("passed", mutation) == "failed"
+
+    complete = {
+        **mutation_all(legacy),
+        "checkpoint_encodings": ["msgpack"],
+        "tool_calls": 4,
+        "result_readable": True,
+        "strict_msgpack": {"runtime_flag": True, "pickle_fallback": False},
+    }
+    assert m1_e2e_status("passed", complete) == "passed"
+
+
+def mutation_all(legacy: dict) -> dict:
+    return {**legacy}

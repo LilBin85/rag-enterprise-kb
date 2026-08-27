@@ -23,6 +23,10 @@ from rag_kb.infrastructure.database.models import (
     TaskEventRow,
 )
 from rag_kb.infrastructure.database.session import Database
+from rag_kb.infrastructure.database.task_execution import (
+    TaskExecutionContextError,
+    current_task_auth,
+)
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
 
 
@@ -41,6 +45,8 @@ _TERMINAL_STATUSES = frozenset(
         TaskStatus.UNKNOWN,
     }
 )
+RESEARCH_AGENT_CAPABILITY_NAME = "research-agent"
+RESEARCH_AGENT_PROTOCOL_VERSION = "m1-fenced-v2"
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -79,9 +85,26 @@ def _state_from_row(row: AgentTaskRow) -> TaskState:
 
 
 class DatabaseTaskRepository:
-    def __init__(self, database: Database, *, now=None) -> None:
+    def __init__(
+        self,
+        database: Database,
+        *,
+        default_budgets: TaskBudgets | None = None,
+        now=None,
+        research_capability_name: str | None = None,
+        research_capability_protocol_version: str | None = None,
+    ) -> None:
+        if (research_capability_name is None) != (
+            research_capability_protocol_version is None
+        ):
+            raise ValueError("invalid_agent_capability")
         self._database = database
+        self._default_budgets = (
+            default_budgets if default_budgets is not None else TaskBudgets()
+        )
         self._now = now or (lambda: datetime.now(UTC))
+        self._research_capability_name = research_capability_name
+        self._research_capability_protocol_version = research_capability_protocol_version
 
     def create_task(
         self,
@@ -95,12 +118,8 @@ class DatabaseTaskRepository:
     ) -> TaskState:
         if not goal.strip():
             raise ValueError("task_goal_required")
-        configured = budgets or TaskBudgets()
+        configured = budgets if budgets is not None else self._default_budgets
         deadline = _aware(deadline)
-        if deadline is None:
-            deadline = self._now() + timedelta(seconds=configured.max_runtime_seconds)
-        if deadline is not None and deadline <= self._now():
-            raise TaskRepositoryError("task_deadline_expired")
         auth_ref = canonical_fingerprint(
             "auth_context",
             {
@@ -111,20 +130,37 @@ class DatabaseTaskRepository:
                 "attributes": auth.attributes,
             },
         )
-        row = AgentTaskRow(
-            task_id=task_id or uuid4().hex,
-            tenant_id=auth.tenant_id,
-            user_id=auth.user_id,
-            task_mode=task_mode.value,
-            status=TaskStatus.PLANNING.value,
-            goal=goal.strip(),
-            auth_context_ref=auth_ref,
-            budgets=configured.model_dump(mode="json"),
-            deadline=deadline,
-            available_at=self._now(),
-        )
         with UnitOfWork(self._database) as work:
             assert work.session is not None
+            now = self._lease_now(work.session)
+            if deadline is None:
+                deadline = now + timedelta(seconds=configured.max_runtime_seconds)
+            if deadline <= now:
+                raise TaskRepositoryError("task_deadline_expired")
+            if (
+                task_mode is TaskMode.RESEARCH
+                and self._research_capability_name is not None
+                and self._research_capability_protocol_version is not None
+                and not self._has_active_capability_in_session(
+                    work.session,
+                    capability_name=self._research_capability_name,
+                    protocol_version=self._research_capability_protocol_version,
+                    for_update=True,
+                )
+            ):
+                raise TaskRepositoryError("research_agent_unavailable")
+            row = AgentTaskRow(
+                task_id=task_id or uuid4().hex,
+                tenant_id=auth.tenant_id,
+                user_id=auth.user_id,
+                task_mode=task_mode.value,
+                status=TaskStatus.PLANNING.value,
+                goal=goal.strip(),
+                auth_context_ref=auth_ref,
+                budgets=configured.model_dump(mode="json"),
+                deadline=deadline,
+                available_at=now,
+            )
             work.session.add(row)
             work.session.flush()
             self._append_event(
@@ -286,34 +322,49 @@ class DatabaseTaskRepository:
         *,
         capability_name: str,
         protocol_version: str,
+        for_update: bool = False,
     ) -> bool:
         """供后续任务创建事务复用，避免 capability 检查与插入任务间的 TOCTOU。"""
-        return (
-            session.scalar(
-                select(AgentCapabilityLeaseRow.worker_id)
-                .where(
-                    AgentCapabilityLeaseRow.capability_name == capability_name,
-                    AgentCapabilityLeaseRow.protocol_version == protocol_version,
-                    AgentCapabilityLeaseRow.lease_expires_at
-                    > self._database_clock_expression(session),
-                )
-                .limit(1)
+        statement = (
+            select(AgentCapabilityLeaseRow.worker_id)
+            .where(
+                AgentCapabilityLeaseRow.capability_name == capability_name,
+                AgentCapabilityLeaseRow.protocol_version == protocol_version,
+                AgentCapabilityLeaseRow.lease_expires_at
+                > self._database_clock_expression(session),
             )
+            .limit(1)
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        return (
+            session.scalar(statement)
             is not None
         )
 
-    @staticmethod
-    def _database_clock_expression(session):
+    def _database_clock_expression(self, session):
         if session.get_bind().dialect.name == "postgresql":
             return func.clock_timestamp()
-        return func.current_timestamp()
+        return self._now()
 
-    @classmethod
-    def _database_now(cls, session) -> datetime:
-        value = session.scalar(select(cls._database_clock_expression(session)))
+    def _database_now(self, session) -> datetime:
+        if session.get_bind().dialect.name != "postgresql":
+            return self._now()
+        value = session.scalar(select(self._database_clock_expression(session)))
         if not isinstance(value, datetime):
             raise RuntimeError("database_clock_unavailable")
         return _aware(value) or value
+
+    def _lease_now(self, session) -> datetime:
+        return self._database_now(session)
+
+    def _lease_clock_expression(self, session):
+        return self._database_clock_expression(session)
+
+    def current_time(self) -> datetime:
+        """返回与任务生命周期判定一致的时间源。"""
+        with self._database.sessions() as session:
+            return self._lease_now(session)
 
     @staticmethod
     def _validate_capability_args(
@@ -337,9 +388,9 @@ class DatabaseTaskRepository:
     def claim_next(self, *, worker_id: str, lease_seconds: int) -> TaskLease | None:
         if not worker_id or lease_seconds <= 0:
             raise ValueError("invalid_task_claim")
-        now = self._now()
         with UnitOfWork(self._database) as work:
             assert work.session is not None
+            clock = self._lease_clock_expression(work.session)
             row = work.session.scalar(
                 select(AgentTaskRow)
                 .where(
@@ -348,10 +399,10 @@ class DatabaseTaskRepository:
                     ),
                     AgentTaskRow.task_mode == TaskMode.RESEARCH.value,
                     AgentTaskRow.cancelled.is_(False),
-                    AgentTaskRow.available_at <= now,
+                    AgentTaskRow.available_at <= clock,
                     or_(
                         AgentTaskRow.lease_owner.is_(None),
-                        AgentTaskRow.lease_expires_at <= now,
+                        AgentTaskRow.lease_expires_at <= clock,
                     ),
                 )
                 .order_by(AgentTaskRow.available_at, AgentTaskRow.created_at)
@@ -360,6 +411,7 @@ class DatabaseTaskRepository:
             )
             if row is None:
                 return None
+            now = self._lease_now(work.session)
             row.lease_owner = worker_id
             row.lease_expires_at = now + timedelta(seconds=lease_seconds)
             row.lease_generation += 1
@@ -385,7 +437,6 @@ class DatabaseTaskRepository:
         """按服务端确认的澄清 interrupt 领取同一任务；回答不落 agent_tasks。"""
         if not worker_id or lease_seconds <= 0:
             raise ValueError("invalid_task_claim")
-        now = self._now()
         with UnitOfWork(self._database) as work:
             assert work.session is not None
             row = work.session.scalar(
@@ -407,15 +458,43 @@ class DatabaseTaskRepository:
                 raise TaskRepositoryError("task_not_waiting_for_user")
             if row.interrupt_kind != "user_clarification":
                 raise TaskRepositoryError("task_resume_kind_invalid")
-            row.status = TaskStatus.RUNNING.value
-            row.interrupt_kind = None
-            row.interrupt_summary = None
-            row.lease_owner = worker_id
-            row.lease_expires_at = now + timedelta(seconds=lease_seconds)
-            row.lease_generation += 1
-            row.state_version += 1
-            row.updated_at = now
-            work.session.flush()
+            now = self._lease_now(work.session)
+            deadline = _aware(row.deadline)
+            if deadline is not None and deadline <= now:
+                raise TaskRepositoryError("task_deadline_expired")
+            resumed = work.session.execute(
+                update(AgentTaskRow)
+                .where(
+                    AgentTaskRow.task_id == row.task_id,
+                    AgentTaskRow.tenant_id == auth.tenant_id,
+                    AgentTaskRow.user_id == auth.user_id,
+                    AgentTaskRow.state_version == expected_state_version,
+                    AgentTaskRow.task_mode == TaskMode.RESEARCH.value,
+                    AgentTaskRow.status == TaskStatus.WAITING_FOR_USER.value,
+                    AgentTaskRow.interrupt_kind == "user_clarification",
+                    or_(
+                        AgentTaskRow.deadline.is_(None),
+                        AgentTaskRow.deadline
+                        > self._lease_clock_expression(work.session),
+                    ),
+                )
+                .values(
+                    status=TaskStatus.RUNNING.value,
+                    interrupt_kind=None,
+                    interrupt_summary=None,
+                    lease_owner=worker_id,
+                    lease_expires_at=now + timedelta(seconds=lease_seconds),
+                    lease_generation=row.lease_generation + 1,
+                    state_version=row.state_version + 1,
+                    updated_at=now,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if resumed.rowcount != 1:
+                if deadline is not None and deadline <= self._lease_now(work.session):
+                    raise TaskRepositoryError("task_deadline_expired")
+                raise TaskRepositoryError("task_state_conflict")
+            work.session.refresh(row)
             self._append_event(
                 work.session,
                 row,
@@ -430,13 +509,57 @@ class DatabaseTaskRepository:
                 budgets=TaskBudgets.model_validate(row.budgets),
             )
 
+    def expire_waiting_tasks(self, *, limit: int = 100) -> int:
+        """把超时的澄清等待原子收敛为失败，后续交给正文保留策略。"""
+        if limit <= 0:
+            raise ValueError("invalid_waiting_reaper_limit")
+        with UnitOfWork(self._database) as work:
+            assert work.session is not None
+            clock = self._lease_clock_expression(work.session)
+            rows = tuple(
+                work.session.scalars(
+                    select(AgentTaskRow)
+                    .where(
+                        AgentTaskRow.task_mode == TaskMode.RESEARCH.value,
+                        AgentTaskRow.status == TaskStatus.WAITING_FOR_USER.value,
+                        AgentTaskRow.deadline.is_not(None),
+                        AgentTaskRow.deadline <= clock,
+                    )
+                    .order_by(AgentTaskRow.deadline, AgentTaskRow.task_id)
+                    .limit(limit)
+                    .with_for_update(skip_locked=True)
+                )
+            )
+            now = self._lease_now(work.session)
+            for row in rows:
+                row.status = TaskStatus.FAILED.value
+                row.last_error_code = "task_deadline_expired"
+                row.content_expires_at = now + timedelta(
+                    days=self._task_result_retention_days()
+                )
+                row.interrupt_kind = None
+                row.interrupt_summary = None
+                row.lease_owner = None
+                row.lease_expires_at = None
+                row.state_version += 1
+                row.updated_at = now
+                work.session.flush()
+                self._append_event(
+                    work.session,
+                    row,
+                    event_type="task_failed",
+                    trace_id="task_deadline_expired",
+                    run_id="task_deadline_expired",
+                )
+            return len(rows)
+
     def expire_stale_knowledge_queries(self, *, limit: int = 100) -> int:
         """同步 API 崩溃后只做终态收敛，不交给通用 worker 重放。"""
         if limit <= 0:
             raise ValueError("invalid_sync_query_reaper_limit")
-        now = self._now()
         with UnitOfWork(self._database) as work:
             assert work.session is not None
+            clock = self._lease_clock_expression(work.session)
             rows = tuple(
                 work.session.scalars(
                     select(AgentTaskRow)
@@ -444,13 +567,14 @@ class DatabaseTaskRepository:
                         AgentTaskRow.task_mode == "knowledge_query",
                         AgentTaskRow.status == TaskStatus.RUNNING.value,
                         AgentTaskRow.lease_expires_at.is_not(None),
-                        AgentTaskRow.lease_expires_at <= now,
+                        AgentTaskRow.lease_expires_at <= clock,
                     )
                     .order_by(AgentTaskRow.lease_expires_at, AgentTaskRow.task_id)
                     .limit(limit)
                     .with_for_update(skip_locked=True)
                 )
             )
+            now = self._lease_now(work.session)
             for row in rows:
                 row.status = TaskStatus.FAILED.value
                 row.last_error_code = "knowledge_query_lease_expired"
@@ -471,10 +595,11 @@ class DatabaseTaskRepository:
             )
             if row is None:
                 raise TaskRepositoryError("task_not_found")
-            self._verify_lease(row, lease, now=self._now())
+            now = self._lease_now(work.session)
+            self._verify_lease(row, lease, now=now)
             row.lease_owner = None
             row.lease_expires_at = None
-            row.updated_at = self._now()
+            row.updated_at = now
             work.session.flush()
 
     def refresh_lease(
@@ -486,7 +611,6 @@ class DatabaseTaskRepository:
         """在不改变 generation 的前提下延长租约并回读最新业务状态。"""
         if lease_seconds is not None and lease_seconds <= 0:
             raise ValueError("invalid_task_claim")
-        now = self._now()
         with UnitOfWork(self._database) as work:
             assert work.session is not None
             row = work.session.scalar(
@@ -496,6 +620,7 @@ class DatabaseTaskRepository:
             )
             if row is None:
                 raise TaskRepositoryError("task_not_found")
+            now = self._lease_now(work.session)
             self._verify_lease(row, lease, now=now)
             if lease_seconds is not None:
                 row.lease_expires_at = now + timedelta(seconds=lease_seconds)
@@ -527,7 +652,8 @@ class DatabaseTaskRepository:
             )
             if row is None:
                 raise TaskRepositoryError("task_not_found")
-            self._verify_lease(row, lease, now=self._now())
+            now = self._lease_now(work.session)
+            self._verify_lease(row, lease, now=now)
             if row.state_version != lease.state.state_version:
                 raise TaskRepositoryError("task_state_conflict")
             row.status = TaskStatus.WAITING_FOR_USER.value
@@ -536,7 +662,7 @@ class DatabaseTaskRepository:
             row.lease_owner = None
             row.lease_expires_at = None
             row.state_version += 1
-            row.updated_at = self._now()
+            row.updated_at = now
             work.session.flush()
             self._append_event(
                 work.session,
@@ -561,7 +687,8 @@ class DatabaseTaskRepository:
         """终态写入：succeeded 必须原子绑定有效结果（计划 §11.4 门禁）。"""
         if status not in _TERMINAL_STATUSES:
             raise ValueError("task_status_not_terminal")
-        if status in {TaskStatus.SUCCEEDED, TaskStatus.REFUSED} and (
+        is_result_submission = status in {TaskStatus.SUCCEEDED, TaskStatus.REFUSED}
+        if is_result_submission and (
             result_kind != "research" or result_ref is None or result_hash is None
         ):
             raise ValueError("task_result_binding_required")
@@ -574,7 +701,35 @@ class DatabaseTaskRepository:
             )
             if row is None:
                 raise TaskRepositoryError("task_not_found")
-            self._verify_lease(row, lease, now=self._now())
+            now = self._lease_now(work.session)
+            self._verify_lease(row, lease, now=now)
+            if is_result_submission and (
+                row.cancelled or row.status not in {"planning", "running"}
+            ):
+                raise TaskRepositoryError("task_lease_generation_stale")
+            deadline = _aware(row.deadline)
+            if (
+                is_result_submission
+                and deadline is not None
+                and deadline <= now
+            ):
+                # 持有任务行锁后才判定 deadline，避免对象写后提交 succeeded/refused。
+                status = TaskStatus.FAILED
+                error_code = "task_deadline_expired"
+                result_kind = None
+                result_ref = None
+                result_hash = None
+            is_result_submission = status in {TaskStatus.SUCCEEDED, TaskStatus.REFUSED}
+            if is_result_submission:
+                try:
+                    current_task_auth(
+                        work.session,
+                        task=row,
+                        auth_context_ref=lease.state.auth_context_ref,
+                        request_id=trace_id,
+                    )
+                except TaskExecutionContextError as exc:
+                    raise TaskRepositoryError("task_auth_context_changed") from exc
             row.status = status.value
             row.cancelled = status is TaskStatus.CANCELLED
             row.result_kind = result_kind
@@ -590,7 +745,7 @@ class DatabaseTaskRepository:
             row.lease_owner = None
             row.lease_expires_at = None
             row.state_version += 1
-            row.updated_at = self._now()
+            row.updated_at = now
             work.session.flush()
             self._append_event(
                 work.session,
@@ -625,6 +780,7 @@ class DatabaseTaskRepository:
                 raise TaskRepositoryError("task_state_conflict")
             if TaskStatus(row.status) in _TERMINAL_STATUSES:
                 raise TaskRepositoryError("task_terminal_state")
+            now = self._lease_now(work.session)
             row.cancelled = True
             row.status = TaskStatus.CANCELLED.value
             if row.task_mode == TaskMode.RESEARCH.value:
@@ -636,7 +792,7 @@ class DatabaseTaskRepository:
             row.lease_owner = None
             row.lease_expires_at = None
             row.state_version += 1
-            row.updated_at = self._now()
+            row.updated_at = now
             work.session.flush()
             self._append_event(
                 work.session,

@@ -4,16 +4,18 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from rag_kb.domain.tasks import (
+    DEFAULT_MAX_MODEL_CALLS,
+    DEFAULT_MAX_RUNTIME_SECONDS,
+    DEFAULT_MAX_TOOL_CALLS,
+    TaskBudgets,
+)
+from rag_kb.domain.tools import TOOL_TIMEOUT_CEILING_SECONDS
+
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
-
-# M1 Research Agent 预算单一来源：Settings 默认值、build_research_agent 与
-# TaskBudgets 默认值全部由此同步（M1_FIX_PLAN 修复 4）。
-AGENT_MAX_MODEL_CALLS = 12
-AGENT_MAX_TOOL_CALLS = 20
-
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -64,16 +66,19 @@ class Settings(BaseSettings):
     retrieval_rrf_k: int = Field(default=60, ge=1, le=1000)
     enable_hybrid_retrieval: bool = False
 
-    # M1 Research Agent:模型/工具调用预算（常量单一来源见文件头）
+    # M1 Research Agent：Settings 只决定新任务的预算默认值。
     agent_max_model_calls: int = Field(
-        default=AGENT_MAX_MODEL_CALLS, ge=1, le=100
+        default=DEFAULT_MAX_MODEL_CALLS, ge=1, le=100
     )
-    agent_max_tool_calls: int = Field(default=AGENT_MAX_TOOL_CALLS, ge=1, le=100)
+    agent_max_tool_calls: int = Field(default=DEFAULT_MAX_TOOL_CALLS, ge=1, le=100)
+    agent_max_runtime_seconds: int = Field(default=DEFAULT_MAX_RUNTIME_SECONDS, ge=1)
     agent_timeout_seconds: int = Field(default=20, ge=1, le=120)
+    agent_capability_lease_seconds: int = Field(default=30, ge=3, le=3600)
 
     # 敏感正文保留策略（M1_FIX_PLAN 修复 5）：工具结果与任务结果/checkpoint 过期即清理。
     tool_result_ttl_seconds: int = Field(default=7 * 24 * 3600, ge=1)
     task_result_retention_days: int = Field(default=7, ge=1)
+    result_object_orphan_grace_seconds: int = Field(default=3600, ge=1)
 
     # 规划复用检索 tool 上限；模型决策和结构修复另行有界，避免隐式循环。
     planner_max_model_decisions: int = Field(default=6, ge=1, le=10)
@@ -94,6 +99,14 @@ class Settings(BaseSettings):
     embedding_dim: int = 1024
 
     corpus_dir: Path = ROOT_DIR / "data" / "corpus"
+
+    @model_validator(mode="after")
+    def validate_retention_windows(self) -> "Settings":
+        if self.result_object_orphan_grace_seconds <= TOOL_TIMEOUT_CEILING_SECONDS + 60:
+            raise ValueError("result_object_orphan_grace_too_short")
+        if self.tool_result_ttl_seconds <= TOOL_TIMEOUT_CEILING_SECONDS:
+            raise ValueError("tool_result_ttl_too_short")
+        return self
 
     def prepare_runtime_env(self) -> None:
         """运行时环境准备;必须在相关三方库被 import 之前调用(其常量于导入时读取)。
@@ -126,6 +139,15 @@ class Settings(BaseSettings):
         return snapshots.exists() and any(
             (s / "pytorch_model.bin").is_file() for s in snapshots.iterdir() if s.is_dir()
         )
+
+
+def task_budgets_from_settings(settings: Settings) -> TaskBudgets:
+    """把当前环境默认值完整持久化到新任务，运行中的任务不再读取 Settings。"""
+    return TaskBudgets(
+        max_model_calls=settings.agent_max_model_calls,
+        max_tool_calls=settings.agent_max_tool_calls,
+        max_runtime_seconds=settings.agent_max_runtime_seconds,
+    )
 
 
 @lru_cache

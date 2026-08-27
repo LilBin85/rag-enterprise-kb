@@ -5,13 +5,12 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from rag_kb.agent.context import AgentRunContext
 from rag_kb.agent.result import (
@@ -20,13 +19,13 @@ from rag_kb.agent.result import (
     build_task_result,
 )
 from rag_kb.application.tool_execution_service import (
-    _FATAL_TOOL_CODES,
+    _STALE_TOOL_CODES,
     ToolExecutionError,
     ToolExecutionService,
 )
 from rag_kb.domain.evidence import canonical_evidence_snapshot
 from rag_kb.domain.identity import AuthContext
-from rag_kb.domain.tasks import TaskMode, TaskStatus
+from rag_kb.domain.tasks import TaskBudgets, TaskMode, TaskStatus
 from rag_kb.infrastructure.database.evidence_repository import (
     EvidenceLedgerConflict,
     EvidenceLedgerRepository,
@@ -39,6 +38,11 @@ from rag_kb.infrastructure.database.task_repository import (
 )
 
 logger = logging.getLogger(__name__)
+
+_STALE_REPOSITORY_CODES = frozenset(
+    {"task_lease_generation_stale", "task_lease_expired"}
+)
+_STALE_CHECKPOINT_CODE = "task_checkpoint_lease_stale"
 
 
 class TaskWorkerError(RuntimeError):
@@ -113,7 +117,7 @@ class TaskWorker:
         *,
         repository: DatabaseTaskRepository,
         auth_contexts: TaskAuthContextPort,
-        agent: Any,
+        agent_for: Callable[[TaskBudgets], Any],
         results: AgentResultStore,
         evidence: EvidenceLedgerRepository,
         tools: ToolExecutionService,
@@ -121,14 +125,12 @@ class TaskWorker:
         worker_id: str,
         lease_seconds: int = 300,
         close=None,
-        now=None,
-        checkpointer=None,
     ) -> None:
         if not worker_id or lease_seconds <= 0:
             raise ValueError("invalid_task_worker")
         self._repository = repository
         self._auth_contexts = auth_contexts
-        self._agent = agent
+        self._agent_for = agent_for
         self._results = results
         self._evidence = evidence
         self._tools = tools
@@ -136,16 +138,17 @@ class TaskWorker:
         self._worker_id = worker_id
         self._lease_seconds = lease_seconds
         self._close = close
-        self._now = now or (lambda: datetime.now(UTC))
-        self._checkpointer = checkpointer
 
     def close(self) -> None:
-        close_tools = getattr(self._tools, "close", None)
-        if close_tools is not None:
-            close_tools()
-        if self._close is not None:
-            self._close()
-            self._close = None
+        close = self._close
+        self._close = None
+        try:
+            close_tools = getattr(self._tools, "close", None)
+            if close_tools is not None:
+                close_tools()
+        finally:
+            if close is not None:
+                close()
 
     def run_once(self) -> TaskWorkerResult:
         lease = self._repository.claim_next(
@@ -182,66 +185,6 @@ class TaskWorker:
     def expire_stale_knowledge_queries(self, *, limit: int = 100) -> int:
         return self._repository.expire_stale_knowledge_queries(limit=limit)
 
-    def purge_expired_tool_results(self, *, limit: int = 100) -> int:
-        purge = getattr(self._tools, "purge_expired_tool_results", None)
-        if purge is None:
-            return 0
-        return purge(limit=limit)
-
-    def purge_finished_task_threads(self, *, limit: int = 100) -> int:
-        """终态任务超过保留期后删除 checkpoint 线程与结果正文（幂等可重扫）。"""
-        from rag_kb.config import get_settings
-        from rag_kb.domain.tasks import TaskStatus
-        from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
-
-        retention = timedelta(days=get_settings().task_result_retention_days)
-        cutoff = self._now() - retention
-        terminal = tuple(
-            item.value
-            for item in TaskStatus
-            if item
-            in {
-                TaskStatus.SUCCEEDED,
-                TaskStatus.REFUSED,
-                TaskStatus.FAILED,
-                TaskStatus.CANCELLED,
-                TaskStatus.UNKNOWN,
-            }
-        )
-        purged = 0
-        with UnitOfWork(self._database) as work:
-            assert work.session is not None
-            rows = tuple(
-                work.session.scalars(
-                    select(AgentTaskRow)
-                    .where(
-                        AgentTaskRow.status.in_(terminal),
-                        AgentTaskRow.updated_at <= cutoff,
-                        or_(
-                            AgentTaskRow.checkpoint_purged_at.is_(None),
-                            AgentTaskRow.result_purged_at.is_(None),
-                        ),
-                    )
-                    .order_by(AgentTaskRow.updated_at)
-                    .limit(limit)
-                    .with_for_update(skip_locked=True)
-                )
-            )
-            for row in rows:
-                now = self._now()
-                if row.checkpoint_purged_at is None:
-                    if self._checkpointer is None:
-                        raise ValueError("task_thread_purger_required")
-                    self._checkpointer.delete_thread(row.task_id)
-                    row.checkpoint_purged_at = now
-                if row.result_purged_at is None:
-                    if row.result_ref:
-                        self._results.delete_task_result(row.result_ref)
-                        row.result_ref = None
-                    row.result_purged_at = now
-                purged += 1
-        return purged
-
     def _run_claimed(
         self,
         lease: TaskLease,
@@ -251,16 +194,35 @@ class TaskWorker:
         try:
             return self._advance(lease, resume_answer=resume_answer)
         except TaskRepositoryError as exc:
+            if exc.code not in _STALE_REPOSITORY_CODES:
+                logger.error(
+                    "Research Agent 仓储执行失败 task_id=%s error_code=%s",
+                    lease.state.task_id,
+                    exc.code,
+                    exc_info=True,
+                )
+                stale_code = self._fail_safely(lease, exc.code)
+                if stale_code is not None:
+                    return TaskWorkerResult(
+                        status="stale",
+                        task_id=lease.state.task_id,
+                        error_code=stale_code,
+                    )
+                return TaskWorkerResult(
+                    status="failed", task_id=lease.state.task_id, error_code=exc.code
+                )
             return TaskWorkerResult(
                 status="stale", task_id=lease.state.task_id, error_code=exc.code
             )
         except Exception as exc:
             code = getattr(exc, "code", None) or "task_agent_failed"
-            if isinstance(exc, ToolExecutionError) and exc.code in _FATAL_TOOL_CODES:
-                # 失租 Worker 禁止更新业务状态：致命码只上报，不改写终态；
-                # 未完成调用由新 Worker 从 checkpoint 恢复重执行。
+            if (
+                code == _STALE_CHECKPOINT_CODE
+                or isinstance(exc, ToolExecutionError) and exc.code in _STALE_TOOL_CODES
+            ):
+                # 失租 Worker 禁止更新业务状态：未完成调用由新 Worker 恢复重执行。
                 logger.error(
-                    "Research Agent 遭遇致命工具错误 task_id=%s error_code=%s",
+                    "Research Agent 遭遇失租错误 task_id=%s error_code=%s",
                     lease.state.task_id,
                     code,
                 )
@@ -273,7 +235,13 @@ class TaskWorker:
                 code,
                 exc_info=True,
             )
-            self._fail_safely(lease, code)
+            stale_code = self._fail_safely(lease, code)
+            if stale_code is not None:
+                return TaskWorkerResult(
+                    status="stale",
+                    task_id=lease.state.task_id,
+                    error_code=stale_code,
+                )
             return TaskWorkerResult(
                 status="failed", task_id=lease.state.task_id, error_code=code
             )
@@ -290,8 +258,10 @@ class TaskWorker:
         state = lease.state
         if state.task_mode is not TaskMode.RESEARCH:
             raise TaskWorkerError("task_mode_not_supported")
-        if state.deadline is not None and self._now() >= state.deadline:
+        if state.deadline is not None and self._repository.current_time() >= state.deadline:
             raise TaskWorkerError("task_deadline_expired")
+
+        agent = self._agent_for(lease.budgets)
 
         run_id = uuid4().hex
         auth = self._auth_contexts.resolve(
@@ -310,7 +280,12 @@ class TaskWorker:
             auth=auth,
         )
         config = {
-            "configurable": {"thread_id": state.task_id},
+            "configurable": {
+                "thread_id": state.task_id,
+                "checkpoint_tenant_id": auth.tenant_id,
+                "checkpoint_worker_id": self._worker_id,
+                "checkpoint_lease_generation": lease.lease_generation,
+            },
             # 每个 middleware 节点各消耗一个 superstep，预算之外必须留出
             # 图遍历中转余量；真正的停止边界由 ModelCallLimit / ToolCallLimit /
             # ExecutionGuard 中间件按线程强制（M1_FIX_PLAN 修复 4）。
@@ -319,7 +294,7 @@ class TaskWorker:
                 (lease.budgets.max_model_calls + lease.budgets.max_tool_calls) * 3 + 20,
             ),
         }
-        snapshot = self._agent.get_state(config)
+        snapshot = agent.get_state(config)
         invoke_agent = True
         if resume_answer is not None:
             self._require_user_interrupt(snapshot)
@@ -343,16 +318,19 @@ class TaskWorker:
                 ),
                 self._lease_seconds,
             ):
-                result = self._agent.invoke(invoke_input, config, context=context)
+                result = agent.invoke(invoke_input, config, context=context)
             lease = self._repository.refresh_lease(
                 lease, lease_seconds=self._lease_seconds
             )
             # deadline 终检：invoke 期间过期的任务不得再进入 settle/终态提交。
             fresh_deadline = lease.state.deadline
-            if fresh_deadline is not None and self._now() >= fresh_deadline:
+            if (
+                fresh_deadline is not None
+                and self._repository.current_time() >= fresh_deadline
+            ):
                 raise TaskWorkerError("task_deadline_expired")
 
-        latest = self._agent.get_state(config)
+        latest = agent.get_state(config)
         if latest.interrupts:
             return self._pause_for_interrupt(lease, latest, run_id)
         candidate = self._extract_candidate(result) or self._extract_candidate(latest.values)
@@ -439,17 +417,50 @@ class TaskWorker:
             if candidate.status == "succeeded"
             else TaskStatus.REFUSED
         )
-        finished = self._repository.finish_task(
-            lease,
-            status=status,
-            result_kind=result.result_kind,
-            result_ref=result_ref,
-            result_hash=result_hash,
-            trace_id=run_id,
-        )
+        try:
+            finished = self._repository.finish_task(
+                lease,
+                status=status,
+                result_kind=result.result_kind,
+                result_ref=result_ref,
+                result_hash=result_hash,
+                trace_id=run_id,
+            )
+        except Exception:
+            self._delete_unbound_task_result(result_ref, lease.state.task_id)
+            raise
+        if finished.status is TaskStatus.FAILED:
+            self._delete_unbound_task_result(result_ref, finished.task_id)
+            return TaskWorkerResult(
+                status="failed",
+                task_id=finished.task_id,
+                error_code="task_deadline_expired",
+            )
         return TaskWorkerResult(status="finished", task_id=finished.task_id)
 
-    def _fail_safely(self, lease: TaskLease, code: str) -> None:
+    def _delete_unbound_task_result(self, result_ref: str, task_id: str) -> None:
+        if self._task_result_is_bound(result_ref, task_id):
+            return
+        try:
+            self._results.delete_task_result(result_ref)
+        except OSError:
+            logger.error("未绑定任务结果补偿删除失败 task_id=%s", task_id)
+
+    def _task_result_is_bound(self, result_ref: str, task_id: str) -> bool:
+        try:
+            with self._database.sessions.begin() as session:
+                row = session.scalar(
+                    select(AgentTaskRow)
+                    .where(AgentTaskRow.task_id == task_id)
+                    .with_for_update()
+                )
+                return row is not None and row.result_ref == result_ref
+        except Exception:
+            # 提交确认丢失时不能猜测未绑定；保留对象交给孤儿扫描收敛。
+            logger.error("任务结果绑定状态确认失败 task_id=%s", task_id)
+            return True
+
+    def _fail_safely(self, lease: TaskLease, code: str) -> str | None:
         try:
             self._repository.finish_task(
                 lease,
@@ -457,5 +468,10 @@ class TaskWorker:
                 error_code=code[:100],
                 trace_id=code[:64],
             )
+        except TaskRepositoryError as exc:
+            if exc.code in _STALE_REPOSITORY_CODES:
+                return exc.code
+            logger.error("Research Agent 终态同步失败 task_id=%s", lease.state.task_id)
         except Exception:
             logger.error("Research Agent 终态同步失败 task_id=%s", lease.state.task_id)
+        return None

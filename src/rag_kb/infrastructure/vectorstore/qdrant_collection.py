@@ -26,6 +26,27 @@ class DocumentIndexError(RuntimeError):
         self.code = code
 
 
+def _get_collection_after_create(client, collection: str) -> object:
+    """创建请求不确定后读取集合信息；给服务端异步落地一个短等待窗口。
+
+    创建请求可能客户端超时但服务端仍在异步执行（例如高负载下 >2s），
+    此时紧随其后的 get 会短暂 404。最多额外等待约 1 秒并复查一次。
+    """
+    import time
+
+    attempts = 3
+    for attempt in range(attempts):
+        try:
+            return client.get_collection(collection)
+        except DocumentIndexError:
+            raise
+        except Exception:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.25 * (attempt + 1))
+    raise RuntimeError("unreachable")
+
+
 def ensure_document_collection(client, *, collection: str, dimension: int) -> None:
     """创建或验证文档 collection；绝不删除或重建不兼容集合。"""
     if not collection or dimension <= 0:
@@ -50,7 +71,7 @@ def ensure_document_collection(client, *, collection: str, dimension: int) -> No
                 # 另一实例可能已在我们之前完成创建。只有完全兼容才接受该竞态。
                 pass
 
-        info = client.get_collection(collection)
+        info = _get_collection_after_create(client, collection)
         _validate_vector_schema(info, dimension)
         payload_schema = getattr(info, "payload_schema", None) or {}
         for field, schema_type in _PAYLOAD_INDEXES:

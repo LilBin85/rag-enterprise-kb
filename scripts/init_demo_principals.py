@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 
+from sqlalchemy import select
+
 from rag_kb.config import get_settings
 from rag_kb.infrastructure.auth.providers import demo_token_principals
 from rag_kb.infrastructure.database import build_database
@@ -33,9 +35,13 @@ def sync_demo_principals(
         else:
             tenant.active = True
         for principal in principals:
-            row = session.get(
-                PrincipalRow,
-                {"tenant_id": principal.tenant_id, "user_id": principal.user_id},
+            row = session.scalar(
+                select(PrincipalRow)
+                .where(
+                    PrincipalRow.tenant_id == principal.tenant_id,
+                    PrincipalRow.user_id == principal.user_id,
+                )
+                .with_for_update()
             )
             if row is None:
                 session.add(

@@ -7,15 +7,15 @@ RAG_KB_TEST_POSTGRES_URL 指向该库；不触碰持久 rag_kb 数据库。
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
-from types import SimpleNamespace
+from pathlib import Path, PurePosixPath
 from typing import NotRequired, TypedDict
 
 import pytest
 from langchain_core.messages import HumanMessage
 from langgraph.graph import START, StateGraph
-from sqlalchemy import update as sa_update
+from sqlalchemy import func, select, text, update as sa_update
 
 from rag_kb.agent.checkpointer import open_postgres_checkpointer
 from rag_kb.agent.result import (
@@ -25,7 +25,7 @@ from rag_kb.agent.result import (
     build_task_result,
 )
 from rag_kb.application.approval_service import ApprovalService
-from rag_kb.application.task_worker import TaskWorker
+from rag_kb.application.task_retention_service import TaskRetentionService
 from rag_kb.application.tool_execution_service import (
     ToolExecutionRequest,
     ToolExecutionService,
@@ -33,8 +33,14 @@ from rag_kb.application.tool_execution_service import (
 from rag_kb.application.tool_registry import ToolRegistry, builtin_tool_definitions
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.tasks import TaskMode, TaskStatus
-from rag_kb.infrastructure.database import Base, build_database
-from rag_kb.infrastructure.database.models import AgentTaskRow, PrincipalRow, TenantRow, ToolCallRow
+from rag_kb.infrastructure.database import build_database
+from rag_kb.infrastructure.database.models import (
+    AgentTaskRow,
+    PrincipalRow,
+    TaskEventRow,
+    TenantRow,
+    ToolCallRow,
+)
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
 
@@ -42,10 +48,10 @@ from rag_kb.infrastructure.object_store.local import LocalObjectStore
 POSTGRES_TEST_URL = os.environ.get("RAG_KB_TEST_POSTGRES_URL")
 
 
-def _auth() -> AuthContext:
+def _auth(*, tenant_id: str, user_id: str) -> AuthContext:
     return AuthContext(
-        tenant_id="tenant-a",
-        user_id="owner-a",
+        tenant_id=tenant_id,
+        user_id=user_id,
         attributes={"permissions": ["knowledge:read", "document:read"]},
         request_id="request-a",
     )
@@ -59,25 +65,48 @@ class _OkAdapter:
         return True
 
 
+@dataclass(frozen=True)
+class _Ids:
+    tenant_id: str
+    user_id: str
+    task_id: str
+
+
 @pytest.fixture()
 def postgres_db(tmp_path: Path):
     assert POSTGRES_TEST_URL is not None
     database = build_database(POSTGRES_TEST_URL)
-    Base.metadata.drop_all(database.engine)
-    Base.metadata.create_all(database.engine)
+    from uuid import uuid4
+
+    suffix = uuid4().hex
+    ids = _Ids(
+        tenant_id=f"retention-tenant-{suffix}",
+        user_id=f"retention-owner-{suffix}",
+        task_id=f"retention-task-{suffix}",
+    )
+    auth = _auth(tenant_id=ids.tenant_id, user_id=ids.user_id)
     with database.sessions.begin() as session:
-        session.add(TenantRow(tenant_id="tenant-a", name="tenant-a"))
+        session.add(TenantRow(tenant_id=ids.tenant_id, name=ids.tenant_id))
         session.flush()
         session.add(
             PrincipalRow(
-                tenant_id="tenant-a",
-                user_id="owner-a",
+                tenant_id=ids.tenant_id,
+                user_id=ids.user_id,
                 roles=[],
-                attributes=_auth().attributes,
+                attributes=auth.attributes,
             )
         )
-    yield database, LocalObjectStore(tmp_path / "objects")
-    database.engine.dispose()
+    try:
+        yield database, LocalObjectStore(tmp_path / "objects"), auth, ids
+    finally:
+        from sqlalchemy import text
+
+        with database.engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM tenants WHERE tenant_id = :tenant"),
+                {"tenant": ids.tenant_id},
+            )
+        database.engine.dispose()
 
 
 def _object_exists(objects: LocalObjectStore, ref: str) -> bool:
@@ -88,12 +117,55 @@ def _object_exists(objects: LocalObjectStore, ref: str) -> bool:
         return False
 
 
+class _RecordingCheckpointer:
+    def __init__(self) -> None:
+        self.deleted: list[str] = []
+
+    def delete_thread(self, task_id: str) -> None:
+        self.deleted.append(task_id)
+
+
+def _claim_research_task(
+    repository: DatabaseTaskRepository,
+    auth: AuthContext,
+    task_id: str,
+):
+    repository.create_task(
+        auth=auth,
+        goal="研究",
+        task_mode=TaskMode.RESEARCH,
+        task_id=task_id,
+    )
+    lease = repository.claim_next(worker_id="worker-a", lease_seconds=60)
+    assert lease is not None
+    return lease
+
+
+def _expire_task_content(database, *, tenant_id: str, task_id: str) -> None:
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE agent_tasks "
+                "SET content_expires_at = clock_timestamp() - INTERVAL '1 second' "
+                "WHERE tenant_id = :tenant_id AND task_id = :task_id"
+            ),
+            {"tenant_id": tenant_id, "task_id": task_id},
+        )
+
+
+def _set_mtime(objects: LocalObjectStore, ref: str, when: datetime) -> None:
+    path = objects.root.joinpath(*PurePosixPath(ref).parts)
+    os.utime(path, (when.timestamp(), when.timestamp()))
+
+
 @pytest.mark.skipif(not POSTGRES_TEST_URL, reason="postgres_test_url_unconfigured")
-def test_purge_expired_tool_results_deletes_objects_and_nulls_refs(postgres_db) -> None:
-    """验收②④：删对象、置 result_ref=NULL、保留 hash，且重扫不重复清理。"""
-    database, objects = postgres_db
+def test_purge_expired_tool_results_keeps_succeeded_audit(postgres_db) -> None:
+    """验收：TTL 仅清正文，工具执行成功与审计事实保持不变。"""
+    database, objects, auth, ids = postgres_db
     repository = DatabaseTaskRepository(database)
-    repository.create_task(auth=_auth(), goal="研究", task_mode=TaskMode.RESEARCH, task_id="task-a")
+    repository.create_task(
+        auth=auth, goal="研究", task_mode=TaskMode.RESEARCH, task_id=ids.task_id
+    )
     lease = repository.claim_next(worker_id="worker-a", lease_seconds=60)
     assert lease is not None
     definition = next(
@@ -105,11 +177,18 @@ def test_purge_expired_tool_results_deletes_objects_and_nulls_refs(postgres_db) 
         ApprovalService(database),
         tool_results=objects,
     )
+    retention = TaskRetentionService(
+        database=database,
+        repository=repository,
+        objects=objects,
+        results=AgentResultStore(objects),
+        orphan_grace_seconds=60,
+    )
     try:
         first = service.execute(
             ToolExecutionRequest(
-                auth=_auth(),
-                task_id="task-a",
+                auth=auth,
+                task_id=ids.task_id,
                 tool_name="search_knowledge",
                 arguments={"query": "q"},
                 worker_id=lease.worker_id,
@@ -128,18 +207,22 @@ def test_purge_expired_tool_results_deletes_objects_and_nulls_refs(postgres_db) 
                 .values(result_expires_at=datetime.now(UTC) - timedelta(seconds=1))
             )
 
-        assert service.purge_expired_tool_results(limit=10) == 1
+        assert retention.purge_expired_tool_results(limit=10) == 1
         assert not _object_exists(objects, stored_ref)
         with database.sessions() as session:
             row = session.get(ToolCallRow, first.tool_call_id)
             assert row is not None
-            assert row.status == "failed"
-            assert row.error_code == "tool_result_expired"
+            assert row.status == "succeeded"
+            assert row.error_code is None
             assert row.result_ref is None
+            assert row.result_size is None
             assert row.result_hash == first.result_hash
+            assert row.result_expires_at is not None
+            assert row.result_purged_at is not None
+            assert row.verified_at is not None and row.completed_at is not None
 
         # 幂等重扫：已清理行不再命中。
-        assert service.purge_expired_tool_results(limit=10) == 0
+        assert retention.purge_expired_tool_results(limit=10) == 0
     finally:
         service.close()
 
@@ -149,16 +232,16 @@ class _CheckpointState(TypedDict):
 
 
 @pytest.mark.skipif(not POSTGRES_TEST_URL, reason="postgres_test_url_unconfigured")
-def test_purge_finished_task_threads_removes_checkpoint_and_result(postgres_db) -> None:
-    """验收③⑤：终态超期任务删除 thread checkpoint 与结果对象并写入标记。"""
-    database, objects = postgres_db
+def test_purge_finished_task_content_removes_checkpoint_and_result(postgres_db) -> None:
+    """验收：终态超期后删正文与 checkpoint，但 refused 结论保持不变。"""
+    database, objects, auth, ids = postgres_db
     checkpointer, connection = open_postgres_checkpointer(POSTGRES_TEST_URL)
     try:
         checkpointer.setup()
 
         repository = DatabaseTaskRepository(database)
         repository.create_task(
-            auth=_auth(), goal="研究", task_mode=TaskMode.RESEARCH, task_id="task-a"
+            auth=auth, goal="研究", task_mode=TaskMode.RESEARCH, task_id=ids.task_id
         )
         lease = repository.claim_next(worker_id="worker-a", lease_seconds=60)
         assert lease is not None
@@ -167,7 +250,14 @@ def test_purge_finished_task_threads_removes_checkpoint_and_result(postgres_db) 
         graph.add_node("noop", lambda state: {"value": 1})
         graph.add_edge(START, "noop")
         agent = graph.compile(checkpointer=checkpointer)
-        config = {"configurable": {"thread_id": "task-a"}}
+        config = {
+            "configurable": {
+                "thread_id": ids.task_id,
+                "checkpoint_tenant_id": ids.tenant_id,
+                "checkpoint_worker_id": lease.worker_id,
+                "checkpoint_lease_generation": lease.lease_generation,
+            }
+        }
         agent.invoke({"messages": [HumanMessage("x")]}, config)
         assert agent.get_state(config).values.get("value") == 1
 
@@ -177,11 +267,11 @@ def test_purge_finished_task_threads_removes_checkpoint_and_result(postgres_db) 
                 refusal_code="insufficient_evidence",
                 stop_reason="no_evidence",
             ),
-            task_id="task-a",
+            task_id=ids.task_id,
             citations=(),
         )
         result_ref, result_hash = AgentResultStore(objects).save_task_result(
-            "task-a", result
+            ids.task_id, result
         )
         repository.finish_task(
             lease,
@@ -193,29 +283,26 @@ def test_purge_finished_task_threads_removes_checkpoint_and_result(postgres_db) 
         )
         assert _object_exists(objects, result_ref)
 
-        # 超过保留期（默认 7 天）。
+        # 以持久正文到期时间而非 updated_at 驱动清理。
         with database.sessions.begin() as session:
-            task = session.get(AgentTaskRow, "task-a")
+            task = session.get(AgentTaskRow, ids.task_id)
             assert task is not None
-            task.updated_at = datetime.now(UTC) - timedelta(days=30)
+            task.content_expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
-        worker = TaskWorker(
-            repository=repository,
-            auth_contexts=SimpleNamespace(resolve=lambda **k: _auth()),
-            agent=None,
-            results=AgentResultStore(objects),
-            evidence=None,
-            tools=None,
+        retention = TaskRetentionService(
             database=database,
-            worker_id="worker-a",
+            repository=repository,
+            objects=objects,
+            results=AgentResultStore(objects),
             checkpointer=checkpointer,
+            orphan_grace_seconds=60,
         )
-        assert worker.purge_finished_task_threads(limit=10) == 1
+        assert retention.purge_finished_task_content(limit=10) == 1
 
         assert not agent.get_state(config).values
         assert not _object_exists(objects, result_ref)
         with database.sessions() as session:
-            row = session.get(AgentTaskRow, "task-a")
+            row = session.get(AgentTaskRow, ids.task_id)
             assert row is not None
             assert row.checkpoint_purged_at is not None
             assert row.result_purged_at is not None
@@ -224,6 +311,241 @@ def test_purge_finished_task_threads_removes_checkpoint_and_result(postgres_db) 
             assert row.result_hash == result_hash
 
         # 幂等重扫不重复清理。
-        assert worker.purge_finished_task_threads(limit=10) == 0
+        assert retention.purge_finished_task_content(limit=10) == 0
     finally:
         connection.close()
+
+
+@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="postgres_test_url_unconfigured")
+def test_purge_finished_task_content_retries_failed_result_delete(
+    postgres_db, monkeypatch
+) -> None:
+    database, objects, auth, ids = postgres_db
+    repository = DatabaseTaskRepository(database)
+    lease = _claim_research_task(repository, auth, ids.task_id)
+    result = build_task_result(
+        TaskResultCandidate(
+            status="refused",
+            refusal_code="insufficient_evidence",
+            stop_reason="no_evidence",
+        ),
+        task_id=ids.task_id,
+        citations=(),
+    )
+    results = AgentResultStore(objects)
+    result_ref, result_hash = results.save_task_result(ids.task_id, result)
+    repository.finish_task(
+        lease,
+        status=TaskStatus.REFUSED,
+        result_kind=result.result_kind,
+        result_ref=result_ref,
+        result_hash=result_hash,
+        trace_id="trace",
+    )
+    _expire_task_content(database, tenant_id=ids.tenant_id, task_id=ids.task_id)
+    checkpointer = _RecordingCheckpointer()
+    retention = TaskRetentionService(
+        database=database,
+        repository=repository,
+        objects=objects,
+        results=results,
+        checkpointer=checkpointer,
+        orphan_grace_seconds=60,
+    )
+    original_delete = objects.delete_exact
+
+    def fail_delete(_ref: str) -> None:
+        raise OSError("object_store_unavailable")
+
+    monkeypatch.setattr(objects, "delete_exact", fail_delete)
+    assert retention.purge_finished_task_content(limit=10) == 1
+    with database.sessions() as session:
+        row = session.get(AgentTaskRow, ids.task_id)
+        assert row is not None
+        assert row.status == TaskStatus.REFUSED.value
+        assert row.result_ref == result_ref
+        assert row.result_hash == result_hash
+        assert row.result_purged_at is None
+        assert row.checkpoint_purged_at is not None
+    assert _object_exists(objects, result_ref)
+    assert checkpointer.deleted == [ids.task_id]
+
+    monkeypatch.setattr(objects, "delete_exact", original_delete)
+    assert retention.purge_finished_task_content(limit=10) == 1
+    with database.sessions() as session:
+        row = session.get(AgentTaskRow, ids.task_id)
+        assert row is not None
+        assert row.status == TaskStatus.REFUSED.value
+        assert row.result_ref is None
+        assert row.result_hash == result_hash
+        assert row.result_purged_at is not None
+    assert not _object_exists(objects, result_ref)
+    assert retention.purge_finished_task_content(limit=10) == 0
+
+
+@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="postgres_test_url_unconfigured")
+def test_purge_finished_task_content_marks_failed_without_result_once(postgres_db) -> None:
+    database, objects, auth, ids = postgres_db
+    repository = DatabaseTaskRepository(database)
+    lease = _claim_research_task(repository, auth, ids.task_id)
+    repository.finish_task(
+        lease,
+        status=TaskStatus.FAILED,
+        error_code="task_agent_failed",
+        trace_id="trace",
+    )
+    _expire_task_content(database, tenant_id=ids.tenant_id, task_id=ids.task_id)
+    checkpointer = _RecordingCheckpointer()
+    retention = TaskRetentionService(
+        database=database,
+        repository=repository,
+        objects=objects,
+        results=AgentResultStore(objects),
+        checkpointer=checkpointer,
+        orphan_grace_seconds=60,
+    )
+
+    assert retention.purge_finished_task_content(limit=10) == 1
+    with database.sessions() as session:
+        row = session.get(AgentTaskRow, ids.task_id)
+        assert row is not None
+        assert row.status == TaskStatus.FAILED.value
+        assert row.last_error_code == "task_agent_failed"
+        assert row.result_ref is None
+        assert row.checkpoint_purged_at is not None
+        assert row.result_purged_at is not None
+        first_purged_at = row.result_purged_at
+
+    assert retention.purge_finished_task_content(limit=10) == 0
+    with database.sessions() as session:
+        row = session.get(AgentTaskRow, ids.task_id)
+        assert row is not None
+        assert row.result_purged_at == first_purged_at
+    assert checkpointer.deleted == [ids.task_id]
+
+
+@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="postgres_test_url_unconfigured")
+def test_purge_orphaned_result_objects_respects_grace_references_and_live_deadlines(
+    postgres_db,
+) -> None:
+    database, objects, auth, ids = postgres_db
+    now = datetime(2100, 1, 1, tzinfo=UTC)
+    repository = DatabaseTaskRepository(database)
+    referenced_task_id = f"{ids.task_id}-referenced"
+    referenced_lease = _claim_research_task(repository, auth, referenced_task_id)
+    referenced_result = build_task_result(
+        TaskResultCandidate(
+            status="refused",
+            refusal_code="insufficient_evidence",
+            stop_reason="no_evidence",
+        ),
+        task_id=referenced_task_id,
+        citations=(),
+    )
+    referenced_ref, referenced_hash = AgentResultStore(objects).save_task_result(
+        referenced_task_id,
+        referenced_result,
+    )
+    repository.finish_task(
+        referenced_lease,
+        status=TaskStatus.REFUSED,
+        result_kind=referenced_result.result_kind,
+        result_ref=referenced_ref,
+        result_hash=referenced_hash,
+        trace_id="trace",
+    )
+    running_task_id = f"{ids.task_id}-running"
+    running_lease = _claim_research_task(repository, auth, running_task_id)
+    running_tool_call_id = f"running-{ids.task_id}"
+    orphan_ref = "task-results/orphan-task/orphan.json"
+    fresh_ref = "task-results/fresh-task/fresh.json"
+    running_tool_ref = f"tool-results/{running_task_id}/{running_tool_call_id}.json"
+    pending_task_ref = f"task-results/{running_task_id}/pending.json"
+    for ref in (orphan_ref, fresh_ref, running_tool_ref, pending_task_ref):
+        objects.put_exclusive(ref, b"body")
+    for ref in (orphan_ref, referenced_ref, running_tool_ref, pending_task_ref):
+        _set_mtime(objects, ref, now - timedelta(seconds=61))
+    _set_mtime(objects, fresh_ref, now - timedelta(seconds=30))
+    with database.sessions.begin() as session:
+        database_now = session.scalar(select(func.clock_timestamp()))
+        assert isinstance(database_now, datetime)
+        session.add(
+            ToolCallRow(
+                tool_call_id=running_tool_call_id,
+                task_id=running_task_id,
+                tenant_id=ids.tenant_id,
+                approval_id=None,
+                plan_revision=None,
+                plan_digest=None,
+                evidence_digest=None,
+                tool_name="search_knowledge",
+                tool_version="1.0.0",
+                arguments_hash="arguments",
+                principal_hash="principal",
+                mode="read",
+                idempotency_key=None,
+                risk_level="low",
+                status="running",
+                created_at=database_now,
+                execution_deadline=database_now + timedelta(seconds=120),
+            )
+        )
+    assert running_lease.state.status is TaskStatus.RUNNING
+    retention = TaskRetentionService(
+        database=database,
+        repository=repository,
+        objects=objects,
+        results=AgentResultStore(objects),
+        orphan_grace_seconds=60,
+        now=lambda: now,
+    )
+
+    assert retention.purge_orphaned_result_objects(limit=10) == 1
+    assert not _object_exists(objects, orphan_ref)
+    assert _object_exists(objects, fresh_ref)
+    assert _object_exists(objects, referenced_ref)
+    assert _object_exists(objects, running_tool_ref)
+    assert _object_exists(objects, pending_task_ref)
+
+
+@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="postgres_test_url_unconfigured")
+def test_expire_waiting_task_uses_postgres_clock_and_writes_event(postgres_db) -> None:
+    database, objects, auth, ids = postgres_db
+    repository = DatabaseTaskRepository(database)
+    repository.create_task(
+        auth=auth, goal="研究", task_mode=TaskMode.RESEARCH, task_id=ids.task_id
+    )
+    lease = repository.claim_next(worker_id="worker-a", lease_seconds=60)
+    assert lease is not None
+    paused = repository.pause_for_user(lease, question="需要部门", trace_id="trace")
+    with database.sessions.begin() as session:
+        task = session.get(AgentTaskRow, ids.task_id)
+        assert task is not None
+        task.deadline = datetime.now(UTC) - timedelta(seconds=1)
+
+    retention = TaskRetentionService(
+        database=database,
+        repository=repository,
+        objects=objects,
+        results=AgentResultStore(objects),
+        orphan_grace_seconds=60,
+    )
+    assert retention.expire_waiting_tasks(limit=10) == 1
+    assert retention.expire_waiting_tasks(limit=10) == 0
+    with database.sessions() as session:
+        row = session.get(AgentTaskRow, ids.task_id)
+        assert row is not None
+        assert row.status == TaskStatus.FAILED.value
+        assert row.last_error_code == "task_deadline_expired"
+        assert row.interrupt_kind is None and row.interrupt_summary is None
+        assert row.lease_owner is None and row.lease_expires_at is None
+        assert row.content_expires_at is not None
+        events = tuple(
+            session.scalars(
+                select(TaskEventRow.event_type)
+                .where(TaskEventRow.task_id == ids.task_id)
+                .order_by(TaskEventRow.sequence)
+            )
+        )
+    assert paused.status is TaskStatus.WAITING_FOR_USER
+    assert events == ("task_created", "task_waiting_for_user", "task_failed")

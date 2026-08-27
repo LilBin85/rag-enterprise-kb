@@ -24,6 +24,19 @@ Qdrant 的 `allowed_principals` 使用 `user|group|role:<非空标识>`；标识
 
 Research 任务由唯一的 LangGraph `create_agent` 图执行，`thread_id = task_id`。PostgreSQL checkpointer 保存消息、ToolMessage、Todo 与 interrupt/resume；`agent_tasks` 只保存业务生命周期、所有者、租约、中断摘要和不可变结果引用，不复制消息或用户回答正文。worker 重启后从同一 checkpointer 恢复，不能为历史 Runtime 建立双写或回退路径。
 
+任务预算只有一个任务级事实源：创建时由 Settings 派生的 `TaskBudgets` 以 JSON 精确持久化到 `agent_tasks.budgets`，Worker 按租约携带的持久值选择（并按小元组缓存）Agent，模型/工具两个 limit middleware 与 recursion limit 全部来自该值；环境变量只影响新任务的初始派生，不改变已持久化任务。
+
+四个写边界全部受租约 generation fencing，失租一方的任何写入都被拒绝且新增业务数据为 0：
+
+1. **checkpoint 写入**：`FencedPostgresSaver.put()`/`put_writes()` 在同一条 PostgreSQL 事务内对 `agent_tasks` 行 `FOR UPDATE` 复核 `lease_owner`、`lease_generation` 与数据库时钟过期时间；失租抛 `task_checkpoint_lease_stale`，checkpoint 和 pending writes 都不会新增，抢占方从最后一个合法 checkpoint 恢复。
+2. **工具完成**：工具调用完成提交在同一事务内绑定租约复核；被抢占的旧 Worker 只返回 stale，不能把工具行改为终态、绑定 ref 或写 ToolMessage checkpoint。
+3. **幂等回放**：身份快照（tenant/user/roles/groups/attributes 的指纹）与回放校验绑定；身份变化后相同 idempotency key 返回 `task_auth_context_changed` 且不读取旧正文。
+4. **最终任务提交**：`finish_task()` 在任务行锁内以 PostgreSQL `clock_timestamp()` 终检租约、状态、取消和 deadline；deadline 已过时只能原子收敛为 `failed/task_deadline_expired` 并补偿未绑定结果对象，不可能先 succeeded 再被后台改写。
+
+只有构建完成的 Worker 才注册 `m1-fenced-v2` capability lease（独立心跳续租，与任务 invoke 解耦）；创建 Research 任务的仓储门在插入事务内复核 capability 名称、协议版本和租期，缺失、错版本或过期时返回 `research_agent_unavailable`（HTTP 503），同步知识查询、文档接口和全局 readiness 不受影响。任务执行期间按租约三分之一间隔续租，失败则本次结果不提交，任务保持可安全恢复。
+
+执行结论与正文可用性分离：独立的 `TaskRetentionService` 周期收敛 waiting deadline reaper、工具正文 GC、任务 checkpoint/结果 GC 和固定前缀孤儿对象扫描；GC 只删除正文对象并写 purge 标记，绝不改写 succeeded/refused 等历史执行终态。结果读取在返回前于行锁内二次复核 deadline、授权和证据账本：到期为 410、未完成/无结果为 409、完整性错误 fail-close 为 500。"object 写成功、DB 绑定前崩溃"的对象由即时补偿加固定前缀 grace 重扫双保险兜底，删除失败保留引用供下轮重试。checkpointer 的 msgpack serializer 只 allowlist `TaskResultCandidate`、显式禁用 pickle fallback，并在 `LANGGRAPH_STRICT_MSGPACK=true` 下叠加运行时 schema allowlist。
+
 摄取和投影处理使用后台心跳续租；失去租约后旧 worker 不能提交。已有 receipt 的发布恢复跳过解析和 embedding。达到普通重试上限但仍可能遗留 Qdrant 世代时，任务进入可重复领取的 cleanup 阶段，清理成功后才写入最终失败。
 
 worker 周期扫描“对象已写入、SQL 尚未推进”的上传预留，只在内容哈希匹配时推进；缺失、哈希不符或单条异常记录会延后，不能饿死同批后续记录。活动摄取或未过期投影收敛租约存在时，删除失败关闭。
@@ -34,4 +47,4 @@ worker 周期扫描“对象已写入、SQL 尚未推进”的上传预留，只
 
 M1 仅公开 `research`，且只注册 `search_knowledge`、`fetch_evidence`、`list_document_versions`、`compare_document_versions` 四个 READ 工具。工具适配器只能读取服务端注入的 `AgentRunContext`，并委托 `ToolExecutionService` 校验参数、权限和证据；模型不能传递 tenant、权限、lease、批准或存储路径。
 
-每个 ToolMessage 只保留允许字段。任务成功前，服务端重新读取证据账本并验证 `TaskResult` 的 evidence_ids/citations，再原子绑定不可变结果 ref/hash；缺失、越权或过期证据会使任务失败关闭。checkpointer 的 msgpack serializer 只 allowlist `TaskResultCandidate`，并显式禁用 pickle fallback。
+每个 ToolMessage 只保留允许字段。任务成功前，服务端重新读取证据账本并验证 `TaskResult` 的 evidence_ids/citations，再原子绑定不可变结果 ref/hash；缺失、越权或过期证据会使任务失败关闭。checkpointer 的 msgpack serializer 只 allowlist `TaskResultCandidate`，并显式禁用 pickle fallback。ExecutionGuard 仅统计四个 READ 业务工具：完整轨迹中连续失败达到阈值、或同参重复调用超限时提前停止；最近一次成功会重置连续计数，Todo、结构化结果和未知工具不参与计数。普通工具异常的稳定业务码原样进入 ToolMessage，`task_checkpoint_lease_stale` 等致命码直接抛出。

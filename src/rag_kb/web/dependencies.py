@@ -8,7 +8,7 @@ from fastapi import Depends, Header, HTTPException
 from qdrant_client import QdrantClient
 from sqlalchemy import text
 
-from rag_kb.config import get_settings
+from rag_kb.config import get_settings, task_budgets_from_settings
 from rag_kb.application.approval_service import ApprovalService
 from rag_kb.application.query_service import KnowledgeQueryService
 from rag_kb.application.task_query_service import DatabaseTaskQueryService
@@ -18,7 +18,11 @@ from rag_kb.application.document_service import DocumentService
 from rag_kb.domain.identity import AuthContext
 from rag_kb.infrastructure.auth.providers import DemoTokenIdentityProvider, IdentityProvider
 from rag_kb.infrastructure.database import build_database
-from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
+from rag_kb.infrastructure.database.task_repository import (
+    DatabaseTaskRepository,
+    RESEARCH_AGENT_CAPABILITY_NAME,
+    RESEARCH_AGENT_PROTOCOL_VERSION,
+)
 from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerRepository
 from rag_kb.infrastructure.object_store import LocalObjectStore
 from rag_kb.infrastructure.vectorstore.qdrant_collection import (
@@ -170,7 +174,13 @@ def build_document_service() -> DocumentService:
 
 @lru_cache
 def build_task_repository() -> DatabaseTaskRepository:
-    return DatabaseTaskRepository(build_database(get_settings().database_url))
+    settings = get_settings()
+    return DatabaseTaskRepository(
+        build_database(settings.database_url),
+        default_budgets=task_budgets_from_settings(settings),
+        research_capability_name=RESEARCH_AGENT_CAPABILITY_NAME,
+        research_capability_protocol_version=RESEARCH_AGENT_PROTOCOL_VERSION,
+    )
 
 
 @lru_cache
@@ -197,7 +207,9 @@ def build_task_resume_worker() -> Generator[object, None, None]:
     from rag_kb.worker import TaskAgentConfigurationError, build_task_worker
 
     try:
-        worker = build_task_worker(worker_id=f"api-resume-{uuid4().hex[:12]}")
+        worker = build_task_worker(
+            worker_id=f"api-resume-{uuid4().hex[:12]}", publish_capability=False
+        )
     except TaskAgentConfigurationError as exc:
         raise HTTPException(status_code=503, detail="Research Agent 暂不可用") from exc
     try:

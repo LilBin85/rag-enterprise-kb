@@ -6,10 +6,11 @@ import json
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, hook_config
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import interrupt
 
 from rag_kb.agent.result import TaskResultCandidate
+from rag_kb.agent.tools import RESEARCH_TOOL_NAMES
 from rag_kb.domain.fingerprints import canonical_fingerprint
 
 
@@ -65,16 +66,24 @@ class ClarificationInterruptMiddleware(AgentMiddleware):
 
 _CONSECUTIVE_TOOL_FAILURES = 3
 _REPEATED_TOOL_CALLS = 2
+_BUSINESS_TOOL_NAMES = frozenset(RESEARCH_TOOL_NAMES)
+_CONTROLLED_TOOL_STATUSES = frozenset({"succeeded", "failed", "unknown"})
 
 
-def _is_failed_tool_message(message: object) -> bool:
+def _business_tool_status(message: object) -> str | None:
     if not isinstance(message, ToolMessage):
-        return False
+        return None
     try:
         payload = json.loads(message.content)
     except (TypeError, ValueError):
-        return False
-    return isinstance(payload, dict) and payload.get("status") == "failed"
+        return None
+    if not isinstance(payload, dict):
+        return None
+    tool_name = payload.get("tool_name")
+    status = payload.get("status")
+    if tool_name not in _BUSINESS_TOOL_NAMES or status not in _CONTROLLED_TOOL_STATUSES:
+        return None
+    return status
 
 
 class ExecutionGuardMiddleware(AgentMiddleware):
@@ -88,14 +97,21 @@ class ExecutionGuardMiddleware(AgentMiddleware):
         messages = state.get("messages") or ()
         failures = 0
         for message in reversed(messages):
-            if not _is_failed_tool_message(message):
+            status = _business_tool_status(message)
+            if status is None:
+                continue
+            if status != "failed":
                 break
             failures += 1
         if failures >= _CONSECUTIVE_TOOL_FAILURES:
             raise AgentGuardError("agent_consecutive_tool_failures")
         fingerprints: dict[str, int] = {}
         for message in messages:
+            if not isinstance(message, AIMessage):
+                continue
             for call in getattr(message, "tool_calls", ()) or ():
+                if not isinstance(call, dict) or call.get("name") not in _BUSINESS_TOOL_NAMES:
+                    continue
                 fingerprint = canonical_fingerprint(
                     "agent_tool_call_repeat",
                     {"name": call.get("name"), "args": call.get("args")},

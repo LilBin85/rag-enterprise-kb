@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from rag_kb.agent.result import TaskResult
 from rag_kb.application.task_query_service import TaskEventResult, TaskQueryError
+from rag_kb.application.task_result_service import TaskResultError
 from rag_kb.domain.identity import Principal
 from rag_kb.domain.tasks import TaskMode, TaskState, TaskStatus
 from rag_kb.infrastructure.auth.providers import DemoTokenIdentityProvider
@@ -33,6 +34,8 @@ def _state(
     interrupt_summary: str | None = None,
     result_ref: str | None = None,
     result_hash: str | None = None,
+    content_expires_at: datetime | None = None,
+    result_purged_at: datetime | None = None,
     cancelled: bool = False,
 ) -> TaskState:
     return TaskState(
@@ -44,11 +47,13 @@ def _state(
         state_version=state_version,
         interrupt_kind=interrupt_kind,
         interrupt_summary=interrupt_summary,
-        result_kind="research" if result_ref else None,
+        result_kind="research" if result_hash else None,
         result_ref=result_ref,
         result_hash=result_hash,
         content_expires_at=(
-            datetime(2026, 9, 1, tzinfo=UTC)
+            content_expires_at
+            if content_expires_at is not None
+            else datetime.now(UTC) + timedelta(days=1)
             if status
             in {
                 TaskStatus.SUCCEEDED,
@@ -59,6 +64,7 @@ def _state(
             }
             else None
         ),
+        result_purged_at=result_purged_at,
         cancelled=cancelled,
     )
 
@@ -68,8 +74,11 @@ class FakeTaskRepository:
         self.created: list[dict[str, object]] = []
         self.cancelled: list[dict[str, object]] = []
         self.current = _state()
+        self.create_error: str | None = None
 
     def create_task(self, **kwargs: object) -> TaskState:
+        if self.create_error is not None:
+            raise TaskRepositoryError(self.create_error)
         self.created.append(kwargs)
         return self.current
 
@@ -77,6 +86,9 @@ class FakeTaskRepository:
         if task_id != "task-1" or auth.tenant_id != "tenant-a" or auth.user_id != "owner-a":
             raise TaskRepositoryError("task_not_found")
         return self.current
+
+    def current_time(self) -> datetime:
+        return datetime.now(UTC)
 
     def cancel(self, **kwargs: object) -> TaskState:
         if kwargs["expected_state_version"] != self.current.state_version:
@@ -141,6 +153,23 @@ class FakeResultService:
     def read(self, *, auth, state: TaskState) -> TaskResult:
         if auth.user_id != "owner-a" or state.task_id != "task-1":
             raise ValueError("task_result_integrity_failed")
+        if state.status not in {TaskStatus.SUCCEEDED, TaskStatus.REFUSED} or (
+            state.result_kind != "research" or state.result_hash is None
+        ):
+            raise TaskResultError("task_result_unavailable")
+        if state.result_purged_at is not None or (
+            state.content_expires_at is not None
+            and state.content_expires_at <= datetime.now(UTC)
+        ):
+            raise TaskResultError("task_result_expired")
+        if state.result_ref is None:
+            raise TaskResultError("task_result_unavailable")
+        if state.result_hash == "duplicate":
+            raise TaskResultError("task_result_binding_invalid")
+        if state.result_hash == "authorization_stale":
+            raise TaskResultError("task_result_evidence_unavailable")
+        if state.result_hash == "integrity":
+            raise TaskResultError("task_result_integrity_failed")
         return self.result
 
 
@@ -206,6 +235,20 @@ def test_create_rejects_non_research_task_modes(setup_app) -> None:
     assert repository.created == []
 
 
+def test_create_returns_503_without_compatible_worker_capability(setup_app) -> None:
+    client, repository, _ = setup_app
+    repository.create_error = "research_agent_unavailable"
+
+    response = client.post(
+        "/v1/tasks",
+        headers=_headers(),
+        json={"goal": "核对上线制度", "task_mode": "research"},
+    )
+
+    assert response.status_code == 503
+    assert repository.created == []
+
+
 def test_result_is_read_from_server_side_reference(setup_app) -> None:
     client, repository, _ = setup_app
     repository.current = _state(
@@ -220,6 +263,52 @@ def test_result_is_read_from_server_side_reference(setup_app) -> None:
     assert result.status_code == 200
     assert result.json()["refusal_code"] == "insufficient_evidence"
     assert unavailable.status_code == 404
+
+
+def test_result_contract_distinguishes_expired_unavailable_and_integrity(setup_app) -> None:
+    client, repository, _ = setup_app
+    repository.current = _state(
+        status=TaskStatus.REFUSED,
+        result_ref="task-results/task-1/result.json",
+        result_hash="sha256:" + "a" * 64,
+        content_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+
+    expired = client.get("/v1/tasks/task-1/result", headers=_headers())
+    state = client.get("/v1/tasks/task-1", headers=_headers())
+    assert expired.status_code == 410
+    assert state.json()["result_available"] is False
+
+    repository.current = _state()
+    assert client.get("/v1/tasks/task-1/result", headers=_headers()).status_code == 409
+
+    repository.current = _state(
+        status=TaskStatus.REFUSED,
+        result_hash="sha256:" + "a" * 64,
+        result_purged_at=datetime.now(UTC),
+    )
+    assert client.get("/v1/tasks/task-1/result", headers=_headers()).status_code == 410
+
+    repository.current = _state(
+        status=TaskStatus.REFUSED,
+        result_ref="task-results/task-1/result.json",
+        result_hash="integrity",
+    )
+    assert client.get("/v1/tasks/task-1/result", headers=_headers()).status_code == 500
+
+    repository.current = _state(
+        status=TaskStatus.REFUSED,
+        result_ref="task-results/task-1/result.json",
+        result_hash="duplicate",
+    )
+    assert client.get("/v1/tasks/task-1/result", headers=_headers()).status_code == 500
+
+    repository.current = _state(
+        status=TaskStatus.REFUSED,
+        result_ref="task-results/task-1/result.json",
+        result_hash="authorization_stale",
+    )
+    assert client.get("/v1/tasks/task-1/result", headers=_headers()).status_code == 409
 
 
 def test_continue_passes_answer_only_to_controlled_worker_resume(setup_app) -> None:

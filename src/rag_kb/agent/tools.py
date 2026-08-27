@@ -201,8 +201,13 @@ def _execute_read_tool(
             # 失租/身份失效：穿透 middleware 使 invoke 失败，禁止渲染 ToolMessage 续跑。
             raise
         return render_tool_message(tool_name, None, error_code=exc.code)
-    except Exception:
-        return render_tool_message(tool_name, None, error_code="tool_execution_unavailable")
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        return render_tool_message(
+            tool_name,
+            None,
+            error_code=code if isinstance(code, str) and code else "tool_execution_unavailable",
+        )
     return render_tool_message(tool_name, result)
 
 
