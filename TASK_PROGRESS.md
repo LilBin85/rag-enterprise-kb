@@ -1,7 +1,7 @@
 # 重构任务进度记录
 
 > 最后更新：2026-08-28
-> 当前阶段：M2 进行中——批次 0（0013 与协议事实）、批次 1（HITL 暂停与审批事实）已完成并验证；批次 2-4 未实施。M1 保持全部完成与验证，未回归。
+> 当前阶段：M2 进行中——批次 0（0013 与协议事实）、批次 1（HITL 暂停与审批事实）、批次 2（双层恢复与副作用安全）已完成并验证；批次 3-4 未实施。M1 保持全部完成与验证，未回归。
 > 开发依据：`AGENT_REFACTOR_PLAN.md`、`M2_PLAN.md`（未跟踪实施方案权威）
 
 ## 执行约束
@@ -25,7 +25,8 @@
 | M1 批次 4 | 已完成并验证 | 最终验收、文档全量同步、acceptance artifacts 更新（verdict=passed）和交付清理已完成；详见批次 4 小节。 |
 | M2 批次 0 | 已完成并验证 | 0013 迁移、task 协议绑定（claim/resume/checkpoint 门）、approval checkpoint 绑定与 reject 审计列、artifact content 生命周期列、strict serializer 门禁；提交 `0ec0049`。 |
 | M2 批次 1 | 已完成并验证 | 两个 WRITE 薄 adapter + HITL 精确暂停、interrupt 双分类严格分流、服务端最小 action binding（PlanRevision）、pending approval checkpoint 绑定幂等、发起人自批拒绝、FormatChecker；提交 `0f4474d`，详见 M2 批次 1 小节。 |
-| M2 批次 2-4 | 未实施 | 双层恢复与副作用安全、公共 API 与正文生命周期、故障注入与最终验收均未开始。 |
+| M2 批次 2 | 已完成并验证 | 幂等 decision + 服务端受控 resume（同 thread）、D7 稳定 action key、claim_approval_resume/claim_next 受控重领取、三类崩溃窗口（真实 PG + FencedPostgresSaver）、失效矩阵 adapter 0、storage_key 全面收口（artifact_id）、TaskResultCandidate.artifact_ids 与受控 settle、reject 审计三元组；详见 M2 批次 2 小节。 |
+| M2 批次 3-4 | 未实施 | 公共 API 与正文生命周期、故障注入与最终验收均未开始。 |
 
 ## 已完成的 M1 基础能力
 
@@ -140,8 +141,42 @@
 - `_reject_stale_approval`（tool_execution_service.py）自动拒绝缺 rejected_by/at/reason，对 checkpoint 绑定行触发 `ck_approvals_rejected_audit_complete` 失败——批次 1 暂停路径不触发（有测试证明），批次 2 必须首先修复。
 - 受控任务若暂停为 waiting_for_user 暂无恢复入口（claim_user_resume 仅 RESEARCH）；批次 3 前无受控任务生产创建入口，属已知暂留态。
 
+## M2 批次 2：双层恢复与副作用安全（已完成并验证）
+
+### 已实现
+
+- **C-1 修复（含姊妹缺口）**：`_reject_stale_approval` 与 `approve()` 绑定失效分支均补齐 rejected_by/rejected_at/rejection_reason——自动失效用每租户固定服务端主体 `system:approval-reaper`（事务内确保 principals 行，满足 FK）+ 稳定 code `auto:<trigger>`；审批时发现失效用审批者身份。
+- **幂等 decision**（ApprovalService）：approve 对 approved/executed 幂等返回当前状态；reject 新增（写完整审计三元组）；相反 decision 稳定冲突 `approval_decision_conflict`；过期稳定 `approval_expired`。新增 get/list/load_action_facts/load_approved_for_replay 查询能力（应用层，HTTP 留批次 3）。
+- **服务端受控 resume**：`TaskWorker.resume_for_approval`——decision 先落库（幂等/冲突在此判定）→ `claim_approval_resume`（校验 waiting_for_approval + interrupt_kind=tool_approval + interrupt_ref==approval_id + m2 协议，领取即 generation+1/state_version+1，fence 通过）→ checkpoint 绑定逐项复核（checkpoint_ns/id、interrupt_id、tool_call_id 任一不符 fail-closed）→ 固定 `Command(resume={"decisions":[{"type":"approve"}]})` / 固定 reject 文案；客户端与模型零 payload。
+- **D7 稳定 action key**：`stable_write_action_key` = canonical_fingerprint("agent_write_action", {task/thread/checkpoint_ns/checkpoint_id/interrupt_id/tool_call_id/tool_name/tool_version/arguments_hash/evidence_digest})，由 approval 行派生，不含 approval/run/worker/lease ID；经 AgentRunContext（新增 evidence_ids）服务端注入。
+- **崩溃重放收敛**：`claim_next` 扩展受控任务领取（协议门隔离 M1/M2 Worker）；resume 已消费的重放路径由 `_replay_approval_facts` 从 checkpoint 待执行 tool call（tool_call_id 全局唯一，规避 LangGraph resume 写入的 checkpoint 副本 ID 漂移）反查 approved 审批，重建同一 context 与稳定 key；查不到则最终门 fail-closed。
+- **storage_key 收口**：LocalArtifactToolAdapter 输出与 artifact_result schema 以 artifact_id 替换 storage_key（两处同步）；WRITE 专用 ToolMessage 渲染（只含 artifact_id/type/hash/status，修复批次 1 遗留 KeyError 面）；`agent_tasks.artifact_refs` 改写 artifact ID（列物理保留）；`ToolExecutionResult`/结构化结果/日志面无 storage_key。
+- **结果契约**：TaskResultCandidate 新增 artifact_ids（候选声明，服务端不信任）；`_verified_artifacts` settle 前逐个校验 tenant/task 归属、status=ready、对象正文 sha256 与 content_hash 一致，任一失败 `task_artifact_binding_invalid`；`build_controlled_task_result` 服务端构造 result_kind="controlled_action" 与 artifacts 摘要；`finish_task` result_kind 按 task mode 最小放宽。
+- **受控 reaper**：`expire_waiting_tasks` 扩展受控 waiting_for_approval deadline 超时 → failed（不设 content_expires_at，retention 留批次 3）。
+
+### 事务边界与 D6 一致性窗口收敛（逐行落实）
+
+| 窗口 | 收敛 | 幂等依据 |
+|---|---|---|
+| checkpoint 已写、approval 未写 | 批次 1 已交付：同 interrupt 幂等补建 | request() checkpoint 绑定幂等 |
+| approve 已提交、resume 未调用 | 重复 decision 幂等 → 重新 claim/resume | 复用同 approval（active 复用）+ 同 action key |
+| resume 已提交、ToolNode 前崩溃 | claim_next 重领取 → interrupt 重路由或 invoke(None) 重放 | `_replay_approval_facts` 反查 + 同 D7 key |
+| tool 已执行、ToolMessage 未 checkpoint | 重放命中 tool_calls 唯一约束 → result_ref 回读 | uq_tool_calls_task_tool_idempotency + readback 校验 |
+| checkpoint 完成、摘要未同步 | claim_next → settle 幂等修正 agent_tasks | finish_task 行锁原子终态 |
+| approval 过期/撤权/evidence/参数/版本变化 | decision 阶段拒绝或最终门拒绝 | adapter 0；自动拒绝带完整审计 |
+
+### 验证证据（2026-08-28）
+
+- 先红后绿：批次 2 全部新增测试先以红灯落地（C-1 IntegrityError 复现、幂等 decision 报 approval_not_pending、四格真值表、resume 入口缺失、D7 key 缺失、storage_key 泄露断言、受控 finish research-only），再逐项转绿。
+- 四格真值表 + 幂等/拒绝 decision + reject 固定 payload + 崩溃重领取 + D7 key context：test_task_approval_recovery.py `24 passed`。
+- 受控 finish 幂等（task mode 放宽 + 终态不变）：test_task_worker_recovery.py 新增通过。
+- 真实 PostgreSQL（双库协议：主库 0013 迁移 + 全空迁移库）+ FencedPostgresSaver + 真实 create_agent 契约假模型 + 真实 adapter：test_postgres_m2_agent_recovery.py `12 passed`——完整链路恰好一次、窗口 A（执行前崩溃恢复一次）、窗口 B（adapter 后 checkpoint 前崩溃 → result_ref 回读、adapter 总 1、同 tool_call/artifact）、窗口 C（checkpoint 后摘要前崩溃 → 只幂等修正 agent_tasks 不重跑图）、失效矩阵 6 场景（expiry/principal/ACL/evidence/参数/版本）adapter 0、WRITE timeout → UNKNOWN（迟到 adapter 不能恢复 ready、sweeper 0 重放、结构性不可重驱动）、并发 decision（恰好一条有效 action/一个 tool call/一个 artifact，另一方稳定冲突）、storage_key 不出现于结果正文与日志。
+- result_ref 损坏 fail-closed（test_postgres_tool_protocol.py，tampered/missing 参数化）：WRITE 回读失败收敛 unknown、不凭 hash 伪装成功、adapter 不执行第二次；`525 passed / 0 failed / 0 skipped` 全量通过（PG 条件测试实际执行；基线 495 + 30 新增）；`git diff --check` 通过；临时 PG 测试库已删除。
+- 实施中发现并修复批次 1 遗留 C-2 的真实形态：WRITE 成功结果渲染缺专用路径（artifact 字段缺失断言红灯证明）。
+
 ## 当前交付边界
 
-- M1 批次 0-4 全部完成并验证，M2 批次 0-1 完成并验证（上述基线）；正式进度为 M2 批次 2 未开始。
-- M2 批次 1 交付后 `waiting_for_approval` 是合法暂留态，恢复路径（受控 resume、D7 稳定 key、UNKNOWN 收敛）由批次 2 交付；未实现公开 approval API、controlled_action 创建入口、artifact content 路由与 retention。
+- M1 批次 0-4 全部完成并验证，M2 批次 0-2 完成并验证（上述基线）；正式进度为 M2 批次 3 未开始。
+- M2 批次 2 交付后：approve/reject 的应用层能力齐备（get/list/幂等 decision/受控 resume），但未实现公开 approval API、controlled_action 创建入口、artifact content 路由与 retention——HTTP 契约与正文生命周期由批次 3 交付；UNKNOWN 永不自动重放、无盲重试入口。
+- 受控任务 waiting_for_user 暂留态仍未处理（批次 3 前无生产创建入口）。
 - 0012/0013 的真实发布仍必须遵守 stop-the-world 顺序；本进度记录不替代正式发布 runbook。
