@@ -1,7 +1,7 @@
 # 重构任务进度记录
 
 > 最后更新：2026-08-27
-> 当前阶段：M1 Research Agent 二次修复，批次 3 F1-F9 已实施并完成 F3/F4 二次修复验证；批次 4 尚未开始。
+> 当前阶段：M1 全部完成——批次 0-4 均已完成并验证（含严格真实 E2E、检索门禁、acceptance verdict=passed 与资源清理）；正式停止于 M1，未进入 M2。
 > 开发依据：`AGENT_REFACTOR_PLAN.md`、`M1_FIX_PLAN.md`
 
 ## 执行约束
@@ -22,7 +22,7 @@
 | M1 批次 1 | 已完成并验证 | checkpoint/工具 fencing、当前身份重校验、capability 创建门和 Worker 心跳已由隔离 PostgreSQL 并发测试验证。 |
 | M1 批次 2 | 已完成并验证 | 停止边界、任务行预算单源、deadline 锁内终检、错误码边界和 API/Worker 配置传播已完成。 |
 | M1 批次 3 | 已完成并验证 | F1/F2/F5-F9 复核通过；F3 推进性（P1）与 F4 目录成本（P2）已按 `M1_BATCH3_FIX_PLAN.md` 二次修复节完成并重新执行全部验证门禁。 |
-| M1 批次 4 | 未开始 | 最终验收、文档全量同步和交付清理尚未进行。 |
+| M1 批次 4 | 已完成并验证 | 最终验收、文档全量同步、acceptance artifacts 更新（verdict=passed）和交付清理已完成；详见批次 4 小节。 |
 
 ## 已完成的 M1 基础能力
 
