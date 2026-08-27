@@ -1,8 +1,8 @@
 # 重构任务进度记录
 
-> 最后更新：2026-08-27
-> 当前阶段：M1 全部完成——批次 0-4 均已完成并验证（含严格真实 E2E、检索门禁、acceptance verdict=passed 与资源清理）；正式停止于 M1，未进入 M2。
-> 开发依据：`AGENT_REFACTOR_PLAN.md`、`M1_FIX_PLAN.md`
+> 最后更新：2026-08-28
+> 当前阶段：M2 进行中——批次 0（0013 与协议事实）、批次 1（HITL 暂停与审批事实）已完成并验证；批次 2-4 未实施。M1 保持全部完成与验证，未回归。
+> 开发依据：`AGENT_REFACTOR_PLAN.md`、`M2_PLAN.md`（未跟踪实施方案权威）
 
 ## 执行约束
 
@@ -23,6 +23,9 @@
 | M1 批次 2 | 已完成并验证 | 停止边界、任务行预算单源、deadline 锁内终检、错误码边界和 API/Worker 配置传播已完成。 |
 | M1 批次 3 | 已完成并验证 | F1/F2/F5-F9 复核通过；F3 推进性（P1）与 F4 目录成本（P2）已按 `M1_BATCH3_FIX_PLAN.md` 二次修复节完成并重新执行全部验证门禁。 |
 | M1 批次 4 | 已完成并验证 | 最终验收、文档全量同步、acceptance artifacts 更新（verdict=passed）和交付清理已完成；详见批次 4 小节。 |
+| M2 批次 0 | 已完成并验证 | 0013 迁移、task 协议绑定（claim/resume/checkpoint 门）、approval checkpoint 绑定与 reject 审计列、artifact content 生命周期列、strict serializer 门禁；提交 `0ec0049`。 |
+| M2 批次 1 | 已完成并验证 | 两个 WRITE 薄 adapter + HITL 精确暂停、interrupt 双分类严格分流、服务端最小 action binding（PlanRevision）、pending approval checkpoint 绑定幂等、发起人自批拒绝、FormatChecker；提交 `0f4474d`，详见 M2 批次 1 小节。 |
+| M2 批次 2-4 | 未实施 | 双层恢复与副作用安全、公共 API 与正文生命周期、故障注入与最终验收均未开始。 |
 
 ## 已完成的 M1 基础能力
 
@@ -106,7 +109,39 @@
   - 最终汇总报告 verdict=passed → `docs/acceptance/latest.json`；`git diff --check` 通过。
 - 清理证据：本批容器及三个临时数据库随容器删除且确认不存在；`m1_e2e_b4fymawleh01` 与遗留 `stage3_component_123c8f3d...` collection 已删除，Qdrant 恢复基线三集合；`data/local/e2e/m1_e2e_*` 对象目录已删除；调试残留 `probe_enum7.py` 及两份 `.bak` 备份已删除。正式保留验收证据仅限 stage9 JUnit、stage9 检索报告与两个 acceptance JSON。
 
+## M2 批次 0：0013 与协议事实（已完成并验证）
+
+- 新增 `20260827_0013_m2_approval_and_artifact_lifecycle.py`：approvals 增加 thread/checkpoint_ns/checkpoint_id/interrupt_id/tool_call_id（LangGraph checkpoint action ID，非 tool_calls 外键，FK 循环已拆除）与 rejected_by/rejected_at/rejection_reason；artifacts 增加 content 生命周期列；agent_tasks 增加协议绑定与 interrupt_ref。
+- `waiting_for_approval` 的 interrupt_kind/ref/summary CHECK 完整性、`uq_approvals_active_checkpoint_binding` 部分唯一索引（同 action 重复同步必须复用同一条 active approval）、执行侧 tool_calls→approvals 十列复合 FK（RESTRICT）均已落地。
+- `claim_next`/`claim_user_resume`/`FencedPostgresSaver.put/put_writes` 校验 required capability/protocol（task-agent/m2-fenced-v1）；strict msgpack 由根包 bootstrap + serializer fail-close 双保险。
+- 验证：全量 `445 passed / 0 failed / 0 skipped`（PG 条件测试实际执行）。
+
+## M2 批次 1：HITL 暂停与审批事实（已完成并验证）
+
+### 已实现
+
+- `build_controlled_action_agent`：`HumanInTheLoopMiddleware(interrupt_on=两个 WRITE, allowed_decisions=[approve,reject])`，位于 SingleBusinessToolCall 之后；`build_research_agent` 与 M1 四 READ 轨迹零改动。
+- 两个 WRITE 薄 LangChain adapter（`build_controlled_action_tools` = 4 READ + 2 WRITE）：控制字段只取 `AgentRunContext`；模型注入 tenant/roles/approval ID/idempotency key/thread/checkpoint/storage key 在工具边界 schema 拒绝。
+- Worker interrupt 双分类严格分流（`_route_interrupt` 按 payload 形状）：clarification → waiting_for_user；HITL（action_requests+review_configs 精确两键）→ `_pause_for_approval`；未知形状/多 interrupt/多 action/未知工具/开放 decisions 全部 fail-closed。tool_call_id 从 checkpoint 最后一条 AI tool call 按 (name,args) 精确匹配派生。
+- `ApprovalService.ensure_action_binding`：从 Evidence Ledger 服务端派生最小不可变 plan（仅 hash 引用，无原始参数），按 (plan_digest, evidence_digest) 幂等复用 revision。
+- `request()` 信任边界收紧：tool/version 只从 ToolRegistry 派生（拒绝任意工具与伪造版本）；checkpoint 绑定幂等（同 binding 复用同一条 active approval，不符 `approval_checkpoint_conflict`）；`pause_for_approval` 同事务写 waiting_for_approval + 裁剪摘要 + interrupt_ref=approval_id。
+- 发起人自批拒绝：`approve()` 内判定 `auth.user_id == agent_tasks.user_id` → `approval_self_rejected`，approval 保持 pending。
+- `ToolRegistry` 接入 FormatChecker；worker 装配受控 Agent（惰性编译）。
+- 事务边界（D6，本批做到第 2 步）：HITL checkpoint 落盘 → action binding + pending approval（各自 UnitOfWork，幂等）→ waiting_for_approval（state_version 乐观锁）；①②之间崩溃由新 Worker 从同一 interrupt 幂等补建。
+
+### 验证证据（2026-08-28）
+
+- 批次 1 五文件 `88 passed`（test_task_agent 19 / test_task_approval_recovery 15 新增 / test_approval_tool_execution 41 / test_tool_registry 6 / test_domain_contracts 7）。
+- 锁定版本 HITL 契约以真实 `create_agent` + 假模型 + InMemorySaver 验证：interrupt 在 ToolNode 前触发、payload 形状精确、adapter 零调用。
+- 全量 `495 passed / 0 failed / 0 skipped`（PG 条件测试实际执行：主测试库真实 Alembic 迁移至 0013，迁移库完全空库起步）；`git diff --check` 通过；临时 PG 测试库已删除。
+
+### 已知遗留（批次 2 前置）
+
+- `_reject_stale_approval`（tool_execution_service.py）自动拒绝缺 rejected_by/at/reason，对 checkpoint 绑定行触发 `ck_approvals_rejected_audit_complete` 失败——批次 1 暂停路径不触发（有测试证明），批次 2 必须首先修复。
+- 受控任务若暂停为 waiting_for_user 暂无恢复入口（claim_user_resume 仅 RESEARCH）；批次 3 前无受控任务生产创建入口，属已知暂留态。
+
 ## 当前交付边界
 
-- M1 批次 0-4 已全部完成并验证：M1 达成最终收口标准，正式停止于 M1，不进入 M2；后续扩展需用户明确指令。
-- 0012 的真实发布仍必须遵守 stop-the-world 顺序；本批次进度记录不替代正式发布 runbook。
+- M1 批次 0-4 全部完成并验证，M2 批次 0-1 完成并验证（上述基线）；正式进度为 M2 批次 2 未开始。
+- M2 批次 1 交付后 `waiting_for_approval` 是合法暂留态，恢复路径（受控 resume、D7 稳定 key、UNKNOWN 收敛）由批次 2 交付；未实现公开 approval API、controlled_action 创建入口、artifact content 路由与 retention。
+- 0012/0013 的真实发布仍必须遵守 stop-the-world 顺序；本进度记录不替代正式发布 runbook。
