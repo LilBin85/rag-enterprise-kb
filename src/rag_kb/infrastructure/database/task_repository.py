@@ -16,7 +16,16 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.fingerprints import canonical_fingerprint
-from rag_kb.domain.tasks import TaskBudgets, TaskMode, TaskState, TaskStatus
+from rag_kb.domain.tasks import (
+    M1_RESEARCH_AGENT_CAPABILITY_NAME,
+    M1_RESEARCH_AGENT_PROTOCOL_VERSION,
+    TASK_AGENT_CAPABILITY_NAME as _TASK_AGENT_CAPABILITY_NAME,
+    TASK_AGENT_PROTOCOL_VERSION as _TASK_AGENT_PROTOCOL_VERSION,
+    TaskBudgets,
+    TaskMode,
+    TaskState,
+    TaskStatus,
+)
 from rag_kb.infrastructure.database.models import (
     AgentCapabilityLeaseRow,
     AgentTaskRow,
@@ -45,8 +54,10 @@ _TERMINAL_STATUSES = frozenset(
         TaskStatus.UNKNOWN,
     }
 )
-RESEARCH_AGENT_CAPABILITY_NAME = "research-agent"
-RESEARCH_AGENT_PROTOCOL_VERSION = "m1-fenced-v2"
+RESEARCH_AGENT_CAPABILITY_NAME = M1_RESEARCH_AGENT_CAPABILITY_NAME
+RESEARCH_AGENT_PROTOCOL_VERSION = M1_RESEARCH_AGENT_PROTOCOL_VERSION
+TASK_AGENT_CAPABILITY_NAME = _TASK_AGENT_CAPABILITY_NAME
+TASK_AGENT_PROTOCOL_VERSION = _TASK_AGENT_PROTOCOL_VERSION
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -70,10 +81,13 @@ def _state_from_row(row: AgentTaskRow) -> TaskState:
         goal=row.goal,
         task_mode=TaskMode(row.task_mode),
         status=TaskStatus(row.status),
+        required_capability_name=row.required_capability_name,
+        required_protocol_version=row.required_protocol_version,
         state_version=row.state_version,
         lease_generation=row.lease_generation,
         interrupt_kind=row.interrupt_kind,
         interrupt_summary=row.interrupt_summary,
+        interrupt_ref=row.interrupt_ref,
         result_kind=row.result_kind,
         result_ref=row.result_ref,
         result_hash=row.result_hash,
@@ -93,11 +107,22 @@ class DatabaseTaskRepository:
         now=None,
         research_capability_name: str | None = None,
         research_capability_protocol_version: str | None = None,
+        task_capability_name: str | None = None,
+        task_capability_protocol_version: str | None = None,
     ) -> None:
-        if (research_capability_name is None) != (
-            research_capability_protocol_version is None
-        ):
+        if (research_capability_name is None) != (research_capability_protocol_version is None):
             raise ValueError("invalid_agent_capability")
+        if (task_capability_name is None) != (task_capability_protocol_version is None):
+            raise ValueError("invalid_task_capability")
+        if (
+            task_capability_name is not None
+            and research_capability_name is not None
+            and (
+                task_capability_name != research_capability_name
+                or task_capability_protocol_version != research_capability_protocol_version
+            )
+        ):
+            raise ValueError("invalid_task_capability")
         self._database = database
         self._default_budgets = (
             default_budgets if default_budgets is not None else TaskBudgets()
@@ -105,6 +130,19 @@ class DatabaseTaskRepository:
         self._now = now or (lambda: datetime.now(UTC))
         self._research_capability_name = research_capability_name
         self._research_capability_protocol_version = research_capability_protocol_version
+        self._task_capability_name = (
+            task_capability_name
+            or research_capability_name
+            or M1_RESEARCH_AGENT_CAPABILITY_NAME
+        )
+        self._task_capability_protocol_version = (
+            task_capability_protocol_version
+            or research_capability_protocol_version
+            or M1_RESEARCH_AGENT_PROTOCOL_VERSION
+        )
+        self._creation_capability_required = (
+            task_capability_name is not None or research_capability_name is not None
+        )
 
     def create_task(
         self,
@@ -139,12 +177,11 @@ class DatabaseTaskRepository:
                 raise TaskRepositoryError("task_deadline_expired")
             if (
                 task_mode is TaskMode.RESEARCH
-                and self._research_capability_name is not None
-                and self._research_capability_protocol_version is not None
+                and self._creation_capability_required
                 and not self._has_active_capability_in_session(
                     work.session,
-                    capability_name=self._research_capability_name,
-                    protocol_version=self._research_capability_protocol_version,
+                    capability_name=self._task_capability_name,
+                    protocol_version=self._task_capability_protocol_version,
                     for_update=True,
                 )
             ):
@@ -160,6 +197,8 @@ class DatabaseTaskRepository:
                 budgets=configured.model_dump(mode="json"),
                 deadline=deadline,
                 available_at=now,
+                required_capability_name=self._task_capability_name,
+                required_protocol_version=self._task_capability_protocol_version,
             )
             work.session.add(row)
             work.session.flush()
@@ -342,6 +381,30 @@ class DatabaseTaskRepository:
             is not None
         )
 
+    def _has_active_worker_capability_in_session(
+        self,
+        session,
+        *,
+        capability_name: str,
+        protocol_version: str,
+        worker_id: str,
+        for_update: bool = False,
+    ) -> bool:
+        statement = (
+            select(AgentCapabilityLeaseRow.worker_id)
+            .where(
+                AgentCapabilityLeaseRow.capability_name == capability_name,
+                AgentCapabilityLeaseRow.protocol_version == protocol_version,
+                AgentCapabilityLeaseRow.worker_id == worker_id,
+                AgentCapabilityLeaseRow.lease_expires_at
+                > self._database_clock_expression(session),
+            )
+            .limit(1)
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        return session.scalar(statement) is not None
+
     def _database_clock_expression(self, session):
         if session.get_bind().dialect.name == "postgresql":
             return func.clock_timestamp()
@@ -385,11 +448,29 @@ class DatabaseTaskRepository:
         ):
             raise ValueError("invalid_agent_capability")
 
-    def claim_next(self, *, worker_id: str, lease_seconds: int) -> TaskLease | None:
+    def claim_next(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: int,
+        capability_name: str | None = None,
+        protocol_version: str | None = None,
+    ) -> TaskLease | None:
         if not worker_id or lease_seconds <= 0:
             raise ValueError("invalid_task_claim")
+        capability_name, protocol_version, require_capability = self._claim_protocol(
+            capability_name, protocol_version
+        )
         with UnitOfWork(self._database) as work:
             assert work.session is not None
+            if require_capability and not self._has_active_worker_capability_in_session(
+                work.session,
+                capability_name=capability_name,
+                protocol_version=protocol_version,
+                worker_id=worker_id,
+                for_update=True,
+            ):
+                return None
             clock = self._lease_clock_expression(work.session)
             row = work.session.scalar(
                 select(AgentTaskRow)
@@ -398,6 +479,8 @@ class DatabaseTaskRepository:
                         (TaskStatus.PLANNING.value, TaskStatus.RUNNING.value)
                     ),
                     AgentTaskRow.task_mode == TaskMode.RESEARCH.value,
+                    AgentTaskRow.required_capability_name == capability_name,
+                    AgentTaskRow.required_protocol_version == protocol_version,
                     AgentTaskRow.cancelled.is_(False),
                     AgentTaskRow.available_at <= clock,
                     or_(
@@ -433,10 +516,15 @@ class DatabaseTaskRepository:
         expected_state_version: int,
         worker_id: str,
         lease_seconds: int,
+        capability_name: str | None = None,
+        protocol_version: str | None = None,
     ) -> TaskLease:
         """按服务端确认的澄清 interrupt 领取同一任务；回答不落 agent_tasks。"""
         if not worker_id or lease_seconds <= 0:
             raise ValueError("invalid_task_claim")
+        capability_name, protocol_version, require_capability = self._claim_protocol(
+            capability_name, protocol_version
+        )
         with UnitOfWork(self._database) as work:
             assert work.session is not None
             row = work.session.scalar(
@@ -454,10 +542,23 @@ class DatabaseTaskRepository:
                 raise TaskRepositoryError("task_state_conflict")
             if row.task_mode != TaskMode.RESEARCH.value:
                 raise TaskRepositoryError("task_mode_not_supported")
+            if (
+                row.required_capability_name != capability_name
+                or row.required_protocol_version != protocol_version
+            ):
+                raise TaskRepositoryError("task_protocol_mismatch")
             if row.status != TaskStatus.WAITING_FOR_USER.value:
                 raise TaskRepositoryError("task_not_waiting_for_user")
-            if row.interrupt_kind != "user_clarification":
+            if row.interrupt_kind != "user_clarification" or row.interrupt_ref is not None:
                 raise TaskRepositoryError("task_resume_kind_invalid")
+            if require_capability and not self._has_active_worker_capability_in_session(
+                work.session,
+                capability_name=capability_name,
+                protocol_version=protocol_version,
+                worker_id=worker_id,
+                for_update=True,
+            ):
+                raise TaskRepositoryError("task_agent_unavailable")
             now = self._lease_now(work.session)
             deadline = _aware(row.deadline)
             if deadline is not None and deadline <= now:
@@ -470,8 +571,11 @@ class DatabaseTaskRepository:
                     AgentTaskRow.user_id == auth.user_id,
                     AgentTaskRow.state_version == expected_state_version,
                     AgentTaskRow.task_mode == TaskMode.RESEARCH.value,
+                    AgentTaskRow.required_capability_name == capability_name,
+                    AgentTaskRow.required_protocol_version == protocol_version,
                     AgentTaskRow.status == TaskStatus.WAITING_FOR_USER.value,
                     AgentTaskRow.interrupt_kind == "user_clarification",
+                    AgentTaskRow.interrupt_ref.is_(None),
                     or_(
                         AgentTaskRow.deadline.is_(None),
                         AgentTaskRow.deadline
@@ -482,6 +586,7 @@ class DatabaseTaskRepository:
                     status=TaskStatus.RUNNING.value,
                     interrupt_kind=None,
                     interrupt_summary=None,
+                    interrupt_ref=None,
                     lease_owner=worker_id,
                     lease_expires_at=now + timedelta(seconds=lease_seconds),
                     lease_generation=row.lease_generation + 1,
@@ -539,6 +644,7 @@ class DatabaseTaskRepository:
                 )
                 row.interrupt_kind = None
                 row.interrupt_summary = None
+                row.interrupt_ref = None
                 row.lease_owner = None
                 row.lease_expires_at = None
                 row.state_version += 1
@@ -659,6 +765,7 @@ class DatabaseTaskRepository:
             row.status = TaskStatus.WAITING_FOR_USER.value
             row.interrupt_kind = "user_clarification"
             row.interrupt_summary = question.strip()[:2_000]
+            row.interrupt_ref = None
             row.lease_owner = None
             row.lease_expires_at = None
             row.state_version += 1
@@ -742,6 +849,7 @@ class DatabaseTaskRepository:
                 )
             row.interrupt_kind = None
             row.interrupt_summary = None
+            row.interrupt_ref = None
             row.lease_owner = None
             row.lease_expires_at = None
             row.state_version += 1
@@ -789,6 +897,7 @@ class DatabaseTaskRepository:
                 )
             row.interrupt_kind = None
             row.interrupt_summary = None
+            row.interrupt_ref = None
             row.lease_owner = None
             row.lease_expires_at = None
             row.state_version += 1
@@ -810,6 +919,28 @@ class DatabaseTaskRepository:
             raise TaskRepositoryError("task_lease_generation_stale")
         if expires_at is None or expires_at <= now:
             raise TaskRepositoryError("task_lease_expired")
+
+    @staticmethod
+    def _claim_protocol(
+        capability_name: str | None,
+        protocol_version: str | None,
+    ) -> tuple[str, str, bool]:
+        if (capability_name is None) != (protocol_version is None):
+            raise ValueError("invalid_task_claim")
+        if capability_name is None:
+            return (
+                M1_RESEARCH_AGENT_CAPABILITY_NAME,
+                M1_RESEARCH_AGENT_PROTOCOL_VERSION,
+                False,
+            )
+        if (
+            not capability_name
+            or len(capability_name) > 64
+            or not protocol_version
+            or len(protocol_version) > 64
+        ):
+            raise ValueError("invalid_task_claim")
+        return capability_name, protocol_version, True
 
     @staticmethod
     def _task_result_retention_days() -> int:

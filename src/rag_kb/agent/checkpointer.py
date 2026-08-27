@@ -6,11 +6,17 @@ from importlib.metadata import PackageNotFoundError, version
 from threading import RLock
 from typing import Any, Iterator, Sequence
 
+from rag_kb.config import get_settings
+
+# LangGraph 在导入 _msgpack 时冻结严格模式开关。
+get_settings().prepare_runtime_env()
+
 from psycopg import Connection
 from psycopg.rows import dict_row
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.checkpoint.serde._msgpack import STRICT_MSGPACK_ENABLED
 
 
 _TASK_CHECKPOINT_MSGPACK_TYPES = (("rag_kb.agent.result", "TaskResultCandidate"),)
@@ -48,7 +54,9 @@ class FencedPostgresSaver(BaseCheckpointSaver):
             raise RuntimeError("task_checkpoint_saver_version_unsupported")
 
     @staticmethod
-    def _fencing_fields(config: dict[str, Any]) -> tuple[str, str, str, int]:
+    def _fencing_fields(
+        config: dict[str, Any],
+    ) -> tuple[str, str, str, int, str | None, str | None]:
         configurable = config.get("configurable")
         if not isinstance(configurable, dict):
             raise TaskCheckpointError("task_checkpoint_fencing_config_invalid")
@@ -56,6 +64,8 @@ class FencedPostgresSaver(BaseCheckpointSaver):
         tenant_id = configurable.get("checkpoint_tenant_id")
         worker_id = configurable.get("checkpoint_worker_id")
         generation = configurable.get("checkpoint_lease_generation")
+        capability_name = configurable.get("checkpoint_required_capability_name")
+        protocol_version = configurable.get("checkpoint_required_protocol_version")
         if (
             not isinstance(task_id, str)
             or not task_id
@@ -71,15 +81,27 @@ class FencedPostgresSaver(BaseCheckpointSaver):
             or generation < 0
         ):
             raise TaskCheckpointError("task_checkpoint_fencing_config_invalid")
-        return task_id, tenant_id, worker_id, generation
+        if (
+            not isinstance(capability_name, str)
+            or not capability_name
+            or len(capability_name) > 64
+            or not isinstance(protocol_version, str)
+            or not protocol_version
+            or len(protocol_version) > 64
+        ):
+            capability_name = None
+            protocol_version = None
+        return task_id, tenant_id, worker_id, generation, capability_name, protocol_version
 
-    def _verify_lease_in_transaction(self, config: dict[str, Any]) -> tuple[str, str, str, int]:
+    def _verify_lease_in_transaction(
+        self, config: dict[str, Any]
+    ) -> tuple[str, str, str, int, str | None, str | None]:
         fields = self._fencing_fields(config)
-        task_id, tenant_id, worker_id, generation = fields
+        task_id, tenant_id, worker_id, generation, capability_name, protocol_version = fields
         with self._connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT task_id
+                SELECT task_id, required_capability_name, required_protocol_version
                 FROM agent_tasks
                 WHERE task_id = %s
                   AND tenant_id = %s
@@ -92,15 +114,32 @@ class FencedPostgresSaver(BaseCheckpointSaver):
                 """,
                 (task_id, tenant_id, worker_id, generation),
             )
-            if cursor.fetchone() is None:
+            task = cursor.fetchone()
+            if task is None:
                 raise TaskCheckpointError(_CHECKPOINT_STALE_CODE)
+        required_capability_name = task["required_capability_name"]
+        required_protocol_version = task["required_protocol_version"]
+        if capability_name is None or protocol_version is None:
+            if (
+                required_capability_name != "research-agent"
+                or required_protocol_version != "m1-fenced-v2"
+            ):
+                raise TaskCheckpointError(_CHECKPOINT_STALE_CODE)
+            return task_id, tenant_id, worker_id, generation, None, None
+        if (
+            capability_name != required_capability_name
+            or protocol_version != required_protocol_version
+        ):
+            raise TaskCheckpointError(_CHECKPOINT_STALE_CODE)
         return fields
 
     @staticmethod
     def _merge_next_config(
-        config: dict[str, Any], saved: dict[str, Any], fields: tuple[str, str, str, int]
+        config: dict[str, Any],
+        saved: dict[str, Any],
+        fields: tuple[str, str, str, int, str | None, str | None],
     ) -> dict[str, Any]:
-        task_id, tenant_id, worker_id, generation = fields
+        task_id, tenant_id, worker_id, generation, capability_name, protocol_version = fields
         configurable = dict(config.get("configurable", {}))
         configurable.update(saved.get("configurable", {}))
         configurable.update(
@@ -111,6 +150,13 @@ class FencedPostgresSaver(BaseCheckpointSaver):
                 "checkpoint_lease_generation": generation,
             }
         )
+        if capability_name is not None and protocol_version is not None:
+            configurable.update(
+                {
+                    "checkpoint_required_capability_name": capability_name,
+                    "checkpoint_required_protocol_version": protocol_version,
+                }
+            )
         return {**config, **saved, "configurable": configurable}
 
     def put(self, config, checkpoint, metadata, new_versions):
@@ -155,7 +201,15 @@ def postgres_checkpoint_dsn(database_url: str) -> str:
 
 
 def task_checkpoint_serializer() -> JsonPlusSerializer:
-    """只允许 M1 checkpoint 实际需要的项目类型，绝不回退到 pickle。"""
+    """只允许任务 checkpoint 实际需要的项目类型，绝不回退到 pickle。
+
+    安全边界由构造参数决定（无 pickle、精确 allowlist）；部署侧再以
+    ``LANGGRAPH_STRICT_MSGPACK=true`` 与 Settings 校验双保险。
+    """
+    if not STRICT_MSGPACK_ENABLED:
+        # 异常集成路径（先导入 LangGraph、后导入 rag_kb）会使 strict 常量
+        # 以 False 冻结；此时序列化边界无法保证，必须 fail-close。
+        raise ValueError("langgraph_strict_msgpack_required")
     return JsonPlusSerializer(
         pickle_fallback=False,
         allowed_msgpack_modules=_TASK_CHECKPOINT_MSGPACK_TYPES,

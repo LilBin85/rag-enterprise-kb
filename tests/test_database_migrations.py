@@ -48,18 +48,24 @@ def upgrade_sqlite_database(tmp_path: Path):
     return build_database(sqlite_url(database_path))
 
 
+def _dialect_bool(connection, *, truthy: str, falsy: str) -> str:
+    """SQLite 接受整型布尔；PostgreSQL 只接受 TRUE/FALSE 字面量。"""
+    return truthy if connection.dialect.name == "postgresql" else falsy
+
+
 def insert_principal(connection, tenant_id: str, user_id: str) -> None:
+    active = _dialect_bool(connection, truthy="TRUE", falsy="1")
     connection.execute(
         text(
             "INSERT INTO tenants (tenant_id, name, active, created_at) "
-            "VALUES (:tenant_id, :name, 1, CURRENT_TIMESTAMP)"
+            f"VALUES (:tenant_id, :name, {active}, CURRENT_TIMESTAMP)"
         ),
         {"tenant_id": tenant_id, "name": tenant_id},
     )
     connection.execute(
         text(
             "INSERT INTO principals (tenant_id, user_id, roles, attributes, active, created_at) "
-            "VALUES (:tenant_id, :user_id, '[]', '{}', 1, CURRENT_TIMESTAMP)"
+            f"VALUES (:tenant_id, :user_id, '[]', '{{}}', {active}, CURRENT_TIMESTAMP)"
         ),
         {"tenant_id": tenant_id, "user_id": user_id},
     )
@@ -109,6 +115,145 @@ def insert_plan_revision(connection) -> None:
             "'evidence-digest', 'ready', CURRENT_TIMESTAMP)"
         )
     )
+
+
+def _sha256(character: str) -> str:
+    return "sha256:" + character * 64
+
+
+def _future_timestamp(dialect: str) -> str:
+    if dialect == "postgresql":
+        return "CURRENT_TIMESTAMP + INTERVAL '1 day'"
+    if dialect == "sqlite":
+        return "datetime(CURRENT_TIMESTAMP, '+1 day')"
+    raise RuntimeError("unsupported_database_dialect")
+
+
+def seed_0012_m2_history(connection) -> None:
+    """写入仅由 0012 能表达的历史事实，0013 不得补造 M2 绑定。"""
+    future = _future_timestamp(connection.dialect.name)
+    not_cancelled = _dialect_bool(connection, truthy="FALSE", falsy="0")
+    insert_principal(connection, "tenant-m2", "user-m2")
+    for task_id, task_mode, status in (
+        ("m1-terminal", "research", "succeeded"),
+        ("m1-retired", "research", "waiting_for_user"),
+        ("controlled-terminal", "controlled_action", "failed"),
+    ):
+        values = {
+            "task_id": task_id,
+            "task_mode": task_mode,
+            "status": status,
+            "content_expires_at": future if task_mode == "research" else "NULL",
+            "result_kind": "'research'" if task_id == "m1-terminal" else "NULL",
+            "result_ref": "'task-results/m1-terminal/result.json'" if task_id == "m1-terminal" else "NULL",
+            "result_hash": ":result_hash" if task_id == "m1-terminal" else "NULL",
+            "interrupt_kind": "'user_clarification'" if task_id == "m1-retired" else "NULL",
+            "interrupt_summary": "'历史澄清'" if task_id == "m1-retired" else "NULL",
+        }
+        connection.execute(
+            text(
+                "INSERT INTO agent_tasks ("
+                "task_id, tenant_id, user_id, task_mode, status, goal, auth_context_ref, budgets, "
+                "artifact_refs, "
+                "cancelled, result_kind, result_ref, result_hash, interrupt_kind, interrupt_summary, "
+                "content_expires_at, state_version, created_at, updated_at"
+                ") VALUES ("
+                ":task_id, 'tenant-m2', 'user-m2', :task_mode, :status, 'goal', 'auth-ref', '{}', "
+                ":artifact_refs, "
+                f"{not_cancelled}, "
+                f"{values['result_kind']}, {values['result_ref']}, {values['result_hash']}, "
+                f"{values['interrupt_kind']}, {values['interrupt_summary']}, "
+                f"{values['content_expires_at']}, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            ),
+            {
+                "task_id": task_id,
+                "task_mode": task_mode,
+                "status": status,
+                "result_hash": _sha256("a"),
+                # M1 既有行以非空 artifact_refs 起步；0013 round-trip 不得改动它。
+                "artifact_refs": f'["artifacts/history/{task_id}"]',
+            },
+        )
+    connection.execute(
+        text(
+            "INSERT INTO plan_revisions ("
+            "plan_revision_id, task_id, tenant_id, revision, schema_version, plan, plan_digest, "
+            "evidence_digest, status, created_at"
+            ") VALUES ('m2-plan', 'controlled-terminal', 'tenant-m2', 1, 1, '{}', "
+            "'plan-digest', 'evidence-digest', 'ready', CURRENT_TIMESTAMP)"
+        )
+    )
+    approval_rows = (
+        ("approval-pending", "pending", None, None),
+        ("approval-approved", "approved", "user-m2", "CURRENT_TIMESTAMP"),
+        ("approval-rejected", "rejected", None, None),
+        ("approval-expired", "expired", None, None),
+        ("approval-executed", "executed", "user-m2", "CURRENT_TIMESTAMP"),
+    )
+    for approval_id, status, approved_by, approved_at in approval_rows:
+        approved_at_expression = approved_at or "NULL"
+        connection.execute(
+            text(
+                "INSERT INTO approvals ("
+                "approval_id, task_id, tenant_id, plan_revision, plan_digest, tool_name, tool_version, "
+                "arguments_hash, principal_hash, evidence_digest, status, approved_by, approved_at, "
+                "expires_at, created_at"
+                ") VALUES ("
+                ":approval_id, 'controlled-terminal', 'tenant-m2', 1, 'plan-digest', 'write', 'v1', "
+                ":arguments_hash, 'principal-hash', 'evidence-digest', :status, :approved_by, "
+                f"{approved_at_expression}, {future}, CURRENT_TIMESTAMP)"
+            ),
+            {
+                "approval_id": approval_id,
+                "arguments_hash": f"arguments-{approval_id}",
+                "status": status,
+                "approved_by": approved_by,
+            },
+        )
+    for artifact_id, status in (
+        ("artifact-ready", "ready"),
+        ("artifact-creating", "creating"),
+        ("artifact-unknown", "unknown"),
+    ):
+        tool_call_id = f"tool-{artifact_id}"
+        connection.execute(
+            text(
+                "INSERT INTO tool_calls ("
+                "tool_call_id, task_id, tenant_id, approval_id, plan_revision, plan_digest, evidence_digest, "
+                "tool_name, tool_version, arguments_hash, principal_hash, mode, idempotency_key, result_hash, "
+                "result_ref, result_size, result_expires_at, risk_level, status, error_code, created_at, "
+                "execution_deadline, verified_at, completed_at"
+                ") VALUES ("
+                ":tool_call_id, 'controlled-terminal', 'tenant-m2', NULL, NULL, NULL, NULL, "
+                "'read_history', 'v1', :arguments_hash, 'principal-hash', 'read', NULL, :result_hash, "
+                ":result_ref, 2, "
+                f"{future}, 'low', 'succeeded', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            ),
+            {
+                "tool_call_id": tool_call_id,
+                "arguments_hash": f"arguments-{tool_call_id}",
+                "result_hash": _sha256("b"),
+                "result_ref": f"tool-results/{tool_call_id}.json",
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO artifacts ("
+                "artifact_id, task_id, tenant_id, tool_call_id, artifact_type, storage_key, content_hash, "
+                "status, created_at"
+                ") VALUES ("
+                ":artifact_id, 'controlled-terminal', 'tenant-m2', :tool_call_id, 'report', "
+                ":storage_key, :content_hash, :status, CURRENT_TIMESTAMP)"
+            ),
+            {
+                "artifact_id": artifact_id,
+                "tool_call_id": tool_call_id,
+                "storage_key": f"artifacts/history/{artifact_id}",
+                "content_hash": _sha256("c"),
+                "status": status,
+            },
+        )
 
 
 def test_database_factory_never_creates_schema_implicitly(tmp_path: Path) -> None:
@@ -361,12 +506,450 @@ def test_m1_fencing_and_content_lifecycle_migration_repairs_history(tmp_path: Pa
         ).scalar_one() == "succeeded"
 
 
+def test_m2_protocol_and_artifact_lifecycle_round_trip_preserves_history(tmp_path: Path) -> None:
+    database_path = tmp_path / "m2-protocol.sqlite3"
+    config = Config(str(ROOT_DIR / "alembic.ini"))
+    config.attributes["database_url"] = sqlite_url(database_path)
+    command.upgrade(config, "20260826_0012")
+
+    database = build_database(sqlite_url(database_path))
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys = ON")
+        seed_0012_m2_history(connection)
+
+    command.upgrade(config, "head")
+    inspector = inspect(database.engine)
+    assert {
+        "required_capability_name",
+        "required_protocol_version",
+        "interrupt_ref",
+    } <= {item["name"] for item in inspector.get_columns("agent_tasks")}
+    assert {
+        "thread_id",
+        "checkpoint_ns",
+        "checkpoint_id",
+        "interrupt_id",
+        "tool_call_id",
+        "checkpoint_binding_hash",
+        "rejected_by",
+        "rejected_at",
+        "rejection_reason",
+    } <= {item["name"] for item in inspector.get_columns("approvals")}
+    assert {"content_expires_at", "content_purged_at"} <= {
+        item["name"] for item in inspector.get_columns("artifacts")
+    }
+    assert {"ix_agent_tasks_protocol_claim"} <= {
+        item["name"] for item in inspector.get_indexes("agent_tasks")
+    }
+    assert {
+        "ix_approvals_checkpoint_binding",
+        "uq_approvals_active_checkpoint_binding",
+    } <= {item["name"] for item in inspector.get_indexes("approvals")}
+    assert "ix_artifacts_content_retention" in {
+        item["name"] for item in inspector.get_indexes("artifacts")
+    }
+    approval_fks = inspector.get_foreign_keys("approvals")
+    # approvals.tool_call_id 是 LangGraph checkpoint action ID，不再指向 tool_calls；
+    # 否则与 tool_calls -> approvals 的执行侧复合 FK 形成即时循环，
+    # 阻断“checkpoint 落盘 -> pending approval -> 批准 -> write ToolCallRow”流程。
+    assert not any(item["referred_table"] == "tool_calls" for item in approval_fks)
+    assert any(item["referred_table"] == "principals" for item in approval_fks)
+
+    def check_names(table_name: str) -> set[str]:
+        return {
+            item["name"].removeprefix(f"ck_{table_name}_")
+            for item in inspector.get_check_constraints(table_name)
+            if item["name"]
+        }
+
+    # M2 关键 CHECK 与唯一索引必须真实存在（验收 inspect 断言）。
+    assert {"task_protocol_complete", "interrupt_complete"} <= check_names("agent_tasks")
+    assert {
+        "checkpoint_binding_complete",
+        "rejected_audit_complete",
+    } <= check_names("approvals")
+    assert "content_purge_binding" in check_names("artifacts")
+    approval_indexes = {item["name"] for item in inspector.get_indexes("approvals")}
+    assert "uq_approvals_active_legacy_binding" in approval_indexes
+    assert "uq_approvals_active_checkpoint_binding" in approval_indexes
+
+    with database.engine.connect() as connection:
+        terminal = connection.execute(
+            text(
+                "SELECT status, required_capability_name, required_protocol_version "
+                "FROM agent_tasks WHERE task_id = 'm1-terminal'"
+            )
+        ).one()
+        assert terminal == ("succeeded", "research-agent", "m1-fenced-v2")
+        # 历史 M1 行的 artifact_refs 在 0013 round-trip 前后保持不变。
+        preserved_artifact_refs = connection.execute(
+            text(
+                "SELECT task_id, artifact_refs FROM agent_tasks "
+                "WHERE artifact_refs IS NOT NULL ORDER BY task_id"
+            )
+        ).all()
+        assert {
+            task_id: refs
+            for task_id, refs in preserved_artifact_refs
+        } == {
+            "controlled-terminal": '["artifacts/history/controlled-terminal"]',
+            "m1-retired": '["artifacts/history/m1-retired"]',
+            "m1-terminal": '["artifacts/history/m1-terminal"]',
+        }
+        retired = connection.execute(
+            text(
+                "SELECT status, last_error_code, interrupt_kind, interrupt_summary, interrupt_ref, "
+                "content_expires_at, required_capability_name, required_protocol_version "
+                "FROM agent_tasks WHERE task_id = 'm1-retired'"
+            )
+        ).one()
+        assert retired.status == "failed"
+        assert retired.last_error_code == "task_protocol_retired"
+        assert retired.interrupt_kind is None
+        assert retired.interrupt_summary is None
+        assert retired.interrupt_ref is None
+        assert retired.content_expires_at is not None
+        assert retired.required_capability_name == "research-agent"
+        assert retired.required_protocol_version == "m1-fenced-v2"
+        assert tuple(
+            connection.scalars(
+                text("SELECT status FROM approvals ORDER BY approval_id")
+            )
+        ) == ("approved", "executed", "expired", "pending", "rejected")
+        assert tuple(
+            connection.execute(
+                text(
+                    "SELECT status, content_expires_at, content_purged_at FROM artifacts "
+                    "ORDER BY artifact_id"
+                )
+            )
+        ) == (
+            ("creating", None, None),
+            ("ready", None, None),
+            ("unknown", None, None),
+        )
+        assert connection.execute(
+            text(
+                "SELECT result_ref, result_hash, result_expires_at "
+                "FROM tool_calls WHERE tool_call_id = 'tool-artifact-ready'"
+            )
+        ).one().result_ref == "tool-results/tool-artifact-ready.json"
+
+    command.downgrade(config, "20260826_0012")
+    inspector = inspect(database.engine)
+    assert "required_protocol_version" not in {
+        item["name"] for item in inspector.get_columns("agent_tasks")
+    }
+    assert "checkpoint_binding_hash" not in {
+        item["name"] for item in inspector.get_columns("approvals")
+    }
+    assert "content_purged_at" not in {
+        item["name"] for item in inspector.get_columns("artifacts")
+    }
+
+    command.upgrade(config, "head")
+    assert EXPECTED_DATABASE_REVISION == "20260827_0013"
+    inspector = inspect(database.engine)
+    assert "required_protocol_version" in {
+        item["name"] for item in inspector.get_columns("agent_tasks")
+    }
+    # round-trip 后 artifact_refs 依然原样保留。
+    with database.engine.connect() as connection:
+        assert connection.execute(
+            text(
+                "SELECT COUNT(*) FROM agent_tasks "
+                "WHERE artifact_refs = '[]' AND task_id LIKE 'm1%'"
+            )
+        ).scalar_one() == 0
+
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO agent_tasks ("
+                "task_id, tenant_id, user_id, task_mode, status, goal, auth_context_ref, budgets, "
+                "cancelled, required_capability_name, required_protocol_version, state_version, "
+                "created_at, updated_at"
+                ") VALUES ("
+                "'m2-constraint-task', 'tenant-m2', 'user-m2', 'controlled_action', 'failed', "
+                "'goal', 'auth-ref', '{}', 0, 'task-agent', 'm2-fenced-v1', 1, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO plan_revisions ("
+                "plan_revision_id, task_id, tenant_id, revision, schema_version, plan, plan_digest, "
+                "evidence_digest, status, created_at"
+                ") VALUES ('m2-constraint-plan', 'm2-constraint-task', 'tenant-m2', 1, 1, '{}', "
+                "'plan-digest', 'evidence-digest', 'ready', CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO tool_calls ("
+                "tool_call_id, task_id, tenant_id, approval_id, plan_revision, plan_digest, evidence_digest, "
+                "tool_name, tool_version, arguments_hash, principal_hash, mode, idempotency_key, result_hash, "
+                "result_ref, result_size, result_expires_at, risk_level, status, error_code, created_at, "
+                "execution_deadline, verified_at, completed_at"
+                ") VALUES ("
+                "'m2-tool-call', 'm2-constraint-task', 'tenant-m2', NULL, NULL, NULL, NULL, "
+                "'read_history', 'v1', 'arguments-m2', 'principal-m2', 'read', NULL, :result_hash, "
+                "'tool-results/m2-tool-call.json', 2, datetime(CURRENT_TIMESTAMP, '+1 day'), 'low', "
+                "'succeeded', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            ),
+            {"result_hash": _sha256("d")},
+        )
+        insert_principal(connection, "tenant-other", "user-other")
+        connection.execute(
+            text(
+                "INSERT INTO agent_tasks ("
+                "task_id, tenant_id, user_id, task_mode, status, goal, auth_context_ref, budgets, "
+                "cancelled, required_capability_name, required_protocol_version, state_version, "
+                "created_at, updated_at"
+                ") VALUES ("
+                "'other-task', 'tenant-other', 'user-other', 'controlled_action', 'failed', "
+                "'goal', 'auth-ref', '{}', 0, 'task-agent', 'm2-fenced-v1', 1, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO plan_revisions ("
+                "plan_revision_id, task_id, tenant_id, revision, schema_version, plan, plan_digest, "
+                "evidence_digest, status, created_at"
+                ") VALUES ('other-plan', 'other-task', 'tenant-other', 1, 1, '{}', "
+                "'plan-digest', 'evidence-digest', 'ready', CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO tool_calls ("
+                "tool_call_id, task_id, tenant_id, approval_id, plan_revision, plan_digest, evidence_digest, "
+                "tool_name, tool_version, arguments_hash, principal_hash, mode, idempotency_key, result_hash, "
+                "result_ref, result_size, result_expires_at, risk_level, status, error_code, created_at, "
+                "execution_deadline, verified_at, completed_at"
+                ") VALUES ("
+                "'other-tool-call', 'other-task', 'tenant-other', NULL, NULL, NULL, NULL, "
+                "'read_history', 'v1', 'arguments-other', 'principal-other', 'read', NULL, :result_hash, "
+                "'tool-results/other-tool-call.json', 2, datetime(CURRENT_TIMESTAMP, '+1 day'), 'low', "
+                "'succeeded', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            ),
+            {"result_hash": _sha256("e")},
+        )
+
+    def assert_constraint_rejected(statement: str, parameters: dict[str, object] | None = None) -> None:
+        with database.engine.connect() as connection:
+            with pytest.raises(IntegrityError):
+                connection.execute(text(statement), parameters or {})
+            connection.rollback()
+
+    approval_columns = (
+        "approval_id, task_id, tenant_id, plan_revision, plan_digest, tool_name, tool_version, "
+        "arguments_hash, principal_hash, evidence_digest, status, expires_at, created_at"
+    )
+    approval_values = (
+        ":approval_id, 'm2-constraint-task', 'tenant-m2', 1, 'plan-digest', 'write', 'v1', "
+        ":arguments_hash, 'principal-m2', 'evidence-digest', :status, "
+        "datetime(CURRENT_TIMESTAMP, '+1 day'), CURRENT_TIMESTAMP"
+    )
+    assert_constraint_rejected(
+        "INSERT INTO approvals ("
+        f"{approval_columns}, thread_id"
+        ") VALUES ("
+        f"{approval_values}, 'thread-m2'"
+        ")",
+        {
+            "approval_id": "missing-checkpoint-binding",
+            "arguments_hash": "arguments-missing",
+            "status": "pending",
+        },
+    )
+    binding_columns = (
+        "thread_id, checkpoint_ns, checkpoint_id, interrupt_id, tool_call_id, checkpoint_binding_hash"
+    )
+    binding_values = "'thread-m2', '', 'checkpoint-m2', 'interrupt-m2', :tool_call_id, :binding_hash"
+    assert_constraint_rejected(
+        "INSERT INTO approvals ("
+        f"{approval_columns}, {binding_columns}"
+        ") VALUES ("
+        f"{approval_values}, {binding_values}"
+        ")",
+        {
+            "approval_id": "approved-without-audit",
+            "arguments_hash": "arguments-approved",
+            "status": "approved",
+            "tool_call_id": "m2-tool-call",
+            "binding_hash": _sha256("f"),
+        },
+    )
+    assert_constraint_rejected(
+        "INSERT INTO approvals ("
+        f"{approval_columns}, {binding_columns}"
+        ") VALUES ("
+        f"{approval_values}, {binding_values}"
+        ")",
+        {
+            "approval_id": "rejected-without-audit",
+            "arguments_hash": "arguments-rejected",
+            "status": "rejected",
+            "tool_call_id": "m2-tool-call",
+            "binding_hash": _sha256("g"),
+        },
+    )
+
+    # M2 HITL 正例：checkpoint 已落盘后先建 pending approval，此时执行侧
+    # ToolCallRow 尚不存在；approvals.tool_call_id 只是 checkpoint action ID。
+    # （旧断言“approval 指向跨 tenant ToolCallRow 失败”已删除：该关系不再是数据库 FK。）
+    with database.engine.connect() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO approvals ("
+                f"{approval_columns}, {binding_columns}"
+                ") VALUES ("
+                f"{approval_values}, {binding_values}"
+                ")",
+            ),
+            {
+                "approval_id": "pending-checkpoint-approval",
+                "arguments_hash": "arguments-pending",
+                "status": "pending",
+                "tool_call_id": "checkpoint-action-not-a-row-yet",
+                "binding_hash": _sha256("j"),
+            },
+        )
+        connection.rollback()
+
+    # 执行侧复合绑定仍由数据库强制：write ToolCallRow 必须精确命中同一审批。
+    assert_constraint_rejected(
+        "INSERT INTO tool_calls ("
+        "tool_call_id, task_id, tenant_id, approval_id, plan_revision, plan_digest, evidence_digest, "
+        "tool_name, tool_version, arguments_hash, principal_hash, mode, idempotency_key, "
+        "risk_level, status, created_at, execution_deadline"
+        ") VALUES ("
+        "'m2-write-cross-binding', 'm2-constraint-task', 'tenant-m2', 'other-approval', 1, 'plan-digest', "
+        "'evidence-digest', 'write', 'v1', 'arguments-m2', 'principal-m2', 'write', 'write-key-cross', "
+        "'high', 'proposed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+    )
+    other_approval_values = (
+        ":approval_id, 'other-task', 'tenant-other', 1, 'plan-digest', 'write', 'v1', "
+        ":arguments_hash, 'principal-other', 'evidence-digest', 'approved', 'user-other', "
+        "CURRENT_TIMESTAMP, datetime(CURRENT_TIMESTAMP, '+1 day'), CURRENT_TIMESTAMP"
+    )
+    with database.engine.connect() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO approvals ("
+                "approval_id, task_id, tenant_id, plan_revision, plan_digest, tool_name, tool_version, "
+                "arguments_hash, principal_hash, evidence_digest, status, approved_by, approved_at, "
+                "expires_at, created_at"
+                ") VALUES (" + other_approval_values + ")"
+            ),
+            {
+                "approval_id": "other-approval",
+                "arguments_hash": "arguments-other-approval",
+            },
+        )
+        connection.rollback()
+    assert_constraint_rejected(
+        "INSERT INTO tool_calls ("
+        "tool_call_id, task_id, tenant_id, approval_id, plan_revision, plan_digest, evidence_digest, "
+        "tool_name, tool_version, arguments_hash, principal_hash, mode, idempotency_key, "
+        "risk_level, status, created_at, execution_deadline"
+        ") VALUES ("
+        "'m2-write-cross-tenant', 'm2-constraint-task', 'tenant-m2', 'other-approval', 1, 'plan-digest', "
+        "'evidence-digest', 'write', 'v1', 'arguments-m2', 'principal-m2', 'write', 'write-key-x', "
+        "'high', 'proposed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+    )
+    assert_constraint_rejected(
+        "INSERT INTO artifacts ("
+        "artifact_id, task_id, tenant_id, tool_call_id, artifact_type, storage_key, content_hash, status, "
+        "content_expires_at, content_purged_at, created_at"
+        ") VALUES ("
+        "'purged-but-readable', 'm2-constraint-task', 'tenant-m2', 'm2-tool-call', 'report', "
+        "'artifacts/purged-but-readable', :content_hash, 'ready', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, "
+        "CURRENT_TIMESTAMP)",
+        {"content_hash": _sha256("i")},
+    )
+
+
+def _prepare_m2_downgrade_database(tmp_path: Path, name: str):
+    """0012 历史 + 升到 0013，供 downgrade fail-close 场景复用。"""
+    database_path = tmp_path / f"{name}.sqlite3"
+    config = Config(str(ROOT_DIR / "alembic.ini"))
+    config.attributes["database_url"] = sqlite_url(database_path)
+    command.upgrade(config, "20260826_0012")
+    database = build_database(sqlite_url(database_path))
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys = ON")
+        insert_principal(connection, "tenant-a", "user-a")
+        seed_0012_m2_history(connection)
+    command.upgrade(config, "head")
+    return config, database
+
+
+@pytest.mark.parametrize("fact_kind", ["m2_protocol", "checkpoint_binding"])
+def test_m2_downgrade_refuses_when_m2_facts_present(tmp_path: Path, fact_kind: str) -> None:
+    """存在 M2 协议/checkpoint 事实时，0013 downgrade 必须 fail-close。"""
+    config, database = _prepare_m2_downgrade_database(tmp_path, fact_kind)
+    with database.engine.begin() as connection:
+        if fact_kind == "m2_protocol":
+            # 非默认 capability/protocol 的任务行本身就是 M2 事实。
+            connection.execute(
+                text(
+                    "INSERT INTO agent_tasks (task_id, tenant_id, user_id, task_mode, status, goal, "
+                    "auth_context_ref, budgets, cancelled, required_capability_name, "
+                    "required_protocol_version, result_kind, result_ref, result_hash, "
+                    "content_expires_at, state_version, created_at, updated_at) VALUES ('dg-task', "
+                    "'tenant-a', 'user-a', 'research', 'succeeded', 'goal', 'auth-ref', '{}', 0, "
+                    "'task-agent', 'm2-fenced-v1', 'research', 'task-results/dg-task/result.json', "
+                    ":result_hash, datetime(CURRENT_TIMESTAMP, '+7 days'), 1, CURRENT_TIMESTAMP, "
+                    "CURRENT_TIMESTAMP)"
+                ),
+                {"result_hash": _sha256("l")},
+            )
+        else:
+            # checkpoint 绑定审批（pending + 完整 binding）也是 M2 事实。
+            connection.execute(
+                text(
+                    "INSERT INTO agent_tasks (task_id, tenant_id, user_id, task_mode, status, goal, "
+                    "auth_context_ref, budgets, cancelled, result_kind, result_ref, result_hash, "
+                    "content_expires_at, state_version, created_at, updated_at) VALUES ("
+                    "'task-a', 'tenant-a', 'user-a', 'research', 'succeeded', 'goal', 'auth-ref', "
+                    "'{}', 0, 'research', 'task-results/task-a/result.json', :result_hash, "
+                    "datetime(CURRENT_TIMESTAMP, '+7 days'), 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                ),
+                {"result_hash": _sha256("m")},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO plan_revisions (plan_revision_id, task_id, tenant_id, revision, "
+                    "schema_version, plan, plan_digest, evidence_digest, status, created_at) VALUES ("
+                    "'dg-plan', 'task-a', 'tenant-a', 1, 1, '{}', 'plan-digest', 'evidence-digest', "
+                    "'ready', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO approvals (approval_id, task_id, tenant_id, plan_revision, plan_digest, "
+                    "tool_name, tool_version, arguments_hash, principal_hash, evidence_digest, status, "
+                    "expires_at, created_at, thread_id, checkpoint_ns, checkpoint_id, interrupt_id, "
+                    "tool_call_id, checkpoint_binding_hash) VALUES ('dg-approval', 'task-a', 'tenant-a', "
+                    "1, 'plan-digest', 'write', 'v1', 'arguments', 'principal', 'evidence-digest', "
+                    "'pending', datetime(CURRENT_TIMESTAMP, '+1 day'), CURRENT_TIMESTAMP, 'thread-a', "
+                    "'', 'checkpoint-a', 'interrupt-a', 'action-a', :binding_hash)"
+                ),
+                {"binding_hash": _sha256("k")},
+            )
+    with pytest.raises(RuntimeError, match="m2_downgrade_data_present"):
+        command.downgrade(config, "20260826_0012")
+
+
 @pytest.mark.skipif(
     not POSTGRES_MIGRATION_TEST_URL,
     reason="postgres_migration_test_url_unconfigured",
 )
-def test_m1_fencing_and_content_lifecycle_round_trip_on_postgres() -> None:
-    """只使用显式空临时库验证 0012，不以 metadata 建表伪造迁移态。"""
+def test_m2_protocol_and_artifact_lifecycle_round_trip_on_postgres() -> None:
+    """只使用显式空临时库执行 0012 -> 0013 -> 0012 -> 0013。"""
     assert POSTGRES_MIGRATION_TEST_URL is not None
     config = Config(str(ROOT_DIR / "alembic.ini"))
     config.attributes["database_url"] = POSTGRES_MIGRATION_TEST_URL
@@ -375,7 +958,9 @@ def test_m1_fencing_and_content_lifecycle_round_trip_on_postgres() -> None:
     try:
         if not is_empty:
             pytest.fail("postgres_migration_test_database_must_be_empty")
-        command.upgrade(config, "20260826_0011")
+        command.upgrade(config, "20260826_0012")
+        with database.engine.begin() as connection:
+            seed_0012_m2_history(connection)
         command.upgrade(config, "head")
         inspector = inspect(database.engine)
         assert "agent_capability_leases" in inspector.get_table_names()
@@ -404,18 +989,91 @@ def test_m1_fencing_and_content_lifecycle_round_trip_on_postgres() -> None:
         assert "ix_agent_capability_leases_expiry" in {
             item["name"] for item in inspector.get_indexes("agent_capability_leases")
         }
+        assert {
+            "required_capability_name",
+            "required_protocol_version",
+            "interrupt_ref",
+        } <= {item["name"] for item in inspector.get_columns("agent_tasks")}
+        assert {
+            "thread_id",
+            "checkpoint_ns",
+            "checkpoint_id",
+            "interrupt_id",
+            "tool_call_id",
+            "checkpoint_binding_hash",
+            "rejected_by",
+            "rejected_at",
+            "rejection_reason",
+        } <= {item["name"] for item in inspector.get_columns("approvals")}
+        assert {"content_expires_at", "content_purged_at"} <= {
+            item["name"] for item in inspector.get_columns("artifacts")
+        }
+        assert "ix_agent_tasks_protocol_claim" in {
+            item["name"] for item in inspector.get_indexes("agent_tasks")
+        }
+        assert "uq_approvals_active_checkpoint_binding" in {
+            item["name"] for item in inspector.get_indexes("approvals")
+        }
+        assert "ix_artifacts_content_retention" in {
+            item["name"] for item in inspector.get_indexes("artifacts")
+        }
+        assert not any(
+            item["referred_table"] == "tool_calls"
+            for item in inspector.get_foreign_keys("approvals")
+        )
+        with database.engine.connect() as connection:
+            assert connection.execute(
+                text(
+                    "SELECT status, required_capability_name, required_protocol_version "
+                    "FROM agent_tasks WHERE task_id = 'm1-terminal'"
+                )
+            ).one() == ("succeeded", "research-agent", "m1-fenced-v2")
+            assert connection.execute(
+                text(
+                    "SELECT status, last_error_code, interrupt_ref FROM agent_tasks "
+                    "WHERE task_id = 'm1-retired'"
+                )
+            ).one() == ("failed", "task_protocol_retired", None)
 
-        command.downgrade(config, "20260826_0011")
+        command.downgrade(config, "20260826_0012")
         inspector = inspect(database.engine)
-        assert "agent_capability_leases" not in inspector.get_table_names()
-        assert "content_expires_at" not in {
+        assert "required_capability_name" not in {
             item["name"] for item in inspector.get_columns("agent_tasks")
+        }
+        assert "checkpoint_binding_hash" not in {
+            item["name"] for item in inspector.get_columns("approvals")
+        }
+        assert "content_purged_at" not in {
+            item["name"] for item in inspector.get_columns("artifacts")
         }
 
         command.upgrade(config, "head")
-        assert "agent_capability_leases" in inspect(database.engine).get_table_names()
+        inspector = inspect(database.engine)
+        assert "required_protocol_version" in {
+            item["name"] for item in inspector.get_columns("agent_tasks")
+        }
+        assert "checkpoint_binding_hash" in {
+            item["name"] for item in inspector.get_columns("approvals")
+        }
+        assert "content_purged_at" in {
+            item["name"] for item in inspector.get_columns("artifacts")
+        }
     finally:
         if is_empty:
+            with database.engine.begin() as connection:
+                for table_name in (
+                    "artifacts",
+                    "tool_calls",
+                    "approvals",
+                    "plan_revisions",
+                    "agent_tasks",
+                    "principals",
+                    "tenants",
+                ):
+                    connection.execute(
+                        text(f"DELETE FROM {table_name} WHERE tenant_id = :tenant"),
+                        {"tenant": "tenant-m2"},
+                    )
             command.downgrade(config, "base")
         database.engine.dispose()
 

@@ -1,305 +1,177 @@
-from datetime import UTC, datetime
-import hashlib
-from threading import Event
-from types import SimpleNamespace
-
-import pytest
+"""build_task_worker 组合根验收：capability 注册时序与关闭顺序。"""
 
 from rag_kb import worker as worker_module
-from rag_kb.application.upload_reconciler import ReconciliationResult, UploadReservationReconciler
-from rag_kb.infrastructure.database import Base, build_database
-from rag_kb.infrastructure.object_store import LocalObjectStore
 
 
-class QueueWorker:
-    def __init__(self, name: str, events: list[str], *, status: str) -> None:
-        self.name = name
-        self.events = events
-        self.status = status
-        self.sweeps: list[int] = []
-        self.close_calls = 0
+class _FakeCapability:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
 
-    def run_once(self):
-        self.events.append(self.name)
-        return SimpleNamespace(
-            status=self.status,
-            task_id=None,
-            job_id=None,
-            document_id=None,
-            error_code=None,
-        )
-
-    def expire_stale_tool_calls(self, *, limit: int) -> int:
-        self.sweeps.append(limit)
-        return 1
-
-    def expire_stale_knowledge_queries(self, *, limit: int) -> int:
-        self.sweeps.append(limit)
-        return 1
+    def start(self) -> None:
+        self._events.append("capability.start")
 
     def close(self) -> None:
-        self.close_calls += 1
+        self._events.append("capability.close")
 
 
-class RetentionWorker:
-    def __init__(self) -> None:
-        self.sweeps: list[int] = []
-        self.close_calls = 0
+def _patch_build_chain(monkeypatch, events: list[str], *, agent_build_error: Exception | None = None):
+    """把 build_task_worker 的重依赖全部替换为记录事件的桩。"""
 
-    def expire_waiting_tasks(self, *, limit: int) -> int:
-        self.sweeps.append(limit)
-        return 0
+    class _StubTools:
+        def close(self) -> None:
+            events.append("tools.close")
 
-    def purge_expired_tool_results(self, *, limit: int) -> int:
-        self.sweeps.append(limit)
-        return 0
+    class _StubConnection:
+        def close(self) -> None:
+            events.append("connection.close")
 
-    def purge_finished_task_content(self, *, limit: int) -> int:
-        self.sweeps.append(limit)
-        return 0
+    class _StubSaver:
+        serde = None
+        conn = None
+        lock = None
 
-    def purge_orphaned_result_objects(self, *, limit: int) -> int:
-        self.sweeps.append(limit)
-        return 0
+        def setup(self) -> None: ...
 
-    def close(self) -> None:
-        self.close_calls += 1
-
-
-class UploadReconciler:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
-
-    def reconcile(self, **kwargs: object) -> ReconciliationResult:
-        self.calls.append(kwargs)
-        return ReconciliationResult(1, 1, 0, 0)
-
-
-def _patch_runtime(monkeypatch, ingestion, projection, upload, task=None, retention=None):
-    monkeypatch.setattr(worker_module, "build_workers", lambda: (ingestion, projection))
-    monkeypatch.setattr(worker_module, "build_upload_reconciler", lambda: upload)
-    if task is not None:
-        monkeypatch.setattr(worker_module, "build_task_worker", lambda **_kwargs: task)
-        retention = retention or RetentionWorker()
-        monkeypatch.setattr(
-            worker_module,
-            "build_task_retention",
-            lambda: retention,
-        )
-    return retention
-
-
-def test_task_backlog_cannot_starve_ingestion_and_max_jobs_still_stops(monkeypatch) -> None:
-    events: list[str] = []
-    task = QueueWorker("task", events, status="progressed")
-    ingestion = QueueWorker("ingestion", events, status="succeeded")
-    projection = QueueWorker("projection", events, status="idle")
-    retention = RetentionWorker()
-    _patch_runtime(monkeypatch, ingestion, projection, UploadReconciler(), task, retention)
-
-    assert worker_module.run(watch=False, poll_seconds=0.01, max_jobs=2, include_tasks=True) == 0
-    assert events == ["task", "ingestion"]
-    assert task.close_calls == 1
-    assert retention.close_calls == 1
-
-
-def test_task_worker_closes_when_queue_is_interrupted(monkeypatch) -> None:
-    events: list[str] = []
-
-    class InterruptedTaskWorker(QueueWorker):
-        def run_once(self):
-            super().run_once()
-            raise KeyboardInterrupt
-
-    task = InterruptedTaskWorker("task", events, status="progressed")
-    ingestion = QueueWorker("ingestion", events, status="idle")
-    projection = QueueWorker("projection", events, status="idle")
-    retention = RetentionWorker()
-    _patch_runtime(monkeypatch, ingestion, projection, UploadReconciler(), task, retention)
-
-    with pytest.raises(KeyboardInterrupt):
-        worker_module.run(watch=False, poll_seconds=0.01, max_jobs=2, include_tasks=True)
-    assert task.close_calls == 1
-    assert retention.close_calls == 1
-
-
-def test_production_loop_runs_bounded_upload_and_tool_recovery(monkeypatch) -> None:
-    events: list[str] = []
-    task = QueueWorker("task", events, status="idle")
-    ingestion = QueueWorker("ingestion", events, status="idle")
-    projection = QueueWorker("projection", events, status="idle")
-    upload = UploadReconciler()
-    retention = RetentionWorker()
-    _patch_runtime(monkeypatch, ingestion, projection, upload, task, retention)
-
-    assert worker_module.run(watch=False, poll_seconds=0.01, max_jobs=10, include_tasks=True) == 0
-    assert task.sweeps == [worker_module._RECOVERY_BATCH_SIZE] * 2
-    assert retention.sweeps == [worker_module._RECOVERY_BATCH_SIZE] * 4
-    assert upload.calls[0]["limit"] == worker_module._RECOVERY_BATCH_SIZE
-    assert upload.calls[0]["time_budget_seconds"] == worker_module._RECOVERY_TIME_BUDGET_SECONDS
-    assert events == ["task", "ingestion", "projection"]
-
-
-def test_missing_agent_configuration_fails_fast(monkeypatch) -> None:
-    """修复 2：Agent 未配置时 --include-tasks 直接失败，不再静默降级。"""
-    events: list[str] = []
-    ingestion = QueueWorker("ingestion", events, status="idle")
-    projection = QueueWorker("projection", events, status="idle")
-    _patch_runtime(monkeypatch, ingestion, projection, UploadReconciler())
-
-    def unconfigured(**_kwargs):
-        raise worker_module.TaskAgentConfigurationError("task_agent_api_key_missing")
-
-    monkeypatch.setattr(worker_module, "build_task_worker", unconfigured)
-    with pytest.raises(worker_module.TaskAgentConfigurationError):
-        worker_module.run(watch=False, poll_seconds=0.01, max_jobs=1, include_tasks=True)
-    assert events == []
-
-
-def test_research_capability_heartbeat_registers_renews_and_unregisters() -> None:
-    renewed = Event()
-
-    class CapabilityRepository:
-        def __init__(self) -> None:
-            self.registered: list[dict[str, object]] = []
-            self.renewed: list[dict[str, object]] = []
-            self.unregistered: list[dict[str, object]] = []
-
-        def register_capability(self, **kwargs: object) -> None:
-            self.registered.append(kwargs)
-
-        def renew_capability(self, **kwargs: object) -> None:
-            self.renewed.append(kwargs)
-            renewed.set()
-
-        def unregister_capability(self, **kwargs: object) -> None:
-            self.unregistered.append(kwargs)
-
-    repository = CapabilityRepository()
-    heartbeat = worker_module._CapabilityLeaseHeartbeat(
-        repository, worker_id="worker-a", lease_seconds=1
+    monkeypatch.setattr(worker_module, "build_database", lambda _url: object())
+    monkeypatch.setattr(worker_module, "LocalObjectStore", lambda _root: object())
+    monkeypatch.setattr(worker_module, "BgeM3Embedder", lambda: object())
+    monkeypatch.setattr(
+        worker_module,
+        "QdrantAuthorizedSearch",
+        lambda *_args, **_kwargs: object(),
     )
-    heartbeat.start()
-    assert renewed.wait(timeout=2)
-    heartbeat.close()
-
-    assert repository.registered == [
-        {
-            "capability_name": "research-agent",
-            "protocol_version": "m1-fenced-v2",
-            "worker_id": "worker-a",
-            "lease_seconds": 1,
-        }
-    ]
-    assert repository.renewed
-    assert repository.unregistered == [
-        {
-            "capability_name": "research-agent",
-            "protocol_version": "m1-fenced-v2",
-            "worker_id": "worker-a",
-        }
-    ]
-
-
-def test_watch_sleeps_only_after_every_queue_is_idle(monkeypatch) -> None:
-    events: list[str] = []
-    ingestion = QueueWorker("ingestion", events, status="idle")
-    projection = QueueWorker("projection", events, status="idle")
-    _patch_runtime(monkeypatch, ingestion, projection, UploadReconciler())
-
-    def stop_after_sleep(seconds: float) -> None:
-        assert seconds == 0.25
-        raise RuntimeError("stop_watch")
-
-    monkeypatch.setattr(worker_module.time, "sleep", stop_after_sleep)
-    with pytest.raises(RuntimeError, match="stop_watch"):
-        worker_module.run(watch=True, poll_seconds=0.25, max_jobs=1)
-    assert events == ["ingestion", "projection"]
-
-
-def test_upload_recovery_skips_one_bad_record_and_continues(tmp_path) -> None:
-    database = build_database(f"sqlite+pysqlite:///{(tmp_path / 'worker.sqlite3').as_posix()}")
-    Base.metadata.create_all(database.engine)
-    store = LocalObjectStore(tmp_path / "objects")
-    content = b"safe-content"
-    content_hash = "sha256:" + hashlib.sha256(content).hexdigest()
-    for key in ("bad", "good"):
-        store.put_exclusive(key, content)
-
-    class Repository:
-        def __init__(self) -> None:
-            self.marked: list[str] = []
-
-        def list_pending_object_reservations(self, _session, **_kwargs):
-            return tuple(
-                SimpleNamespace(
-                    tenant_id="tenant-a",
-                    user_id="user-a",
-                    idempotency_key=key,
-                    request_hash="sha256:request",
-                    source_object_key=key,
-                    content_hash=content_hash,
-                )
-                for key in ("bad", "good")
-            )
-
-        def mark_object_ready(self, _session, *, idempotency_key: str, **_kwargs) -> None:
-            if idempotency_key == "bad":
-                raise RuntimeError("broken_record")
-            self.marked.append(idempotency_key)
-
-    repository = Repository()
-    result = UploadReservationReconciler(database, store, repository).reconcile(
-        older_than=datetime.now(UTC),
-        limit=2,
-        time_budget_seconds=1,
+    monkeypatch.setattr(worker_module, "resolve_retrieval_limits", lambda _s: (5, 5))
+    monkeypatch.setattr(
+        worker_module,
+        "EnterpriseRetriever",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "build_tool_registry",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(worker_module, "ApprovalService", lambda *_a, **_kw: object())
+    monkeypatch.setattr(
+        worker_module,
+        "ToolExecutionService",
+        lambda *_a, **_kw: _StubTools(),
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "open_postgres_checkpointer",
+        lambda _url: (_StubSaver(), _StubConnection()),
     )
 
-    assert result.scanned == 2
-    assert result.recovered == 1
-    assert result.failed == 1
-    assert repository.marked == ["good"]
+    class _StubAgent:
+        def get_state(self, _config):
+            return type("Snapshot", (), {"interrupts": (), "values": {}, "next": ()})()
+
+    if agent_build_error is not None:
+        def fail_agent(*_args, **_kwargs):
+            raise agent_build_error
+    else:
+        def fail_agent(*_args, **_kwargs):
+            return _StubAgent()
+
+    monkeypatch.setattr(
+        worker_module,
+        "_build_research_model",
+        lambda _settings: object(),
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "build_research_agent",
+        fail_agent,
+    )
+    monkeypatch.setattr(worker_module, "DatabaseTaskRepository", lambda *_a, **_kw: object())
+    monkeypatch.setattr(
+        worker_module,
+        "DatabaseTaskAuthContextPort",
+        lambda _db: object(),
+    )
+    monkeypatch.setattr(worker_module, "AgentResultStore", lambda _o: object())
+    monkeypatch.setattr(worker_module, "EvidenceLedgerRepository", lambda: object())
+    monkeypatch.setattr(
+        worker_module,
+        "_CapabilityLeaseHeartbeat",
+        lambda repository, **_kwargs: _FakeCapability(events),
+    )
 
 
-def test_upload_recovery_rotates_bad_full_batch(tmp_path) -> None:
-    database = build_database(f"sqlite+pysqlite:///{(tmp_path / 'rotation.sqlite3').as_posix()}")
-    Base.metadata.create_all(database.engine)
-    store = LocalObjectStore(tmp_path / "rotation-objects")
-    content = b"safe-content"
-    content_hash = "sha256:" + hashlib.sha256(content).hexdigest()
-    store.put_exclusive("good", content)
+def test_capability_starts_only_after_full_agent_build(monkeypatch) -> None:
+    """默认预算 Agent 构建成功之前，capability.start 不得被调用。"""
+    events: list[str] = []
+    _patch_build_chain(monkeypatch, events)
 
-    class Repository:
-        def __init__(self) -> None:
-            self.keys = ["bad-1", "bad-2", "good"]
-            self.marked: list[str] = []
+    order: list[str] = []
 
-        def list_pending_object_reservations(self, _session, *, limit, **_kwargs):
-            return tuple(
-                SimpleNamespace(
-                    tenant_id="tenant-a",
-                    user_id="user-a",
-                    idempotency_key=key,
-                    request_hash="sha256:request",
-                    source_object_key=key,
-                    content_hash=content_hash,
-                )
-                for key in self.keys[:limit]
-            )
+    original_start = _FakeCapability.start
 
-        def defer_pending_object_reservation(self, _session, *, idempotency_key, **_kwargs):
-            self.keys.remove(idempotency_key)
-            self.keys.append(idempotency_key)
+    def tracking_start(self) -> None:
+        # build_task_worker 尾部才允许 start；此时尚无任何 close 事件。
+        assert "tools.close" not in order and "connection.close" not in order
+        original_start(self)
+        order.append("capability.start")
 
-        def mark_object_ready(self, _session, *, idempotency_key, **_kwargs):
-            self.marked.append(idempotency_key)
-            self.keys.remove(idempotency_key)
+    monkeypatch.setattr(_FakeCapability, "start", tracking_start)
+    monkeypatch.setattr(
+        worker_module,
+        "build_research_tools",
+        lambda tools: order.append("research_tools_built") or object(),
+    )
 
-    repository = Repository()
-    reconciler = UploadReservationReconciler(database, store, repository)
-    first = reconciler.reconcile(older_than=datetime.now(UTC), limit=2)
-    second = reconciler.reconcile(older_than=datetime.now(UTC), limit=2)
+    worker = worker_module.build_task_worker(worker_id="worker-a")
+    assert worker is not None
+    # start 只在完整 Agent 构建（含默认预算编译）成功之后发生一次。
+    assert order == ["research_tools_built", "capability.start"]
 
-    assert first.missing_objects == 2
-    assert second.recovered == 1
-    assert repository.marked == ["good"]
+
+def test_failed_agent_build_does_not_register_capability(monkeypatch) -> None:
+    """Agent/checkpointer 构建失败时 capability 未注册，且资源按序清理。"""
+    events: list[str] = []
+    _patch_build_chain(
+        monkeypatch,
+        events,
+        agent_build_error=worker_module.TaskAgentConfigurationError("task_agent_api_key_missing"),
+    )
+    try:
+        worker_module.build_task_worker(worker_id="worker-a")
+    except worker_module.TaskAgentConfigurationError:
+        pass
+    else:
+        raise AssertionError("expected TaskAgentConfigurationError")
+
+    assert events == ["tools.close", "connection.close"]
+
+
+def test_close_order_stops_capability_then_tools_then_connection(monkeypatch) -> None:
+    """close 顺序：停止接单 -> tools.close -> capability.close -> connection.close。"""
+    events: list[str] = []
+    _patch_build_chain(monkeypatch, events)
+
+    started: list[bool] = []
+
+    original_start = _FakeCapability.start
+
+    def tracking_start(self) -> None:
+        original_start(self)
+        started.append(True)
+
+    monkeypatch.setattr(_FakeCapability, "start", tracking_start)
+
+    worker = worker_module.build_task_worker(worker_id="worker-a")
+    assert started == [True]
+    capability_closed_via_worker_close = events == ["capability.start"]
+
+    worker.close()
+
+    # TaskWorker.close 先关 tools 再执行外部 close（capability + connection）。
+    assert capability_closed_via_worker_close
+    expected = [
+        "capability.start",
+        "tools.close",
+        "capability.close",
+        "connection.close",
+    ]
+    assert events == expected

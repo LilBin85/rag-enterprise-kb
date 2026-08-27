@@ -124,9 +124,17 @@ class TaskWorker:
         database,
         worker_id: str,
         lease_seconds: int = 300,
+        capability_name: str | None = None,
+        protocol_version: str | None = None,
         close=None,
     ) -> None:
-        if not worker_id or lease_seconds <= 0:
+        if (
+            not worker_id
+            or lease_seconds <= 0
+            or (capability_name is None) != (protocol_version is None)
+            or capability_name is not None
+            and (not capability_name or not protocol_version)
+        ):
             raise ValueError("invalid_task_worker")
         self._repository = repository
         self._auth_contexts = auth_contexts
@@ -137,9 +145,15 @@ class TaskWorker:
         self._database = database
         self._worker_id = worker_id
         self._lease_seconds = lease_seconds
+        self._capability_name = capability_name
+        self._protocol_version = protocol_version
         self._close = close
+        self._accepting_tasks = True
 
     def close(self) -> None:
+        if not self._accepting_tasks:
+            return
+        self._accepting_tasks = False
         close = self._close
         self._close = None
         try:
@@ -151,10 +165,18 @@ class TaskWorker:
                 close()
 
     def run_once(self) -> TaskWorkerResult:
-        lease = self._repository.claim_next(
-            worker_id=self._worker_id,
-            lease_seconds=self._lease_seconds,
-        )
+        if not self._accepting_tasks:
+            return TaskWorkerResult(status="idle")
+        claim: dict[str, object] = {
+            "worker_id": self._worker_id,
+            "lease_seconds": self._lease_seconds,
+        }
+        if self._capability_name is not None and self._protocol_version is not None:
+            claim.update(
+                capability_name=self._capability_name,
+                protocol_version=self._protocol_version,
+            )
+        lease = self._repository.claim_next(**claim)
         if lease is None:
             return TaskWorkerResult(status="idle")
         return self._run_claimed(lease)
@@ -170,13 +192,21 @@ class TaskWorker:
         """仅在保存的 user clarification interrupt 上恢复同一线程。"""
         if not answer.strip() or len(answer) > 2_000:
             raise ValueError("task_resume_answer_invalid")
-        lease = self._repository.claim_user_resume(
-            auth=auth,
-            task_id=task_id,
-            expected_state_version=expected_state_version,
-            worker_id=self._worker_id,
-            lease_seconds=self._lease_seconds,
-        )
+        if not self._accepting_tasks:
+            raise TaskWorkerError("task_worker_closed")
+        claim: dict[str, object] = {
+            "auth": auth,
+            "task_id": task_id,
+            "expected_state_version": expected_state_version,
+            "worker_id": self._worker_id,
+            "lease_seconds": self._lease_seconds,
+        }
+        if self._capability_name is not None and self._protocol_version is not None:
+            claim.update(
+                capability_name=self._capability_name,
+                protocol_version=self._protocol_version,
+            )
+        lease = self._repository.claim_user_resume(**claim)
         return self._run_claimed(lease, resume_answer=answer.strip())
 
     def expire_stale_tool_calls(self, *, limit: int = 100) -> int:
@@ -258,6 +288,11 @@ class TaskWorker:
         state = lease.state
         if state.task_mode is not TaskMode.RESEARCH:
             raise TaskWorkerError("task_mode_not_supported")
+        if self._capability_name is not None and (
+            state.required_capability_name != self._capability_name
+            or state.required_protocol_version != self._protocol_version
+        ):
+            raise TaskWorkerError("task_protocol_mismatch")
         if state.deadline is not None and self._repository.current_time() >= state.deadline:
             raise TaskWorkerError("task_deadline_expired")
 
@@ -279,13 +314,19 @@ class TaskWorker:
             run_id=run_id,
             auth=auth,
         )
+        configurable = {
+            "thread_id": state.task_id,
+            "checkpoint_tenant_id": auth.tenant_id,
+            "checkpoint_worker_id": self._worker_id,
+            "checkpoint_lease_generation": lease.lease_generation,
+        }
+        if self._capability_name is not None:
+            configurable.update(
+                checkpoint_required_capability_name=state.required_capability_name,
+                checkpoint_required_protocol_version=state.required_protocol_version,
+            )
         config = {
-            "configurable": {
-                "thread_id": state.task_id,
-                "checkpoint_tenant_id": auth.tenant_id,
-                "checkpoint_worker_id": self._worker_id,
-                "checkpoint_lease_generation": lease.lease_generation,
-            },
+            "configurable": configurable,
             # 每个 middleware 节点各消耗一个 superstep，预算之外必须留出
             # 图遍历中转余量；真正的停止边界由 ModelCallLimit / ToolCallLimit /
             # ExecutionGuard 中间件按线程强制（M1_FIX_PLAN 修复 4）。

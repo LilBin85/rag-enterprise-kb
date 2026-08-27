@@ -14,7 +14,14 @@ from sqlalchemy import text
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.tasks import TaskMode, TaskStatus
 from rag_kb.infrastructure.database import build_database
-from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository, TaskRepositoryError
+from rag_kb.infrastructure.database.task_repository import (
+    DatabaseTaskRepository,
+    RESEARCH_AGENT_CAPABILITY_NAME,
+    RESEARCH_AGENT_PROTOCOL_VERSION,
+    TASK_AGENT_CAPABILITY_NAME,
+    TASK_AGENT_PROTOCOL_VERSION,
+    TaskRepositoryError,
+)
 
 
 POSTGRES_TEST_URL = os.environ.get("RAG_KB_TEST_POSTGRES_URL")
@@ -362,6 +369,132 @@ def test_postgres_research_creation_requires_live_compatible_capability() -> Non
                 text("SELECT COUNT(*) FROM agent_tasks WHERE tenant_id = :tenant"),
                 {"tenant": tenant_id},
             ).scalar_one() == 1
+    finally:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM tenants WHERE tenant_id = :tenant"),
+                {"tenant": tenant_id},
+            )
+        database.engine.dispose()
+
+
+@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="postgres_test_url_unconfigured")
+def test_postgres_m2_task_claim_requires_exact_live_worker_protocol() -> None:
+    assert POSTGRES_TEST_URL is not None
+    database = build_database(POSTGRES_TEST_URL)
+    suffix = uuid4().hex
+    tenant_id = f"m2-capability-{suffix}"
+    user_id = f"owner-{suffix}"
+    task_id = f"task-{suffix}"
+    auth = AuthContext(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        attributes={"permissions": ["task:create", "task:read"]},
+        request_id=f"request-{suffix}",
+    )
+    repository = DatabaseTaskRepository(
+        database,
+        task_capability_name=TASK_AGENT_CAPABILITY_NAME,
+        task_capability_protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+    )
+    try:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO tenants (tenant_id, name, active, created_at) "
+                    "VALUES (:tenant, :name, TRUE, CURRENT_TIMESTAMP)"
+                ),
+                {"tenant": tenant_id, "name": tenant_id},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO principals "
+                    "(tenant_id, user_id, roles, attributes, active, created_at) "
+                    "VALUES (:tenant, :user, CAST('[]' AS jsonb), "
+                    "CAST(:attributes AS jsonb), TRUE, CURRENT_TIMESTAMP)"
+                ),
+                {
+                    "tenant": tenant_id,
+                    "user": user_id,
+                    "attributes": json.dumps(auth.attributes),
+                },
+            )
+        repository.register_capability(
+            capability_name=TASK_AGENT_CAPABILITY_NAME,
+            protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+            worker_id=f"worker-m2-{suffix}",
+            lease_seconds=60,
+        )
+        state = repository.create_task(
+            auth=auth,
+            goal="M2 协议领取",
+            task_mode=TaskMode.RESEARCH,
+            task_id=task_id,
+        )
+        assert state.required_capability_name == TASK_AGENT_CAPABILITY_NAME
+        assert state.required_protocol_version == TASK_AGENT_PROTOCOL_VERSION
+
+        repository.register_capability(
+            capability_name=RESEARCH_AGENT_CAPABILITY_NAME,
+            protocol_version=RESEARCH_AGENT_PROTOCOL_VERSION,
+            worker_id=f"worker-m1-{suffix}",
+            lease_seconds=60,
+        )
+        repository.register_capability(
+            capability_name="wrong-task-agent",
+            protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+            worker_id=f"worker-wrong-{suffix}",
+            lease_seconds=60,
+        )
+        assert repository.claim_next(
+            worker_id=f"worker-m1-{suffix}",
+            lease_seconds=30,
+            capability_name=RESEARCH_AGENT_CAPABILITY_NAME,
+            protocol_version=RESEARCH_AGENT_PROTOCOL_VERSION,
+        ) is None
+        assert repository.claim_next(
+            worker_id=f"worker-wrong-{suffix}",
+            lease_seconds=30,
+            capability_name="wrong-task-agent",
+            protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+        ) is None
+
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE agent_capability_leases "
+                    "SET lease_expires_at = clock_timestamp() - INTERVAL '1 second' "
+                    "WHERE capability_name = :capability AND protocol_version = :protocol "
+                    "AND worker_id = :worker"
+                ),
+                {
+                    "capability": TASK_AGENT_CAPABILITY_NAME,
+                    "protocol": TASK_AGENT_PROTOCOL_VERSION,
+                    "worker": f"worker-m2-{suffix}",
+                },
+            )
+        assert repository.claim_next(
+            worker_id=f"worker-m2-{suffix}",
+            lease_seconds=30,
+            capability_name=TASK_AGENT_CAPABILITY_NAME,
+            protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+        ) is None
+
+        repository.register_capability(
+            capability_name=TASK_AGENT_CAPABILITY_NAME,
+            protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+            worker_id=f"worker-current-{suffix}",
+            lease_seconds=60,
+        )
+        lease = repository.claim_next(
+            worker_id=f"worker-current-{suffix}",
+            lease_seconds=30,
+            capability_name=TASK_AGENT_CAPABILITY_NAME,
+            protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+        )
+        assert lease is not None
+        assert lease.state.required_capability_name == TASK_AGENT_CAPABILITY_NAME
+        assert lease.state.required_protocol_version == TASK_AGENT_PROTOCOL_VERSION
     finally:
         with database.engine.begin() as connection:
             connection.execute(

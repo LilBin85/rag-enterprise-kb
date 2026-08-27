@@ -20,8 +20,6 @@ from rag_kb.infrastructure.auth.providers import DemoTokenIdentityProvider, Iden
 from rag_kb.infrastructure.database import build_database
 from rag_kb.infrastructure.database.task_repository import (
     DatabaseTaskRepository,
-    RESEARCH_AGENT_CAPABILITY_NAME,
-    RESEARCH_AGENT_PROTOCOL_VERSION,
 )
 from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerRepository
 from rag_kb.infrastructure.object_store import LocalObjectStore
@@ -31,7 +29,7 @@ from rag_kb.infrastructure.vectorstore.qdrant_collection import (
 from rag_kb.infrastructure.vectorstore.qdrant_document_index import QdrantDocumentDeletion
 
 
-EXPECTED_DATABASE_REVISION = "20260826_0012"
+EXPECTED_DATABASE_REVISION = "20260827_0013"
 
 
 class ReadinessFailure(RuntimeError):
@@ -178,8 +176,8 @@ def build_task_repository() -> DatabaseTaskRepository:
     return DatabaseTaskRepository(
         build_database(settings.database_url),
         default_budgets=task_budgets_from_settings(settings),
-        research_capability_name=RESEARCH_AGENT_CAPABILITY_NAME,
-        research_capability_protocol_version=RESEARCH_AGENT_PROTOCOL_VERSION,
+        task_capability_name=settings.task_agent_capability_name,
+        task_capability_protocol_version=settings.task_agent_protocol_version,
     )
 
 
@@ -208,7 +206,7 @@ def build_task_resume_worker() -> Generator[object, None, None]:
 
     try:
         worker = build_task_worker(
-            worker_id=f"api-resume-{uuid4().hex[:12]}", publish_capability=False
+            worker_id=f"api-resume-{uuid4().hex[:12]}", publish_capability=True
         )
     except TaskAgentConfigurationError as exc:
         raise HTTPException(status_code=503, detail="Research Agent 暂不可用") from exc

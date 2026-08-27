@@ -41,8 +41,6 @@ from rag_kb.infrastructure.database.task_execution import (
 from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerRepository
 from rag_kb.infrastructure.database.task_repository import (
     DatabaseTaskRepository,
-    RESEARCH_AGENT_CAPABILITY_NAME,
-    RESEARCH_AGENT_PROTOCOL_VERSION,
 )
 from rag_kb.infrastructure.database.index_projection_metadata import (
     DatabaseDocumentIndexMetadataPort,
@@ -70,17 +68,21 @@ class TaskAgentConfigurationError(RuntimeError):
 
 
 class _CapabilityLeaseHeartbeat:
-    """独立于任务 invoke 的 Research Worker 能力租约心跳。"""
+    """独立于任务 invoke 的 M2 task capability 租约心跳。"""
 
     def __init__(
         self,
         repository: DatabaseTaskRepository,
         *,
         worker_id: str,
+        capability_name: str,
+        protocol_version: str,
         lease_seconds: int,
     ) -> None:
         self._repository = repository
         self._worker_id = worker_id
+        self._capability_name = capability_name
+        self._protocol_version = protocol_version
         self._lease_seconds = lease_seconds
         self._interval = lease_seconds / 3
         self._stop = threading.Event()
@@ -88,8 +90,8 @@ class _CapabilityLeaseHeartbeat:
 
     def start(self) -> None:
         self._repository.register_capability(
-            capability_name=RESEARCH_AGENT_CAPABILITY_NAME,
-            protocol_version=RESEARCH_AGENT_PROTOCOL_VERSION,
+            capability_name=self._capability_name,
+            protocol_version=self._protocol_version,
             worker_id=self._worker_id,
             lease_seconds=self._lease_seconds,
         )
@@ -104,8 +106,8 @@ class _CapabilityLeaseHeartbeat:
         while not self._stop.wait(self._interval):
             try:
                 self._repository.renew_capability(
-                    capability_name=RESEARCH_AGENT_CAPABILITY_NAME,
-                    protocol_version=RESEARCH_AGENT_PROTOCOL_VERSION,
+                    capability_name=self._capability_name,
+                    protocol_version=self._protocol_version,
                     worker_id=self._worker_id,
                     lease_seconds=self._lease_seconds,
                 )
@@ -120,8 +122,8 @@ class _CapabilityLeaseHeartbeat:
             self._thread = None
         try:
             self._repository.unregister_capability(
-                capability_name=RESEARCH_AGENT_CAPABILITY_NAME,
-                protocol_version=RESEARCH_AGENT_PROTOCOL_VERSION,
+                capability_name=self._capability_name,
+                protocol_version=self._protocol_version,
                 worker_id=self._worker_id,
             )
         except Exception:
@@ -189,7 +191,7 @@ def _build_research_model(settings):
 def build_task_worker(
     *, worker_id: str | None = None, publish_capability: bool = True
 ) -> TaskWorker:
-    """构造唯一的 M1 Research Agent worker 和 PostgreSQL checkpointer。"""
+    """构造 M2 protocol Research Agent worker 和 PostgreSQL checkpointer。"""
     settings = get_settings()
     database = build_database(settings.database_url)
     objects = LocalObjectStore(settings.object_store_root)
@@ -254,7 +256,11 @@ def build_task_worker(
         tools.close()
         connection.close()
         raise
-    repository = DatabaseTaskRepository(database)
+    repository = DatabaseTaskRepository(
+        database,
+        task_capability_name=settings.task_agent_capability_name,
+        task_capability_protocol_version=settings.task_agent_protocol_version,
+    )
     capability: _CapabilityLeaseHeartbeat | None = None
 
     def close() -> None:
@@ -273,6 +279,8 @@ def build_task_worker(
         tools=tools,
         database=database,
         worker_id=identity,
+        capability_name=settings.task_agent_capability_name,
+        protocol_version=settings.task_agent_protocol_version,
         close=close,
     )
     if publish_capability:
@@ -280,6 +288,8 @@ def build_task_worker(
             capability = _CapabilityLeaseHeartbeat(
                 repository,
                 worker_id=identity,
+                capability_name=settings.task_agent_capability_name,
+                protocol_version=settings.task_agent_protocol_version,
                 lease_seconds=settings.agent_capability_lease_seconds,
             )
             capability.start()

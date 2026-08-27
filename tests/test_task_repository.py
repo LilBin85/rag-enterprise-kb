@@ -17,7 +17,14 @@ from rag_kb.infrastructure.database.models import (
     TaskEventRow,
     TenantRow,
 )
-from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository, TaskRepositoryError
+from rag_kb.infrastructure.database.task_repository import (
+    DatabaseTaskRepository,
+    RESEARCH_AGENT_CAPABILITY_NAME,
+    RESEARCH_AGENT_PROTOCOL_VERSION,
+    TASK_AGENT_CAPABILITY_NAME,
+    TASK_AGENT_PROTOCOL_VERSION,
+    TaskRepositoryError,
+)
 
 
 class Clock:
@@ -470,3 +477,91 @@ def test_research_creation_uses_same_transaction_capability_gate(database) -> No
         )
     with database.sessions() as session:
         assert len(tuple(session.scalars(select(AgentTaskRow)))) == 1
+
+
+def test_m2_task_claim_requires_exact_live_worker_capability(database) -> None:
+    clock = Clock()
+    repository = DatabaseTaskRepository(
+        database,
+        now=clock,
+        task_capability_name=TASK_AGENT_CAPABILITY_NAME,
+        task_capability_protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+    )
+    repository.register_capability(
+        capability_name=TASK_AGENT_CAPABILITY_NAME,
+        protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+        worker_id="worker-m2",
+        lease_seconds=1,
+    )
+    state = created(repository)
+    assert state.required_capability_name == TASK_AGENT_CAPABILITY_NAME
+    assert state.required_protocol_version == TASK_AGENT_PROTOCOL_VERSION
+
+    assert repository.claim_next(
+        worker_id="worker-m2",
+        lease_seconds=30,
+        capability_name=RESEARCH_AGENT_CAPABILITY_NAME,
+        protocol_version=RESEARCH_AGENT_PROTOCOL_VERSION,
+    ) is None
+    assert repository.claim_next(
+        worker_id="worker-without-lease",
+        lease_seconds=30,
+        capability_name=TASK_AGENT_CAPABILITY_NAME,
+        protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+    ) is None
+
+    clock.value += timedelta(seconds=2)
+    assert repository.claim_next(
+        worker_id="worker-m2",
+        lease_seconds=30,
+        capability_name=TASK_AGENT_CAPABILITY_NAME,
+        protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+    ) is None
+
+
+def test_m2_user_resume_requires_exact_live_worker_capability(database) -> None:
+    repository = DatabaseTaskRepository(
+        database,
+        task_capability_name=TASK_AGENT_CAPABILITY_NAME,
+        task_capability_protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+    )
+    repository.register_capability(
+        capability_name=TASK_AGENT_CAPABILITY_NAME,
+        protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+        worker_id="worker-m2",
+        lease_seconds=60,
+    )
+    created(repository)
+    lease = repository.claim_next(
+        worker_id="worker-m2",
+        lease_seconds=30,
+        capability_name=TASK_AGENT_CAPABILITY_NAME,
+        protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+    )
+    assert lease is not None
+    paused = repository.pause_for_user(
+        lease,
+        question="需要哪个部门？",
+        trace_id="trace-m2",
+    )
+
+    with pytest.raises(TaskRepositoryError, match="task_protocol_mismatch"):
+        repository.claim_user_resume(
+            auth=auth(),
+            task_id="task-a",
+            expected_state_version=paused.state_version,
+            worker_id="worker-m2",
+            lease_seconds=30,
+            capability_name=RESEARCH_AGENT_CAPABILITY_NAME,
+            protocol_version=RESEARCH_AGENT_PROTOCOL_VERSION,
+        )
+    with pytest.raises(TaskRepositoryError, match="task_agent_unavailable"):
+        repository.claim_user_resume(
+            auth=auth(),
+            task_id="task-a",
+            expected_state_version=paused.state_version,
+            worker_id="worker-without-lease",
+            lease_seconds=30,
+            capability_name=TASK_AGENT_CAPABILITY_NAME,
+            protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+        )

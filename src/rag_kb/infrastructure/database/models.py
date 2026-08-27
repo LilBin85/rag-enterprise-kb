@@ -26,6 +26,10 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+from rag_kb.domain.tasks import (
+    M1_RESEARCH_AGENT_CAPABILITY_NAME,
+    M1_RESEARCH_AGENT_PROTOCOL_VERSION,
+)
 from rag_kb.infrastructure.database.base import Base
 
 
@@ -375,10 +379,20 @@ class AgentTaskRow(Base):
             name="cancelled_status_consistent",
         ),
         CheckConstraint(
-            "status NOT IN ('waiting_for_user', 'waiting_for_approval') OR "
-            "(interrupt_kind IS NOT NULL AND length(trim(interrupt_kind)) > 0 "
-            "AND interrupt_summary IS NOT NULL AND length(trim(interrupt_summary)) > 0)",
+            "(status = 'waiting_for_user' AND interrupt_kind = 'user_clarification' "
+            "AND interrupt_summary IS NOT NULL AND length(trim(interrupt_summary)) > 0 "
+            "AND interrupt_ref IS NULL) "
+            "OR (status = 'waiting_for_approval' AND interrupt_kind = 'tool_approval' "
+            "AND interrupt_summary IS NOT NULL AND length(trim(interrupt_summary)) > 0 "
+            "AND interrupt_ref IS NOT NULL AND length(trim(interrupt_ref)) > 0) "
+            "OR (status NOT IN ('waiting_for_user', 'waiting_for_approval') "
+            "AND interrupt_kind IS NULL AND interrupt_summary IS NULL AND interrupt_ref IS NULL)",
             name="interrupt_complete",
+        ),
+        CheckConstraint(
+            "length(trim(required_capability_name)) > 0 "
+            "AND length(trim(required_protocol_version)) > 0",
+            name="task_protocol_complete",
         ),
         CheckConstraint(
             "CASE WHEN task_mode <> 'research' OR status NOT IN ('succeeded', 'refused') "
@@ -408,6 +422,14 @@ class AgentTaskRow(Base):
             "status",
             "content_expires_at",
         ),
+        Index(
+            "ix_agent_tasks_protocol_claim",
+            "required_capability_name",
+            "required_protocol_version",
+            "status",
+            "available_at",
+            "created_at",
+        ),
     )
 
     task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -434,12 +456,25 @@ class AgentTaskRow(Base):
     artifact_refs: Mapped[list[str]] = mapped_column(
         JSON_TYPE, nullable=False, default=list, server_default=text("'[]'")
     )
+    required_capability_name: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default=M1_RESEARCH_AGENT_CAPABILITY_NAME,
+        server_default=text(f"'{M1_RESEARCH_AGENT_CAPABILITY_NAME}'"),
+    )
+    required_protocol_version: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default=M1_RESEARCH_AGENT_PROTOCOL_VERSION,
+        server_default=text(f"'{M1_RESEARCH_AGENT_PROTOCOL_VERSION}'"),
+    )
     cancelled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error_code: Mapped[str | None] = mapped_column(String(100))
     # M1 业务字段：中断摘要与最终结果引用；不保存消息、Todo 或 interrupt 载荷。
     interrupt_kind: Mapped[str | None] = mapped_column(String(32))
     interrupt_summary: Mapped[str | None] = mapped_column(Text)
+    interrupt_ref: Mapped[str | None] = mapped_column(String(200))
     result_kind: Mapped[str | None] = mapped_column(String(32))
     result_ref: Mapped[str | None] = mapped_column(String(500))
     result_hash: Mapped[str | None] = mapped_column(String(80))
@@ -735,6 +770,12 @@ class ApprovalRow(Base):
             ["principals.tenant_id", "principals.user_id"],
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "rejected_by"],
+            ["principals.tenant_id", "principals.user_id"],
+            name="fk_approvals_rejected_by_principal",
+            ondelete="RESTRICT",
+        ),
         UniqueConstraint("tenant_id", "approval_id", name="uq_approvals_tenant_approval"),
         UniqueConstraint(
             "tenant_id", "approval_id", "task_id", "plan_revision", "plan_digest",
@@ -755,10 +796,34 @@ class ApprovalRow(Base):
             "status <> 'pending' OR (approved_by IS NULL AND approved_at IS NULL)",
             name="pending_binding_empty",
         ),
+        CheckConstraint(
+            "(thread_id IS NULL AND checkpoint_ns IS NULL AND checkpoint_id IS NULL "
+            "AND interrupt_id IS NULL AND tool_call_id IS NULL AND checkpoint_binding_hash IS NULL) "
+            "OR (thread_id IS NOT NULL AND length(trim(thread_id)) > 0 "
+            "AND checkpoint_ns IS NOT NULL AND checkpoint_id IS NOT NULL "
+            "AND length(trim(checkpoint_id)) > 0 AND interrupt_id IS NOT NULL "
+            "AND length(trim(interrupt_id)) > 0 AND tool_call_id IS NOT NULL "
+            "AND length(trim(tool_call_id)) > 0 AND checkpoint_binding_hash IS NOT NULL "
+            "AND length(trim(checkpoint_binding_hash)) > 0)",
+            name="checkpoint_binding_complete",
+        ),
+        CheckConstraint(
+            "status <> 'rejected' OR checkpoint_binding_hash IS NULL "
+            "OR (rejected_by IS NOT NULL AND rejected_at IS NOT NULL "
+            "AND rejection_reason IS NOT NULL AND length(trim(rejection_reason)) > 0)",
+            name="rejected_audit_complete",
+        ),
         CheckConstraint("expires_at > created_at", name="expires_after_created"),
         Index("ix_approvals_task_status", "tenant_id", "task_id", "status"),
         Index(
-            "uq_approvals_active_binding",
+            "ix_approvals_checkpoint_binding",
+            "tenant_id",
+            "task_id",
+            "checkpoint_binding_hash",
+            "status",
+        ),
+        Index(
+            "uq_approvals_active_legacy_binding",
             "tenant_id",
             "task_id",
             "plan_revision",
@@ -769,8 +834,22 @@ class ApprovalRow(Base):
             "arguments_hash",
             "principal_hash",
             unique=True,
-            sqlite_where=text("status IN ('pending', 'approved')"),
-            postgresql_where=text("status IN ('pending', 'approved')"),
+            sqlite_where=text("status IN ('pending', 'approved') AND checkpoint_binding_hash IS NULL"),
+            postgresql_where=text("status IN ('pending', 'approved') AND checkpoint_binding_hash IS NULL"),
+        ),
+        Index(
+            "uq_approvals_active_checkpoint_binding",
+            "tenant_id",
+            "task_id",
+            "checkpoint_binding_hash",
+            "tool_name",
+            "tool_version",
+            "arguments_hash",
+            "evidence_digest",
+            "principal_hash",
+            unique=True,
+            sqlite_where=text("status IN ('pending', 'approved') AND checkpoint_binding_hash IS NOT NULL"),
+            postgresql_where=text("status IN ('pending', 'approved') AND checkpoint_binding_hash IS NOT NULL"),
         ),
     )
 
@@ -784,9 +863,21 @@ class ApprovalRow(Base):
     arguments_hash: Mapped[str] = mapped_column(String(80), nullable=False)
     principal_hash: Mapped[str] = mapped_column(String(80), nullable=False)
     evidence_digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    thread_id: Mapped[str | None] = mapped_column(String(64))
+    checkpoint_ns: Mapped[str | None] = mapped_column(String(200))
+    checkpoint_id: Mapped[str | None] = mapped_column(String(150))
+    interrupt_id: Mapped[str | None] = mapped_column(String(100))
+    # LangGraph checkpoint action ID，不是 tool_calls.tool_call_id 主键：
+    # 审批先于执行落盘（checkpoint -> pending approval -> 批准 -> write ToolCallRow），
+    # 加 FK 会与 tool_calls -> approvals 的执行侧复合 FK 形成即时循环。
+    tool_call_id: Mapped[str | None] = mapped_column(String(64))
+    checkpoint_binding_hash: Mapped[str | None] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     approved_by: Mapped[str | None] = mapped_column(String(200))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejected_by: Mapped[str | None] = mapped_column(String(200))
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejection_reason: Mapped[str | None] = mapped_column(Text)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
@@ -818,7 +909,19 @@ class ArtifactRow(Base):
             "artifact_type IN ('report', 'work_item_draft', 'checklist', 'notification_draft')",
             name="artifact_type_valid",
         ),
+        CheckConstraint(
+            "(content_purged_at IS NULL AND storage_key IS NOT NULL) "
+            "OR (content_purged_at IS NOT NULL AND storage_key IS NULL "
+            "AND content_expires_at IS NOT NULL)",
+            name="content_purge_binding",
+        ),
         Index("ix_artifacts_task", "tenant_id", "task_id", "created_at"),
+        Index(
+            "ix_artifacts_content_retention",
+            "status",
+            "content_expires_at",
+            "content_purged_at",
+        ),
     )
 
     artifact_id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -826,9 +929,11 @@ class ArtifactRow(Base):
     tenant_id: Mapped[str] = mapped_column(String(200), nullable=False)
     tool_call_id: Mapped[str] = mapped_column(String(64), nullable=False)
     artifact_type: Mapped[str] = mapped_column(String(80), nullable=False)
-    storage_key: Mapped[str] = mapped_column(String(500), nullable=False)
+    storage_key: Mapped[str | None] = mapped_column(String(500))
     content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    content_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    content_purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
 

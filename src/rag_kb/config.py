@@ -11,6 +11,8 @@ from rag_kb.domain.tasks import (
     DEFAULT_MAX_MODEL_CALLS,
     DEFAULT_MAX_RUNTIME_SECONDS,
     DEFAULT_MAX_TOOL_CALLS,
+    TASK_AGENT_CAPABILITY_NAME,
+    TASK_AGENT_PROTOCOL_VERSION,
     TaskBudgets,
 )
 from rag_kb.domain.tools import TOOL_TIMEOUT_CEILING_SECONDS
@@ -74,6 +76,9 @@ class Settings(BaseSettings):
     agent_max_runtime_seconds: int = Field(default=DEFAULT_MAX_RUNTIME_SECONDS, ge=1)
     agent_timeout_seconds: int = Field(default=20, ge=1, le=120)
     agent_capability_lease_seconds: int = Field(default=30, ge=3, le=3600)
+    task_agent_capability_name: str = TASK_AGENT_CAPABILITY_NAME
+    task_agent_protocol_version: str = TASK_AGENT_PROTOCOL_VERSION
+    langgraph_strict_msgpack: bool = True
 
     # 敏感正文保留策略（M1_FIX_PLAN 修复 5）：工具结果与任务结果/checkpoint 过期即清理。
     tool_result_ttl_seconds: int = Field(default=7 * 24 * 3600, ge=1)
@@ -102,6 +107,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_retention_windows(self) -> "Settings":
+        if (
+            self.task_agent_capability_name != TASK_AGENT_CAPABILITY_NAME
+            or self.task_agent_protocol_version != TASK_AGENT_PROTOCOL_VERSION
+        ):
+            raise ValueError("task_agent_protocol_configuration_invalid")
+        if not self.langgraph_strict_msgpack:
+            raise ValueError("langgraph_strict_msgpack_required")
         if self.result_object_orphan_grace_seconds <= TOOL_TIMEOUT_CEILING_SECONDS + 60:
             raise ValueError("result_object_orphan_grace_too_short")
         if self.tool_result_ttl_seconds <= TOOL_TIMEOUT_CEILING_SECONDS:
@@ -121,6 +133,7 @@ class Settings(BaseSettings):
           镜像抖动时会以 ConnectTimeout 拖垮知识查询(2026-08-08 实测)。
           模型冻结后运行期不应依赖外网;缓存不完整时不设此值,允许走镜像下载。
         """
+        os.environ["LANGGRAPH_STRICT_MSGPACK"] = "true"
         if self.hf_home:
             os.environ.setdefault("HF_HOME", str(self.hf_home))
         if self.hf_endpoint:

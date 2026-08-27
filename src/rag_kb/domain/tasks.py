@@ -42,6 +42,10 @@ DEFAULT_MAX_MODEL_CALLS = 12
 DEFAULT_MAX_TOOL_CALLS = 20
 DEFAULT_MAX_RUNTIME_SECONDS = 600
 DEFAULT_TOOL_TIMEOUT_SECONDS = 30
+M1_RESEARCH_AGENT_CAPABILITY_NAME = "research-agent"
+M1_RESEARCH_AGENT_PROTOCOL_VERSION = "m1-fenced-v2"
+TASK_AGENT_CAPABILITY_NAME = "task-agent"
+TASK_AGENT_PROTOCOL_VERSION = "m2-fenced-v1"
 
 
 class StrictModel(BaseModel):
@@ -66,10 +70,21 @@ class TaskState(StrictModel):
     goal: str
     task_mode: TaskMode
     status: TaskStatus
+    required_capability_name: str = Field(
+        default=M1_RESEARCH_AGENT_CAPABILITY_NAME,
+        min_length=1,
+        max_length=64,
+    )
+    required_protocol_version: str = Field(
+        default=M1_RESEARCH_AGENT_PROTOCOL_VERSION,
+        min_length=1,
+        max_length=64,
+    )
     state_version: int = Field(default=1, ge=1)
     lease_generation: int = Field(default=0, ge=0)
     interrupt_kind: str | None = None
     interrupt_summary: str | None = None
+    interrupt_ref: str | None = None
     result_kind: str | None = None
     result_ref: str | None = None
     result_hash: str | None = None
@@ -82,12 +97,20 @@ class TaskState(StrictModel):
     def validate_pause_and_cancel_bindings(self) -> "TaskState":
         if (self.status is TaskStatus.CANCELLED) != self.cancelled:
             raise ValueError("task_cancel_binding_invalid")
-        if self.status in _INTERRUPT_STATUSES and not (
-            self.interrupt_kind and self.interrupt_summary
+        if self.status is TaskStatus.WAITING_FOR_USER and not (
+            self.interrupt_kind == "user_clarification"
+            and self.interrupt_summary
+            and self.interrupt_ref is None
+        ):
+            raise ValueError("task_interrupt_binding_missing")
+        if self.status is TaskStatus.WAITING_FOR_APPROVAL and not (
+            self.interrupt_kind == "tool_approval"
+            and self.interrupt_summary
+            and self.interrupt_ref
         ):
             raise ValueError("task_interrupt_binding_missing")
         if self.status not in _INTERRUPT_STATUSES and (
-            self.interrupt_kind or self.interrupt_summary
+            self.interrupt_kind or self.interrupt_summary or self.interrupt_ref
         ):
             raise ValueError("task_interrupt_only_when_waiting")
         if self.result_ref is not None and not self.result_kind:

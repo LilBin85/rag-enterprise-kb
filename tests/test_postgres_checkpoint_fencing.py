@@ -18,7 +18,11 @@ from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.tasks import TaskMode
 from rag_kb.infrastructure.database import build_database
 from rag_kb.infrastructure.database.models import AgentTaskRow, PrincipalRow, TenantRow
-from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
+from rag_kb.infrastructure.database.task_repository import (
+    DatabaseTaskRepository,
+    TASK_AGENT_CAPABILITY_NAME,
+    TASK_AGENT_PROTOCOL_VERSION,
+)
 
 
 POSTGRES_TEST_URL = os.environ.get("RAG_KB_TEST_POSTGRES_URL")
@@ -61,7 +65,17 @@ def fenced_postgres():
                 attributes=_auth(ids).attributes,
             )
         )
-    repository = DatabaseTaskRepository(database)
+    repository = DatabaseTaskRepository(
+        database,
+        task_capability_name=TASK_AGENT_CAPABILITY_NAME,
+        task_capability_protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+    )
+    repository.register_capability(
+        capability_name=TASK_AGENT_CAPABILITY_NAME,
+        protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+        worker_id="checkpoint-bootstrap",
+        lease_seconds=60,
+    )
     repository.create_task(
         auth=_auth(ids),
         goal="验证 checkpoint generation fencing",
@@ -87,6 +101,21 @@ def fenced_postgres():
         database.engine.dispose()
 
 
+def _claim(repository: DatabaseTaskRepository, *, worker_id: str, lease_seconds: int):
+    repository.register_capability(
+        capability_name=TASK_AGENT_CAPABILITY_NAME,
+        protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+        worker_id=worker_id,
+        lease_seconds=max(lease_seconds, 60),
+    )
+    return repository.claim_next(
+        worker_id=worker_id,
+        lease_seconds=lease_seconds,
+        capability_name=TASK_AGENT_CAPABILITY_NAME,
+        protocol_version=TASK_AGENT_PROTOCOL_VERSION,
+    )
+
+
 def _config(ids: _Ids, lease) -> dict[str, object]:
     return {
         "configurable": {
@@ -95,6 +124,8 @@ def _config(ids: _Ids, lease) -> dict[str, object]:
             "checkpoint_tenant_id": ids.tenant_id,
             "checkpoint_worker_id": lease.worker_id,
             "checkpoint_lease_generation": lease.lease_generation,
+            "checkpoint_required_capability_name": TASK_AGENT_CAPABILITY_NAME,
+            "checkpoint_required_protocol_version": TASK_AGENT_PROTOCOL_VERSION,
         }
     }
 
@@ -109,7 +140,7 @@ def _checkpoint(message: str):
 def test_preempted_generation_cannot_write_checkpoint_or_pending_writes(fenced_postgres) -> None:
     """抢占后旧 generation 的 put/put_writes 都是零新增，B 从合法 checkpoint 恢复。"""
     database, repository, saver, ids = fenced_postgres
-    lease_a = repository.claim_next(worker_id="checkpoint-worker-a", lease_seconds=60)
+    lease_a = _claim(repository, worker_id="checkpoint-worker-a", lease_seconds=60)
     assert lease_a is not None
     config_a = _config(ids, lease_a)
     legal_config = saver.put(
@@ -135,7 +166,7 @@ def test_preempted_generation_cannot_write_checkpoint_or_pending_writes(fenced_p
         task = session.get(AgentTaskRow, ids.task_id)
         assert task is not None
         task.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
-    lease_b = repository.claim_next(worker_id="checkpoint-worker-b", lease_seconds=60)
+    lease_b = _claim(repository, worker_id="checkpoint-worker-b", lease_seconds=60)
     assert lease_b is not None
     assert lease_b.lease_generation == lease_a.lease_generation + 1
 
@@ -178,7 +209,7 @@ def test_task_row_lock_orders_legal_checkpoint_before_next_generation(
 ) -> None:
     """A 持锁时 B 不得递增 generation；skip-locked 重试只能发生在 A 合法提交后。"""
     database, repository, saver, ids = fenced_postgres
-    lease_a = repository.claim_next(worker_id="checkpoint-worker-a", lease_seconds=1)
+    lease_a = _claim(repository, worker_id="checkpoint-worker-a", lease_seconds=1)
     assert lease_a is not None
     entered_write = Event()
     release_write = Event()
@@ -202,8 +233,10 @@ def test_task_row_lock_orders_legal_checkpoint_before_next_generation(
         )
 
     def claim_b() -> None:
-        output["lease_b"] = repository.claim_next(
-            worker_id="checkpoint-worker-b", lease_seconds=60
+        output["lease_b"] = _claim(
+            repository,
+            worker_id="checkpoint-worker-b",
+            lease_seconds=60,
         )
         claimed_b.set()
 
@@ -220,9 +253,70 @@ def test_task_row_lock_orders_legal_checkpoint_before_next_generation(
     claimer.join(timeout=5)
     assert not writer.is_alive()
     assert not claimer.is_alive()
-    lease_b = repository.claim_next(worker_id="checkpoint-worker-b", lease_seconds=60)
+    lease_b = _claim(repository, worker_id="checkpoint-worker-b", lease_seconds=60)
     assert lease_b is not None
     assert lease_b.lease_generation == lease_a.lease_generation + 1
     recovered = saver.get_tuple(_config(ids, lease_b))
     assert recovered is not None
     assert recovered.checkpoint["channel_values"]["message"] == "legal-before-claim-b"
+
+
+@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="postgres_test_url_unconfigured")
+def test_missing_or_wrong_m2_protocol_cannot_write_checkpoint_or_pending_writes(
+    fenced_postgres,
+) -> None:
+    database, repository, saver, ids = fenced_postgres
+    lease = _claim(repository, worker_id="checkpoint-worker", lease_seconds=60)
+    assert lease is not None
+    config = _config(ids, lease)
+    legal = saver.put(
+        config,
+        _checkpoint("legal"),
+        {"source": "input", "step": -1, "writes": {}},
+        {},
+    )
+    with database.engine.connect() as engine_connection:
+        before_checkpoints = engine_connection.execute(
+            text("SELECT COUNT(*) FROM checkpoints WHERE thread_id = :task"),
+            {"task": ids.task_id},
+        ).scalar_one()
+        before_writes = engine_connection.execute(
+            text("SELECT COUNT(*) FROM checkpoint_writes WHERE thread_id = :task"),
+            {"task": ids.task_id},
+        ).scalar_one()
+
+    missing = {
+        **legal,
+        "configurable": {
+            key: value
+            for key, value in legal["configurable"].items()
+            if key != "checkpoint_required_protocol_version"
+        },
+    }
+    wrong = {
+        **legal,
+        "configurable": {
+            **legal["configurable"],
+            "checkpoint_required_protocol_version": "m1-fenced-v2",
+        },
+    }
+    for invalid in (missing, wrong):
+        with pytest.raises(TaskCheckpointError, match="task_checkpoint_lease_stale"):
+            saver.put(
+                invalid,
+                _checkpoint("blocked"),
+                {"source": "loop", "step": 0, "writes": {}},
+                {},
+            )
+        with pytest.raises(TaskCheckpointError, match="task_checkpoint_lease_stale"):
+            saver.put_writes(invalid, [("message", "blocked")], "blocked-task")
+
+    with database.engine.connect() as engine_connection:
+        assert engine_connection.execute(
+            text("SELECT COUNT(*) FROM checkpoints WHERE thread_id = :task"),
+            {"task": ids.task_id},
+        ).scalar_one() == before_checkpoints
+        assert engine_connection.execute(
+            text("SELECT COUNT(*) FROM checkpoint_writes WHERE thread_id = :task"),
+            {"task": ids.task_id},
+        ).scalar_one() == before_writes
