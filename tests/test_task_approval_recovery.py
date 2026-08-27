@@ -16,9 +16,9 @@ import pytest
 from langchain_core.messages import AIMessage
 from sqlalchemy import select, text
 
-from rag_kb.agent.result import AgentResultStore
-from rag_kb.application.approval_service import ApprovalService
-from rag_kb.application.task_worker import TaskWorker
+from rag_kb.agent.result import AgentResultStore, TaskResultCandidate
+from rag_kb.application.approval_service import ApprovalService, ApprovalServiceError
+from rag_kb.application.task_worker import TaskWorker, TaskWorkerError
 from rag_kb.application.tool_execution_service import (
     ToolExecutionError,
     ToolExecutionRequest,
@@ -31,6 +31,7 @@ from rag_kb.infrastructure.database import Base, build_database
 from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerRepository
 from rag_kb.infrastructure.database.models import (
     ACLGrantRow,
+    AgentCapabilityLeaseRow,
     AgentTaskRow,
     ApprovalRow,
     ChunkMetadataRow,
@@ -39,6 +40,7 @@ from rag_kb.infrastructure.database.models import (
     EvidenceRecordRow,
     IngestionJobRow,
     PlanRevisionRow,
+    ToolCallRow,
 )
 from rag_kb.infrastructure.database.task_repository import (
     DatabaseTaskRepository,
@@ -63,7 +65,7 @@ class CountingWriteAdapter:
         self.calls += 1
         return {
             "artifact_type": "report",
-            "storage_key": "server/generated",
+            "artifact_id": "artifact-1",
             "content_hash": "sha256:" + "a" * 64,
             "status": "ready",
         }
@@ -75,12 +77,54 @@ class CountingWriteAdapter:
 class ScriptedAgent:
     def __init__(self, snapshots: tuple[object, ...]) -> None:
         self._snapshots = iter(snapshots)
+        self.inputs: list[object] = []
+        self.contexts: list[object] = []
 
     def get_state(self, _config: dict[str, object]) -> object:
         return next(self._snapshots)
 
     def invoke(self, _input: object, _config: dict[str, object], *, context: object) -> dict[str, object]:
+        self.inputs.append(_input)
+        self.contexts.append(context)
         return {}
+
+
+class ExecutorAgent(ScriptedAgent):
+    """恢复路径契约代理：invoke 用服务端 context 驱动真实 ToolExecutionService，
+    模拟 ToolNode 在 approve 后执行 WRITE 的行为（真图执行由 PG 恢复测试证明）。"""
+
+    def __init__(self, stage: SimpleNamespace, snapshots: tuple[object, ...]) -> None:
+        super().__init__(snapshots)
+        self._stage = stage
+
+    def invoke(self, _input: object, _config: dict[str, object], *, context: object) -> dict[str, object]:
+        self.inputs.append(_input)
+        self.contexts.append(context)
+        request = ToolExecutionRequest(
+            auth=context.auth,
+            task_id=context.task_id,
+            tool_name="create_report_artifact",
+            arguments=dict(_REPORT_ARGUMENTS),
+            worker_id=context.worker_id,
+            lease_generation=context.lease_generation,
+            idempotency_key=context.idempotency_key,
+            approval_id=context.approval_id,
+            plan_revision=context.plan_revision,
+            plan_digest=context.plan_digest,
+            evidence_digest=context.evidence_digest,
+            evidence_ids=context.evidence_ids,
+        )
+        self._stage.tools.execute(request)
+        return {}
+
+
+class CrashingInvokeAgent(ScriptedAgent):
+    """模拟 resume 提交后在 ToolNode 前崩溃的 Worker。"""
+
+    def invoke(self, _input: object, _config: dict[str, object], *, context: object) -> dict[str, object]:
+        self.inputs.append(_input)
+        self.contexts.append(context)
+        raise RuntimeError("injected worker crash before tool node")
 
 
 class AuthContexts:
@@ -172,6 +216,12 @@ def _build_stage(tmp_path: Path, *, task_mode: TaskMode) -> SimpleNamespace:
         },
         request_id="request-1",
     )
+    approver = AuthContext(
+        tenant_id="tenant-a",
+        user_id="approver",
+        attributes={"permissions": ["task:approve"]},
+        request_id="approve-1",
+    )
     with database.engine.begin() as connection:
         connection.execute(
             text("INSERT INTO tenants VALUES ('tenant-a', 'Tenant A', 1, CURRENT_TIMESTAMP)")
@@ -183,7 +233,18 @@ def _build_stage(tmp_path: Path, *, task_mode: TaskMode) -> SimpleNamespace:
             ),
             {"attributes": '{"permissions":["artifact:write","knowledge:read","document:read"]}'},
         )
-    repository = DatabaseTaskRepository(database)
+        connection.execute(
+            text(
+                "INSERT INTO principals (tenant_id,user_id,roles,attributes,active,created_at) "
+                "VALUES ('tenant-a', 'approver', '[]', :attributes, 1, CURRENT_TIMESTAMP)"
+            ),
+            {"attributes": '{"permissions":["task:approve"]}'},
+        )
+    repository = DatabaseTaskRepository(
+        database,
+        task_capability_name="task-agent",
+        task_capability_protocol_version="m2-fenced-v1",
+    ) if task_mode is TaskMode.CONTROLLED_ACTION else DatabaseTaskRepository(database)
     repository.create_task(
         auth=requester,
         goal="创建制度摘要报告",
@@ -200,6 +261,17 @@ def _build_stage(tmp_path: Path, *, task_mode: TaskMode) -> SimpleNamespace:
         task.lease_owner = "worker-1"
         task.lease_expires_at = datetime.now(UTC) + timedelta(seconds=60)
         task.lease_generation = 1
+        # 生产 Worker 领取/恢复前必须持有 task-agent capability 租约；
+        # stage 等效注册（协议门 require_capability 为真）。
+        work.session.add(
+            AgentCapabilityLeaseRow(
+                capability_name="task-agent",
+                protocol_version="m2-fenced-v1",
+                worker_id="worker-1",
+                lease_expires_at=datetime.now(UTC) + timedelta(seconds=300),
+                updated_at=datetime.now(UTC),
+            )
+        )
         work.session.add_all(
             [
                 DocumentRow(
@@ -309,6 +381,7 @@ def _build_stage(tmp_path: Path, *, task_mode: TaskMode) -> SimpleNamespace:
         database=database,
         repository=repository,
         requester=requester,
+        approver=approver,
         report_adapter=report_adapter,
         draft_adapter=draft_adapter,
         approvals=approvals,
@@ -326,6 +399,13 @@ def stage(tmp_path: Path) -> SimpleNamespace:
     stage.database.engine.dispose()
 
 
+class CrashingWorker(TaskWorker):
+    """模拟 resume 提交后进程死亡：异常直接外抛，不收敛业务状态。"""
+
+    def _run_claimed(self, lease: TaskLease, **kwargs: object) -> TaskWorkerResult:
+        return self._advance(lease, **kwargs)
+
+
 def _worker(stage: SimpleNamespace, agent: ScriptedAgent) -> TaskWorker:
     return TaskWorker(
         repository=stage.repository,
@@ -337,7 +417,10 @@ def _worker(stage: SimpleNamespace, agent: ScriptedAgent) -> TaskWorker:
         tools=stage.tools,
         database=stage.database,
         worker_id="worker-1",
+        capability_name="task-agent",
+        protocol_version="m2-fenced-v1",
         approvals=stage.approvals,
+        objects=LocalObjectStore(stage.tmp_path / "objects"),
     )
 
 
@@ -713,3 +796,425 @@ def test_write_adapter_without_approval_fails_closed(stage) -> None:
     assert getattr(exc_info.value, "code", None) == "approval_required"
     assert stage.report_adapter.calls == 0
     assert stage.draft_adapter.calls == 0
+
+
+# ---------------------------------------------------------------------------
+# 批次 2：四格真值表与受控恢复链路（先红后绿）
+# ---------------------------------------------------------------------------
+
+
+def _final_snapshot(candidate: TaskResultCandidate) -> SimpleNamespace:
+    return SimpleNamespace(
+        values={"structured_response": candidate, "messages": []},
+        interrupts=(),
+        next=(),
+        config={
+            "configurable": {
+                "thread_id": "task-1",
+                "checkpoint_ns": "",
+                "checkpoint_id": "checkpoint-final",
+            }
+        },
+    )
+
+
+def _succeeded_candidate() -> TaskResultCandidate:
+    return TaskResultCandidate(
+        status="succeeded",
+        answer="报告已完成",
+        evidence_ids=("evidence-1",),
+        stop_reason="completed",
+    )
+
+
+def _paused_stage(stage: SimpleNamespace) -> tuple[str, int]:
+    agent = ScriptedAgent((_empty_snapshot(), _hitl_snapshot()))
+    worker = _worker(stage, agent)
+    outcome = worker._run_claimed(stage.lease)
+    assert outcome.status == "waiting_for_approval"
+    approval_id = _approval_rows(stage)[0].approval_id
+    with stage.database.sessions() as session:
+        state_version = session.get(AgentTaskRow, "task-1").state_version
+    return approval_id, state_version
+
+
+def _task_row(stage: SimpleNamespace) -> AgentTaskRow:
+    with stage.database.sessions() as session:
+        return session.get(AgentTaskRow, "task-1")
+
+
+def test_truth_table_hitl_no_business_no_executes_zero(stage) -> None:
+    """HITL=否/业务=否：无暂停、无审批，恢复入口 fail-closed，adapter 为 0。"""
+    worker = _worker(stage, ScriptedAgent(()))
+    state_version = _task_row(stage).state_version
+
+    with pytest.raises(ApprovalServiceError) as exc_info:
+        worker.resume_for_approval(
+            auth=stage.approver,
+            task_id="task-1",
+            expected_state_version=state_version,
+            approval_id="missing-approval",
+            decision="approve",
+        )
+    assert exc_info.value.code == "approval_not_found"
+    assert stage.report_adapter.calls == 0
+    assert stage.draft_adapter.calls == 0
+
+
+def test_truth_table_hitl_yes_business_no_executes_zero(stage) -> None:
+    """HITL=是/业务=否：审批仍 pending（自批被拒），恢复必须中止，adapter 为 0。"""
+    approval_id, state_version = _paused_stage(stage)
+    with stage.database.sessions() as session:
+        approval = session.get(ApprovalRow, approval_id)
+        assert approval is not None and approval.status == "pending"
+
+    # 发起人自批：授予 task:approve 以穿过权限门，命中自批拒绝。
+    elevated_requester = AuthContext(
+        tenant_id="tenant-a",
+        user_id="requester",
+        attributes={
+            "permissions": [
+                "artifact:write",
+                "knowledge:read",
+                "document:read",
+                "task:approve",
+            ]
+        },
+        request_id="self-approve-1",
+    )
+    worker = _worker(stage, ScriptedAgent(()))
+    with pytest.raises(ApprovalServiceError) as exc_info:
+        worker.resume_for_approval(
+            auth=elevated_requester,
+            task_id="task-1",
+            expected_state_version=state_version,
+            approval_id=approval_id,
+            decision="approve",
+        )
+    assert exc_info.value.code == "approval_self_rejected"
+    with stage.database.sessions() as session:
+        approval = session.get(ApprovalRow, approval_id)
+        assert approval is not None and approval.status == "pending"
+        task = session.get(AgentTaskRow, "task-1")
+        assert task is not None
+        assert task.status == TaskStatus.WAITING_FOR_APPROVAL.value
+    assert stage.report_adapter.calls == 0
+    assert stage.draft_adapter.calls == 0
+
+
+def test_truth_table_hitl_no_business_yes_executes_zero(stage) -> None:
+    """HITL=否/业务=是：审批已批准但服务端从未驱动 resume，adapter 为 0。"""
+    approval_id, _state_version = _paused_stage(stage)
+    binding = stage.approvals.approve(auth=stage.approver, approval_id=approval_id)
+    assert binding.status == "approved"
+
+    with stage.database.sessions() as session:
+        task = session.get(AgentTaskRow, "task-1")
+        assert task is not None
+        assert task.status == TaskStatus.WAITING_FOR_APPROVAL.value
+    assert stage.report_adapter.calls == 0
+    assert stage.draft_adapter.calls == 0
+
+
+def test_truth_table_both_yes_executes_exactly_once(stage) -> None:
+    """HITL=是/业务=是且绑定有效：恰好执行 1 次，终态由服务端受控构造。"""
+    approval_id, state_version = _paused_stage(stage)
+    stage.approvals.approve(auth=stage.approver, approval_id=approval_id)
+
+    resume_agent = ExecutorAgent(
+        stage, (_hitl_snapshot(), _final_snapshot(_succeeded_candidate()))
+    )
+    outcome = _worker(stage, resume_agent).resume_for_approval(
+        auth=stage.approver,
+        task_id="task-1",
+        expected_state_version=state_version,
+        approval_id=approval_id,
+        decision="approve",
+    )
+
+    assert outcome.status == "finished"
+    assert stage.report_adapter.calls == 1
+    assert stage.draft_adapter.calls == 0
+    with stage.database.sessions() as session:
+        approval = session.get(ApprovalRow, approval_id)
+        assert approval is not None and approval.status == "executed"
+        task = session.get(AgentTaskRow, "task-1")
+        assert task is not None
+        assert task.status == TaskStatus.SUCCEEDED.value
+        assert task.result_kind == "controlled_action"
+        tool_calls = (
+            session.scalars(
+                select(ToolCallRow).where(ToolCallRow.task_id == "task-1")
+            ).all()
+        )
+        assert len(tool_calls) == 1
+
+
+def test_repeat_decision_does_not_reexecute_after_consumption(stage) -> None:
+    """重复 approve decision：approval 已 executed，重复恢复不产生第二次副作用。"""
+    approval_id, state_version = _paused_stage(stage)
+    stage.approvals.approve(auth=stage.approver, approval_id=approval_id)
+    resume_agent = ExecutorAgent(
+        stage, (_hitl_snapshot(), _final_snapshot(_succeeded_candidate()))
+    )
+    first = _worker(stage, resume_agent).resume_for_approval(
+        auth=stage.approver,
+        task_id="task-1",
+        expected_state_version=state_version,
+        approval_id=approval_id,
+        decision="approve",
+    )
+    assert first.status == "finished"
+    assert stage.report_adapter.calls == 1
+
+    with stage.database.sessions() as session:
+        terminal_version = session.get(AgentTaskRow, "task-1").state_version
+    second_agent = ExecutorAgent(stage, ())
+    with pytest.raises((TaskRepositoryError, ApprovalServiceError, TaskWorkerError)):
+        _worker(stage, second_agent).resume_for_approval(
+            auth=stage.approver,
+            task_id="task-1",
+            expected_state_version=terminal_version,
+            approval_id=approval_id,
+            decision="approve",
+        )
+    assert stage.report_adapter.calls == 1
+    assert stage.draft_adapter.calls == 0
+
+
+def test_reject_decision_resumes_thread_with_fixed_payload_and_zero_execution(
+    stage,
+) -> None:
+    """reject decision：固定服务端 reject payload 同 thread 恢复，adapter 为 0。"""
+    approval_id, state_version = _paused_stage(stage)
+    resume_agent = ScriptedAgent(
+        (_hitl_snapshot(), _final_snapshot(_succeeded_candidate()))
+    )
+    outcome = _worker(stage, resume_agent).resume_for_approval(
+        auth=stage.approver,
+        task_id="task-1",
+        expected_state_version=state_version,
+        approval_id=approval_id,
+        decision="reject",
+    )
+
+    assert outcome.status == "finished"
+    command = resume_agent.inputs[0]
+    resume = command.resume
+    assert set(resume) == {"decisions"}
+    assert len(resume["decisions"]) == 1
+    decision = resume["decisions"][0]
+    assert decision["type"] == "reject"
+    assert isinstance(decision.get("message"), str) and decision["message"].strip()
+    with stage.database.sessions() as session:
+        approval = session.get(ApprovalRow, approval_id)
+        assert approval is not None and approval.status == "rejected"
+        assert approval.rejected_by == "approver"
+        assert approval.rejected_at is not None
+        assert approval.rejection_reason
+    assert stage.report_adapter.calls == 0
+    assert stage.draft_adapter.calls == 0
+
+
+def test_resume_crash_before_toolnode_recovers_without_new_action_key(stage) -> None:
+    """D6 窗口 1/3：resume 后 ToolNode 前崩溃 → claim_next 重领取幂等重建，
+    重复 decision 复用同一 approval 与 action key，最终恰好执行 1 次。"""
+    approval_id, state_version = _paused_stage(stage)
+    stage.approvals.approve(auth=stage.approver, approval_id=approval_id)
+
+    crashing = CrashingInvokeAgent((_hitl_snapshot(),))
+    with pytest.raises(RuntimeError):
+        CrashingWorker(
+            repository=stage.repository,
+            auth_contexts=AuthContexts(stage.requester),
+            agent_for=lambda _budgets: crashing,
+            controlled_agent_for=lambda _budgets: crashing,
+            results=AgentResultStore(LocalObjectStore(stage.tmp_path / "objects")),
+            evidence=EvidenceLedgerRepository(),
+            tools=stage.tools,
+            database=stage.database,
+            worker_id="worker-1",
+            capability_name="task-agent",
+            protocol_version="m2-fenced-v1",
+            approvals=stage.approvals,
+        ).resume_for_approval(
+            auth=stage.approver,
+            task_id="task-1",
+            expected_state_version=state_version,
+            approval_id=approval_id,
+            decision="approve",
+        )
+
+    # Worker 崩溃：租约随后被释放（等效于失租收敛），任务保留 RUNNING，
+    # 由同协议 Worker 经 claim_next 重领取。
+    with UnitOfWork(stage.database) as work:
+        assert work.session is not None
+        task = work.session.scalar(
+            select(AgentTaskRow).where(AgentTaskRow.task_id == "task-1")
+        )
+        assert task is not None
+        task.lease_owner = None
+        task.lease_expires_at = None
+    recovered_lease = stage.repository.claim_next(
+        worker_id="worker-1",
+        lease_seconds=60,
+        capability_name="task-agent",
+        protocol_version="m2-fenced-v1",
+    )
+    assert recovered_lease is not None
+
+    resync = _worker(stage, ScriptedAgent((_hitl_snapshot(),)))._run_claimed(
+        recovered_lease
+    )
+    assert resync.status == "waiting_for_approval"
+    approvals = _approval_rows(stage)
+    assert len(approvals) == 1
+    assert approvals[0].approval_id == approval_id
+    assert len(_plan_rows(stage)) == 1
+
+    with stage.database.sessions() as session:
+        resync_version = session.get(AgentTaskRow, "task-1").state_version
+    resume_agent = ExecutorAgent(
+        stage, (_hitl_snapshot(), _final_snapshot(_succeeded_candidate()))
+    )
+    outcome = _worker(stage, resume_agent).resume_for_approval(
+        auth=stage.approver,
+        task_id="task-1",
+        expected_state_version=resync_version,
+        approval_id=approval_id,
+        decision="approve",
+    )
+    assert outcome.status == "finished"
+    assert stage.report_adapter.calls == 1
+    assert stage.draft_adapter.calls == 0
+
+
+def test_approval_resume_context_carries_stable_action_key(stage) -> None:
+    """恢复路径构造的 AgentRunContext 必须携带审批事实与 D7 稳定 action key。"""
+    from langgraph.types import Command
+
+    from rag_kb.application.approval_service import stable_write_action_key
+
+    approval_id, state_version = _paused_stage(stage)
+    stage.approvals.approve(auth=stage.approver, approval_id=approval_id)
+
+    resume_agent = ExecutorAgent(
+        stage, (_hitl_snapshot(), _final_snapshot(_succeeded_candidate()))
+    )
+    _worker(stage, resume_agent).resume_for_approval(
+        auth=stage.approver,
+        task_id="task-1",
+        expected_state_version=state_version,
+        approval_id=approval_id,
+        decision="approve",
+    )
+
+    command = resume_agent.inputs[0]
+    assert isinstance(command, Command)
+    assert command.resume == {"decisions": [{"type": "approve"}]}
+    context = resume_agent.contexts[0]
+    assert context.approval_id == approval_id
+    assert context.plan_revision >= 1
+    assert context.plan_digest
+    assert context.evidence_digest
+    assert context.evidence_ids == ("evidence-1",)
+    approval = _approval_rows(stage)[0]
+    expected_key = stable_write_action_key(
+        task_id="task-1",
+        thread_id="task-1",
+        checkpoint_ns="",
+        checkpoint_id="checkpoint-1",
+        interrupt_id="interrupt-1",
+        tool_call_id="call_1",
+        tool_name="create_report_artifact",
+        tool_version="1.0.0",
+        arguments_hash=approval.arguments_hash,
+        evidence_digest=approval.evidence_digest,
+    )
+    assert context.idempotency_key == expected_key
+
+
+def test_settle_verifies_declared_artifacts_belonging_and_hash(stage) -> None:
+    """settle 前逐个校验产物：归属 + ready + hash 与正文一致；任一失败 fail-closed。"""
+    import hashlib
+
+    from rag_kb.infrastructure.database.models import ArtifactRow
+
+    worker = _worker(stage, ScriptedAgent(()))
+    approval_id, _state_version = _paused_stage(stage)
+    approval = _approval_rows(stage)[0]
+    assert approval.approval_id == approval_id
+    store = LocalObjectStore(stage.tmp_path / "objects")
+    content = b"report-body"
+    digest = "sha256:" + hashlib.sha256(content).hexdigest()
+    store.put_exclusive("artifacts/tenant/task/report/k.md", content)
+    approval = _approval_rows(stage)[0]
+    with UnitOfWork(stage.database) as work:
+        assert work.session is not None
+        # artifacts→tool_calls→approvals 十列复合 FK：先落与审批绑定一致的执行行。
+        work.session.add(
+            ToolCallRow(
+                tool_call_id="call_1",
+                task_id="task-1",
+                tenant_id="tenant-a",
+                approval_id=approval.approval_id,
+                plan_revision=approval.plan_revision,
+                plan_digest=approval.plan_digest,
+                evidence_digest=approval.evidence_digest,
+                tool_name=approval.tool_name,
+                tool_version=approval.tool_version,
+                arguments_hash=approval.arguments_hash,
+                principal_hash=approval.principal_hash,
+                mode="write",
+                idempotency_key="key-artifact",
+                risk_level="low",
+                status="succeeded",
+                result_ref="tool-results/task-1/call_1.json",
+                result_hash=digest,
+                result_size=len(content),
+                result_expires_at=datetime.now(UTC) + timedelta(days=7),
+                completed_at=datetime.now(UTC),
+                verified_at=datetime.now(UTC),
+                created_at=datetime.now(UTC),
+            )
+        )
+        work.session.flush()
+        work.session.add(
+            ArtifactRow(
+                artifact_id="artifact-1",
+                task_id="task-1",
+                tenant_id="tenant-a",
+                tool_call_id="call_1",
+                artifact_type="report",
+                storage_key="artifacts/tenant/task/report/k.md",
+                content_hash=digest,
+                status="ready",
+            )
+        )
+
+    summaries = worker._verified_artifacts(
+        tenant_id="tenant-a", task_id="task-1", artifact_ids=("artifact-1",)
+    )
+    assert len(summaries) == 1
+    assert summaries[0].artifact_id == "artifact-1"
+    assert summaries[0].content_hash == digest
+    assert summaries[0].status == "ready"
+
+    # hash 与正文不一致 → fail-closed，不进入最终结果。
+    with UnitOfWork(stage.database) as work:
+        assert work.session is not None
+        row = work.session.get(ArtifactRow, "artifact-1")
+        assert row is not None
+        row.content_hash = "sha256:" + "f" * 64
+    with pytest.raises(TaskWorkerError) as tampered:
+        worker._verified_artifacts(
+            tenant_id="tenant-a", task_id="task-1", artifact_ids=("artifact-1",)
+        )
+    assert tampered.value.code == "task_artifact_binding_invalid"
+
+    # 未知/不属于任务的 artifact id → fail-closed。
+    with pytest.raises(TaskWorkerError) as missing:
+        worker._verified_artifacts(
+            tenant_id="tenant-a", task_id="task-1", artifact_ids=("artifact-missing",)
+        )
+    assert missing.value.code == "task_artifact_binding_invalid"

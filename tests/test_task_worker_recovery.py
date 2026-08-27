@@ -404,3 +404,94 @@ def test_close_runs_injected_cleanup_after_tool_close_fails(setup) -> None:
     with pytest.raises(RuntimeError, match="tool_close_failed"):
         worker.close()
     assert cleaned == ["closed"]
+
+
+def test_controlled_finish_binds_result_and_repeat_sync_cannot_change_terminal(
+    setup,
+) -> None:
+    """受控任务终态按 task mode 放宽 result_kind；重复业务同步不改变终态。"""
+    from uuid import uuid4
+
+    from sqlalchemy import select
+
+    from rag_kb.infrastructure.database.task_repository import TaskLease
+    from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
+
+    database, _repository, auth, results = setup
+    controlled_repository = DatabaseTaskRepository(
+        database,
+        task_capability_name="task-agent",
+        task_capability_protocol_version="m2-fenced-v1",
+    )
+    controlled_repository.create_task(
+        auth=auth,
+        goal="受控报告",
+        task_mode=TaskMode.CONTROLLED_ACTION,
+        task_id="task-controlled",
+    )
+    with UnitOfWork(database) as work:
+        assert work.session is not None
+        task = work.session.scalar(
+            select(AgentTaskRow).where(AgentTaskRow.task_id == "task-controlled")
+        )
+        assert task is not None
+        task.status = "running"
+        task.lease_owner = "worker-a"
+        task.lease_expires_at = datetime.now(UTC) + timedelta(seconds=60)
+        task.lease_generation = 1
+    lease = TaskLease(
+        controlled_repository.get_task(auth=auth, task_id="task-controlled"),
+        "worker-a",
+        1,
+        TaskBudgets(),
+    )
+
+    result_ref, result_hash = results.save_task_result(
+        "task-controlled",
+        _controlled_result(),
+    )
+    finished = controlled_repository.finish_task(
+        lease,
+        status=TaskStatus.SUCCEEDED,
+        result_kind="controlled_action",
+        result_ref=result_ref,
+        result_hash=result_hash,
+        trace_id="trace-controlled",
+    )
+    assert finished.status is TaskStatus.SUCCEEDED
+    with database.sessions() as session:
+        row = session.get(AgentTaskRow, "task-controlled")
+        assert row is not None
+        assert row.result_kind == "controlled_action"
+        assert row.result_ref == result_ref
+        terminal_version = row.state_version
+
+    with pytest.raises(TaskRepositoryError):
+        controlled_repository.finish_task(
+            lease,
+            status=TaskStatus.SUCCEEDED,
+            result_kind="controlled_action",
+            result_ref=f"task-results/task-controlled/{uuid4().hex}.json",
+            result_hash="sha256:" + "c" * 64,
+            trace_id="trace-controlled-2",
+        )
+    with database.sessions() as session:
+        row = session.get(AgentTaskRow, "task-controlled")
+        assert row is not None
+        assert row.status == "succeeded"
+        assert row.result_ref == result_ref
+        assert row.state_version == terminal_version
+
+
+def _controlled_result():
+    from rag_kb.agent.result import TaskResult
+
+    return TaskResult(
+        task_id="task-controlled",
+        result_kind="controlled_action",
+        status="succeeded",
+        answer="报告已完成",
+        evidence_ids=("evidence-1",),
+        stop_reason="completed",
+        created_at=datetime.now(UTC),
+    )

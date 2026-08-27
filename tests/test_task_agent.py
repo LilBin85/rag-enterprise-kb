@@ -25,6 +25,7 @@ from rag_kb.agent.tools import (
     build_controlled_action_tools,
     build_research_tools,
     render_tool_message,
+    render_write_tool_message,
 )
 from rag_kb.application.approval_service import ApprovalService
 from rag_kb.application.task_result_service import TaskResultError, TaskResultService
@@ -791,3 +792,50 @@ def test_controlled_agent_hitl_interrupt_pauses_before_write_execution() -> None
     assert configurable["checkpoint_id"]
     last_call = snapshot.values["messages"][-1].tool_calls[-1]
     assert last_call["id"] == "call_1"
+
+
+def _write_result(**extra: object) -> ToolExecutionResult:
+    body = {
+        "artifact_type": "report",
+        "artifact_id": "artifact-1",
+        "content_hash": "sha256:" + "a" * 64,
+        "status": "ready",
+    }
+    body.update(extra)
+    return ToolExecutionResult(
+        tool_call_id="call_1",
+        status="succeeded",
+        result_hash="sha256:" + "b" * 64,
+        result=body,
+    )
+
+
+def test_write_tool_message_success_render_exposes_artifact_id_only() -> None:
+    """WRITE 成功渲染只允许 artifact_id/hash/status；storage_key 必须缺席（C-2）。"""
+    payload = json.loads(
+        render_write_tool_message(
+            "create_report_artifact",
+            _write_result(storage_key="artifacts/leaked/path.md"),
+        )
+    )
+    assert payload["status"] == "succeeded"
+    assert payload["tool_call_id"] == "call_1"
+    assert payload["artifact_id"] == "artifact-1"
+    assert payload["artifact_type"] == "report"
+    assert payload["content_hash"] == "sha256:" + "a" * 64
+    assert "storage_key" not in payload
+
+
+def test_write_tool_message_work_item_draft_render_exposes_artifact_id_only() -> None:
+    payload = json.loads(
+        render_write_tool_message(
+            "create_work_item_draft",
+            _write_result(
+                artifact_type="work_item_draft",
+                artifact_id="artifact-2",
+            ),
+        )
+    )
+    assert payload["artifact_id"] == "artifact-2"
+    assert payload["artifact_type"] == "work_item_draft"
+    assert "storage_key" not in payload

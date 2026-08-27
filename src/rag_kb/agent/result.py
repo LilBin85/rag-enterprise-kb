@@ -26,6 +26,8 @@ class TaskResultCandidate(_StrictModel):
     answer: str = Field(default="", max_length=20_000)
     question: str = Field(default="", max_length=2_000)
     evidence_ids: tuple[str, ...] = ()
+    # 模型声明的产物引用；服务端 settle 前逐个校验归属与一致性。
+    artifact_ids: tuple[str, ...] = ()
     refusal_code: str | None = Field(default=None, max_length=100)
     stop_reason: str = Field(default="", max_length=200)
 
@@ -41,19 +43,34 @@ class TaskResultCandidate(_StrictModel):
             not (self.refusal_code or "").strip() or self.evidence_ids
         ):
             raise ValueError("task_result_candidate_invalid")
+        if len(self.artifact_ids) > 20 or any(
+            not artifact_id.strip() or len(artifact_id) > 64
+            for artifact_id in self.artifact_ids
+        ):
+            raise ValueError("task_result_candidate_invalid")
         return self
+
+
+class ArtifactSummary(_StrictModel):
+    """任务结果中的产物摘要；只含 ID/类型/hash/status，无对象路径。"""
+
+    artifact_id: str = Field(min_length=1, max_length=64)
+    artifact_type: str = Field(min_length=1, max_length=40)
+    content_hash: str = Field(min_length=1, max_length=80)
+    status: Literal["ready"] = "ready"
 
 
 class TaskResult(_StrictModel):
     """最终可交付结果；引用只能由 Evidence Ledger 复核构造。"""
 
     task_id: str
-    result_kind: Literal["research"] = "research"
+    result_kind: Literal["research", "controlled_action"] = "research"
     status: Literal["succeeded", "refused"]
     answer: str = Field(default="", max_length=20_000)
     refusal_code: str | None = Field(default=None, max_length=100)
     evidence_ids: tuple[str, ...] = ()
     citations: tuple[Citation, ...] = ()
+    artifacts: tuple[ArtifactSummary, ...] = ()
     stop_reason: str = Field(default="", max_length=200)
     created_at: datetime
 
@@ -114,4 +131,21 @@ def build_task_result(
         citations=citations,
         stop_reason=candidate.stop_reason or "completed",
         created_at=datetime.now(UTC),
+    )
+
+
+def build_controlled_task_result(
+    candidate: TaskResultCandidate,
+    *,
+    task_id: str,
+    citations: tuple[Citation, ...],
+    artifacts: tuple[ArtifactSummary, ...] = (),
+) -> TaskResult:
+    """受控任务最终结果：result_kind 与 artifacts 摘要只由服务端构造。"""
+    result = build_task_result(candidate, task_id=task_id, citations=citations)
+    return result.model_copy(
+        update={
+            "result_kind": "controlled_action",
+            "artifacts": () if result.status == "refused" else artifacts,
+        }
     )

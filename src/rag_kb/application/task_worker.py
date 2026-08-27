@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 from dataclasses import dataclass
@@ -9,20 +10,23 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Callable, Protocol
 from uuid import uuid4
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 from sqlalchemy import select
 
 from rag_kb.agent.context import AgentRunContext
 from rag_kb.agent.result import (
     AgentResultStore,
+    ArtifactSummary,
     TaskResultCandidate,
+    build_controlled_task_result,
     build_task_result,
 )
 from rag_kb.agent.tools import CONTROLLED_WRITE_TOOL_NAMES
 from rag_kb.application.approval_service import (
     ApprovalCheckpointBinding,
     ApprovalService,
+    stable_write_action_key,
 )
 from rag_kb.application.tool_execution_service import (
     _STALE_TOOL_CODES,
@@ -36,12 +40,13 @@ from rag_kb.infrastructure.database.evidence_repository import (
     EvidenceLedgerConflict,
     EvidenceLedgerRepository,
 )
-from rag_kb.infrastructure.database.models import AgentTaskRow
+from rag_kb.infrastructure.database.models import AgentTaskRow, ArtifactRow
 from rag_kb.infrastructure.database.task_repository import (
     DatabaseTaskRepository,
     TaskLease,
     TaskRepositoryError,
 )
+from rag_kb.infrastructure.object_store.local import LocalObjectStore
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +55,18 @@ _STALE_REPOSITORY_CODES = frozenset(
 )
 _STALE_CHECKPOINT_CODE = "task_checkpoint_lease_stale"
 _HITL_ALLOWED_DECISIONS = frozenset({"approve", "reject"})
+_APPROVAL_RESUME_DECISIONS = frozenset({"approve", "reject"})
 # approval 有效期沿用现状：默认 15 分钟、应用进程时间源（开放问题 5 未拍板）。
 _APPROVAL_EXPIRY_SECONDS = 15 * 60
+# reject decision 的固定模型反馈文案；审计细节（rejection_reason）不进模型上下文。
+_REJECT_DECISION_MESSAGE = "操作未获业务审批，已由服务端拒绝。"
+
+
+def _approval_resume_payload(decision: str) -> dict[str, object]:
+    """服务端固定 resume payload；客户端与模型不能提交任何 resume 数据。"""
+    if decision == "approve":
+        return {"decisions": [{"type": "approve"}]}
+    return {"decisions": [{"type": "reject", "message": _REJECT_DECISION_MESSAGE}]}
 
 
 class TaskWorkerError(RuntimeError):
@@ -137,6 +152,7 @@ class TaskWorker:
         protocol_version: str | None = None,
         controlled_agent_for: Callable[[TaskBudgets], Any] | None = None,
         approvals: ApprovalService | None = None,
+        objects: LocalObjectStore | None = None,
         close=None,
     ) -> None:
         if (
@@ -162,6 +178,8 @@ class TaskWorker:
         # 未配置时受控任务保持 fail-closed，M1 Research 轨迹不变。
         self._controlled_agent_for = controlled_agent_for
         self._approvals = approvals
+        # 受控任务 settle 前 artifact 正文 hash 校验所需的对象存储。
+        self._objects = objects
         self._close = close
         self._accepting_tasks = True
 
@@ -224,6 +242,50 @@ class TaskWorker:
         lease = self._repository.claim_user_resume(**claim)
         return self._run_claimed(lease, resume_answer=answer.strip())
 
+    def resume_for_approval(
+        self,
+        *,
+        auth: AuthContext,
+        task_id: str,
+        expected_state_version: int,
+        approval_id: str,
+        decision: str,
+    ) -> TaskWorkerResult:
+        """审批 decision → 受控 resume：decision 先落库，服务端驱动同 thread 恢复。
+
+        客户端只提交业务 decision；Command(resume=...) 由服务端从保存的
+        checkpoint interrupt 构造，模型/客户端零 payload（M2_PLAN 不变量）。
+        """
+        if decision not in _APPROVAL_RESUME_DECISIONS:
+            raise ValueError("task_approval_decision_invalid")
+        if not self._accepting_tasks:
+            raise TaskWorkerError("task_worker_closed")
+        if self._approvals is None:
+            raise TaskWorkerError("task_mode_not_supported")
+        if decision == "approve":
+            self._approvals.approve(auth=auth, approval_id=approval_id)
+        else:
+            self._approvals.reject(auth=auth, approval_id=approval_id)
+        claim: dict[str, object] = {
+            "auth": auth,
+            "task_id": task_id,
+            "expected_state_version": expected_state_version,
+            "approval_id": approval_id,
+            "worker_id": self._worker_id,
+            "lease_seconds": self._lease_seconds,
+        }
+        if self._capability_name is not None and self._protocol_version is not None:
+            claim.update(
+                capability_name=self._capability_name,
+                protocol_version=self._protocol_version,
+            )
+        lease = self._repository.claim_approval_resume(**claim)
+        return self._run_claimed(
+            lease,
+            resume_decision=decision,
+            resume_approval_id=approval_id,
+        )
+
     def expire_stale_tool_calls(self, *, limit: int = 100) -> int:
         return self._tools.expire_stale_running(limit=limit)
 
@@ -235,9 +297,16 @@ class TaskWorker:
         lease: TaskLease,
         *,
         resume_answer: str | None = None,
+        resume_decision: str | None = None,
+        resume_approval_id: str | None = None,
     ) -> TaskWorkerResult:
         try:
-            return self._advance(lease, resume_answer=resume_answer)
+            return self._advance(
+                lease,
+                resume_answer=resume_answer,
+                resume_decision=resume_decision,
+                resume_approval_id=resume_approval_id,
+            )
         except TaskRepositoryError as exc:
             if exc.code not in _STALE_REPOSITORY_CODES:
                 logger.error(
@@ -295,7 +364,9 @@ class TaskWorker:
         self,
         lease: TaskLease,
         *,
-        resume_answer: str | None,
+        resume_answer: str | None = None,
+        resume_decision: str | None = None,
+        resume_approval_id: str | None = None,
     ) -> TaskWorkerResult:
         lease = self._repository.refresh_lease(
             lease, lease_seconds=self._lease_seconds
@@ -357,9 +428,20 @@ class TaskWorker:
         }
         snapshot = agent.get_state(config)
         invoke_agent = True
+        approval_facts: tuple[object, tuple[str, ...]] | None = None
         if resume_answer is not None:
             self._require_user_interrupt(snapshot)
             invoke_input: object = Command(resume={"answer": resume_answer})
+        elif resume_decision is not None:
+            # 服务端复核保存的 interrupt 与审批 checkpoint 绑定逐项一致；
+            # 任一不符 fail-closed，不进入 resume（恢复侧形状纪律同批次 1）。
+            approval_facts = self._require_approval_interrupt(
+                lease, snapshot, auth=auth, approval_id=resume_approval_id
+            )
+            context = self._approval_run_context(
+                lease, auth, run_id, approval_facts
+            )
+            invoke_input = Command(resume=_approval_resume_payload(resume_decision))
         elif snapshot.interrupts:
             return self._route_interrupt(lease, snapshot, run_id)
         elif not snapshot.values:
@@ -373,6 +455,21 @@ class TaskWorker:
             invoke_agent = False
 
         if invoke_agent:
+            if (
+                resume_decision is None
+                and resume_answer is None
+                and lease.state.task_mode is TaskMode.CONTROLLED_ACTION
+                and self._approvals is not None
+                and snapshot.next
+            ):
+                # 崩溃重放（resume 已消费、interrupt_ref 已清）：从 checkpoint
+                # 待执行 tool call 反查 approved 审批，重建服务端 context 与
+                # 同一 D7 key；查不到则保持基础 context（最终门 fail-closed）。
+                replay_facts = self._replay_approval_facts(lease, auth, snapshot)
+                if replay_facts is not None:
+                    context = self._approval_run_context(
+                        lease, auth, run_id, replay_facts
+                    )
             with _TaskLeaseHeartbeat(
                 lambda: self._repository.refresh_lease(
                     lease, lease_seconds=self._lease_seconds
@@ -411,6 +508,155 @@ class TaskWorker:
         payload = getattr(interrupts[0], "value", None)
         if not isinstance(payload, dict) or payload.get("kind") != "user_clarification":
             raise TaskWorkerError("task_resume_kind_invalid")
+
+    def _require_approval_interrupt(
+        self,
+        lease: TaskLease,
+        snapshot,
+        *,
+        auth: AuthContext,
+        approval_id: str | None,
+    ) -> tuple[object, tuple[str, ...]]:
+        """恢复前复核：保存的 interrupt 形状与审批 checkpoint 绑定必须逐项一致。"""
+        if self._approvals is None or not approval_id:
+            raise TaskWorkerError("task_mode_not_supported")
+        facts, evidence_ids = self._approvals.load_action_facts(
+            auth=auth, approval_id=approval_id
+        )
+        interrupts = tuple(getattr(snapshot, "interrupts", ()) or ())
+        if len(interrupts) != 1:
+            raise TaskWorkerError("task_interrupt_shape_invalid")
+        payload = getattr(interrupts[0], "value", None)
+        if not (
+            isinstance(payload, dict)
+            and set(payload) == {"action_requests", "review_configs"}
+        ):
+            raise TaskWorkerError("task_interrupt_kind_invalid")
+        action_requests = payload.get("action_requests")
+        if (
+            not isinstance(action_requests, list)
+            or len(action_requests) != 1
+            or not isinstance(action_requests[0], dict)
+        ):
+            raise TaskWorkerError("task_interrupt_shape_invalid")
+        action = action_requests[0]
+        tool_name = action.get("name")
+        arguments = action.get("args")
+        if tool_name != facts.tool_name or not isinstance(arguments, dict):
+            raise TaskWorkerError("task_approval_action_invalid")
+        configurable = dict(
+            (getattr(snapshot, "config", None) or {}).get("configurable") or {}
+        )
+        if (
+            configurable.get("thread_id") != lease.state.task_id
+            or configurable.get("thread_id") != facts.thread_id
+            or configurable.get("checkpoint_ns") != facts.checkpoint_ns
+            or configurable.get("checkpoint_id") != facts.checkpoint_id
+            or getattr(interrupts[0], "id", None) != facts.interrupt_id
+        ):
+            raise TaskWorkerError("task_checkpoint_binding_invalid")
+        tool_call_id = self._resolve_action_tool_call_id(
+            snapshot, tool_name=facts.tool_name, arguments=arguments
+        )
+        if tool_call_id != facts.tool_call_id:
+            raise TaskWorkerError("task_checkpoint_binding_invalid")
+        return (facts, evidence_ids)
+
+    def _replay_approval_facts(
+        self,
+        lease: TaskLease,
+        auth: AuthContext,
+        snapshot,
+    ) -> tuple[object, tuple[str, ...]] | None:
+        """从 checkpoint 待执行 WRITE tool call 反查 approved 审批事实。
+
+        与 _pause_for_approval 同一形状纪律：恰好一个 WRITE tool call、
+        checkpoint 坐标完整；任一不符返回 None（不猜测）。
+        """
+        values = getattr(snapshot, "values", None)
+        messages = values.get("messages") if isinstance(values, dict) else None
+        if not isinstance(messages, (list, tuple)):
+            return None
+        pending: dict[str, object] | None = None
+        for message in reversed(messages):
+            if not isinstance(message, AIMessage):
+                continue
+            calls = [
+                call
+                for call in getattr(message, "tool_calls", ()) or ()
+                if isinstance(call, dict)
+                and call.get("name") in CONTROLLED_WRITE_TOOL_NAMES
+            ]
+            if len(calls) > 1:
+                return None
+            if len(calls) == 1:
+                pending = calls[0]
+                break
+        if pending is None:
+            return None
+        configurable = dict(
+            (getattr(snapshot, "config", None) or {}).get("configurable") or {}
+        )
+        thread_id = configurable.get("thread_id")
+        checkpoint_ns = configurable.get("checkpoint_ns")
+        checkpoint_id = configurable.get("checkpoint_id")
+        tool_call_id = pending.get("id")
+        if (
+            thread_id != lease.state.task_id
+            or not isinstance(checkpoint_ns, str)
+            or not isinstance(checkpoint_id, str)
+            or not checkpoint_id.strip()
+            or not isinstance(tool_call_id, str)
+            or not tool_call_id.strip()
+        ):
+            return None
+        assert self._approvals is not None
+        return self._approvals.load_approved_for_replay(
+            auth=auth,
+            task_id=lease.state.task_id,
+            thread_id=thread_id,
+            checkpoint_ns=checkpoint_ns,
+            checkpoint_id=checkpoint_id,
+            tool_call_id=tool_call_id,
+        )
+
+    def _approval_run_context(
+        self,
+        lease: TaskLease,
+        auth: AuthContext,
+        run_id: str,
+        approval_facts: tuple[object, tuple[str, ...]],
+    ) -> AgentRunContext:
+        """受控 resume 的服务端 context：审批事实 + D7 稳定 action key。"""
+        facts, evidence_ids = approval_facts
+        idempotency_key = stable_write_action_key(
+            task_id=lease.state.task_id,
+            thread_id=facts.thread_id,
+            checkpoint_ns=facts.checkpoint_ns,
+            checkpoint_id=facts.checkpoint_id,
+            interrupt_id=facts.interrupt_id,
+            tool_call_id=facts.tool_call_id,
+            tool_name=facts.tool_name,
+            tool_version=facts.tool_version,
+            arguments_hash=facts.canonical_arguments_hash,
+            evidence_digest=facts.evidence_hash,
+        )
+        return AgentRunContext(
+            task_id=lease.state.task_id,
+            tenant_id=auth.tenant_id,
+            user_id=auth.user_id,
+            task_mode=lease.state.task_mode,
+            worker_id=self._worker_id,
+            lease_generation=lease.lease_generation,
+            run_id=run_id,
+            auth=auth,
+            approval_id=facts.approval_id,
+            plan_revision=facts.plan_revision,
+            plan_digest=facts.plan_digest,
+            evidence_digest=facts.evidence_hash,
+            evidence_ids=evidence_ids,
+            idempotency_key=idempotency_key,
+        )
 
     def _pause_for_interrupt(self, lease: TaskLease, snapshot, run_id: str) -> TaskWorkerResult:
         self._require_user_interrupt(snapshot)
@@ -630,9 +876,24 @@ class TaskWorker:
                 except EvidenceLedgerConflict as exc:
                     raise TaskWorkerError("task_evidence_revalidation_failed") from exc
 
-        result = build_task_result(
-            candidate, task_id=lease.state.task_id, citations=citations
-        )
+        if lease.state.task_mode is TaskMode.CONTROLLED_ACTION:
+            artifacts = ()
+            if candidate.artifact_ids:
+                artifacts = self._verified_artifacts(
+                    tenant_id=auth.tenant_id,
+                    task_id=lease.state.task_id,
+                    artifact_ids=candidate.artifact_ids,
+                )
+            result = build_controlled_task_result(
+                candidate,
+                task_id=lease.state.task_id,
+                citations=citations,
+                artifacts=artifacts,
+            )
+        else:
+            result = build_task_result(
+                candidate, task_id=lease.state.task_id, citations=citations
+            )
         result_ref, result_hash = self._results.save_task_result(lease.state.task_id, result)
         status = (
             TaskStatus.SUCCEEDED
@@ -659,6 +920,53 @@ class TaskWorker:
                 error_code="task_deadline_expired",
             )
         return TaskWorkerResult(status="finished", task_id=finished.task_id)
+
+    def _verified_artifacts(
+        self,
+        *,
+        tenant_id: str,
+        task_id: str,
+        artifact_ids: tuple[str, ...],
+    ) -> tuple[ArtifactSummary, ...]:
+        """settle 前逐个校验产物归属与一致性；任一失败 fail-closed。
+
+        校验项：tenant/task 归属、status=ready、对象正文 sha256 与
+        content_hash 一致。候选声明之外的产物不会被注入最终结果。
+        """
+        if self._objects is None:
+            raise TaskWorkerError("task_artifact_binding_invalid")
+        with self._database.sessions() as session:
+            rows = {
+                row.artifact_id: row
+                for row in session.scalars(
+                    select(ArtifactRow).where(
+                        ArtifactRow.tenant_id == tenant_id,
+                        ArtifactRow.task_id == task_id,
+                        ArtifactRow.artifact_id.in_(artifact_ids),
+                    )
+                )
+            }
+        summaries: list[ArtifactSummary] = []
+        for artifact_id in artifact_ids:
+            row = rows.get(artifact_id)
+            if row is None or row.status != "ready":
+                raise TaskWorkerError("task_artifact_binding_invalid")
+            try:
+                content = self._objects.read(row.storage_key)
+            except OSError as exc:
+                raise TaskWorkerError("task_artifact_binding_invalid") from exc
+            digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
+            if digest != row.content_hash:
+                raise TaskWorkerError("task_artifact_binding_invalid")
+            summaries.append(
+                ArtifactSummary(
+                    artifact_id=row.artifact_id,
+                    artifact_type=row.artifact_type,
+                    content_hash=row.content_hash,
+                    status="ready",
+                )
+            )
+        return tuple(summaries)
 
     def _delete_unbound_task_result(self, result_ref: str, task_id: str) -> None:
         if self._task_result_is_bound(result_ref, task_id):

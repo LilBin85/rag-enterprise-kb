@@ -72,6 +72,42 @@ def checkpoint_binding_fingerprint(
     )
 
 
+def stable_write_action_key(
+    *,
+    task_id: str,
+    thread_id: str,
+    checkpoint_ns: str,
+    checkpoint_id: str,
+    interrupt_id: str,
+    tool_call_id: str,
+    tool_name: str,
+    tool_version: str,
+    arguments_hash: str,
+    evidence_digest: str,
+) -> str:
+    """D7 稳定 idempotency key：全部输入是不可变 checkpoint action 事实。
+
+    刻意排除 approval ID、run ID、worker ID 与 lease generation——这些标识
+    在重复 decision、Worker 更替或租约续代时都会变化，掺入即破坏
+    “重复 resume 命中同一 tool_calls 行”的 exactly-once 收敛。
+    """
+    return canonical_fingerprint(
+        "agent_write_action",
+        {
+            "task_id": task_id,
+            "thread_id": thread_id,
+            "checkpoint_ns": checkpoint_ns,
+            "checkpoint_id": checkpoint_id,
+            "interrupt_id": interrupt_id,
+            "tool_call_id": tool_call_id,
+            "tool_name": tool_name,
+            "tool_version": tool_version,
+            "arguments_hash": arguments_hash,
+            "evidence_digest": evidence_digest,
+        },
+    )
+
+
 @dataclass(frozen=True)
 class ApprovalCheckpointBinding:
     """审批与 LangGraph checkpoint action 的服务端绑定事实（批次 1 新增）。
@@ -500,8 +536,14 @@ class ApprovalService:
                 expires_at = expires_at.replace(tzinfo=UTC)
             if expires_at <= now:
                 raise ApprovalServiceError("approval_expired")
+            if row.status in ("approved", "executed"):
+                # 幂等 decision：相同 decision 返回当前状态，不产生第二次副作用；
+                # 重复 resume 复用同一 approval 与 action key（D6 窗口表第 2 行）。
+                return self._binding(row)
             if row.status == "expired":
                 raise ApprovalServiceError("approval_expired")
+            if row.status == "rejected":
+                raise ApprovalServiceError("approval_decision_conflict")
             if row.status != "pending":
                 raise ApprovalServiceError("approval_not_pending")
             plan = work.session.scalar(
@@ -528,7 +570,12 @@ class ApprovalService:
                 if principal_fingerprint(current_auth) != row.principal_hash:
                     raise TaskExecutionContextError("approval_principal_changed")
             except TaskExecutionContextError as exc:
+                # 审批时发现绑定失效：审批者是触发拒绝的真实主体，
+                # 审计三元组必须完整（checkpoint 绑定行受 CHECK 约束）。
                 row.status = "rejected"
+                row.rejected_by = auth.user_id
+                row.rejected_at = now
+                row.rejection_reason = f"auto:{exc.code}"[:200]
                 invalid_code = exc.code
             if invalid_code is None:
                 row.status = "approved"
@@ -539,6 +586,161 @@ class ApprovalService:
         if invalid_code is not None:
             raise ApprovalServiceError(invalid_code)
         return binding
+
+    def reject(
+        self,
+        *,
+        auth: AuthContext,
+        approval_id: str,
+        reason: str | None = None,
+    ) -> ApprovalBinding:
+        """业务拒绝：写完整 reject 审计三元组；相同 decision 幂等，相反冲突。"""
+        if not auth.has_permission(Permission.TASK_APPROVE):
+            raise ApprovalServiceError("approver_permission_denied")
+        self.expire_due(tenant_id=auth.tenant_id)
+        now = self._now()
+        with UnitOfWork(self._database) as work:
+            assert work.session is not None
+            row = work.session.scalar(
+                select(ApprovalRow)
+                .where(
+                    ApprovalRow.tenant_id == auth.tenant_id,
+                    ApprovalRow.approval_id == approval_id,
+                )
+                .with_for_update()
+            )
+            if row is None:
+                raise ApprovalServiceError("approval_not_found")
+            expires_at = row.expires_at
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=UTC)
+            if expires_at <= now or row.status == "expired":
+                raise ApprovalServiceError("approval_expired")
+            if row.status == "rejected":
+                return self._binding(row)
+            if row.status in ("approved", "executed"):
+                raise ApprovalServiceError("approval_decision_conflict")
+            if row.status != "pending":
+                raise ApprovalServiceError("approval_not_pending")
+            row.status = "rejected"
+            row.rejected_by = auth.user_id
+            row.rejected_at = now
+            reason_text = (reason or "rejected_by_approver").strip()[:200]
+            row.rejection_reason = reason_text or "rejected_by_approver"
+            work.session.flush()
+            return self._binding(row)
+
+    def get(self, *, tenant_id: str, approval_id: str) -> ApprovalBinding:
+        with self._database.sessions() as session:
+            row = session.scalar(
+                select(ApprovalRow).where(
+                    ApprovalRow.tenant_id == tenant_id,
+                    ApprovalRow.approval_id == approval_id,
+                )
+            )
+            if row is None:
+                raise ApprovalServiceError("approval_not_found")
+            return self._binding(row)
+
+    def list(
+        self,
+        *,
+        tenant_id: str,
+        status: str | None = "pending",
+        task_id: str | None = None,
+    ) -> tuple[ApprovalBinding, ...]:
+        statement = select(ApprovalRow).where(
+            ApprovalRow.tenant_id == tenant_id,
+            ApprovalRow.status == status,
+        )
+        if task_id is not None:
+            statement = statement.where(ApprovalRow.task_id == task_id)
+        statement = statement.order_by(ApprovalRow.created_at, ApprovalRow.approval_id)
+        with self._database.sessions() as session:
+            return tuple(
+                self._binding(row) for row in session.scalars(statement)
+            )
+
+    def load_action_facts(
+        self, *, auth: AuthContext, approval_id: str
+    ) -> tuple[ApprovalBinding, tuple[str, ...]]:
+        """恢复路径读取审批事实：binding + 服务端 plan 派生的 evidence_ids。"""
+        with self._database.sessions() as session:
+            row = session.scalar(
+                select(ApprovalRow).where(
+                    ApprovalRow.tenant_id == auth.tenant_id,
+                    ApprovalRow.approval_id == approval_id,
+                )
+            )
+            if row is None:
+                raise ApprovalServiceError("approval_not_found")
+            plan = session.scalar(
+                select(PlanRevisionRow).where(
+                    PlanRevisionRow.tenant_id == row.tenant_id,
+                    PlanRevisionRow.task_id == row.task_id,
+                    PlanRevisionRow.revision == row.plan_revision,
+                    PlanRevisionRow.plan_digest == row.plan_digest,
+                    PlanRevisionRow.evidence_digest == row.evidence_digest,
+                )
+            )
+            if plan is None:
+                raise ApprovalServiceError("approval_plan_binding_invalid")
+            raw_ids = plan.plan.get("evidence_ids") if isinstance(plan.plan, dict) else None
+            evidence_ids = tuple(
+                str(evidence_id) for evidence_id in raw_ids or () if str(evidence_id)
+            )
+            return self._binding(row), evidence_ids
+
+    def load_approved_for_replay(
+        self,
+        *,
+        auth: AuthContext,
+        task_id: str,
+        thread_id: str,
+        checkpoint_ns: str,
+        checkpoint_id: str,
+        tool_call_id: str,
+    ) -> tuple[ApprovalBinding, tuple[str, ...]] | None:
+        """崩溃重放路径：按 checkpoint 绑定反查已批准的审批事实。
+
+        resume 已消费、业务表 interrupt_ref 已清空时，重放的 tool call
+        仍必须携带同一审批事实与 D7 稳定 key。checkpoint_id 不参与匹配：
+        LangGraph 的 resume 写入会产生 checkpoint 副本导致 ID 漂移，而
+        tool_call_id 是全局唯一的 LangGraph action ID，绑定强度足够。
+        查不到返回 None（最终门依 approval_required fail-closed，不猜测）。
+        """
+        with self._database.sessions() as session:
+            row = session.scalar(
+                select(ApprovalRow)
+                .where(
+                    ApprovalRow.tenant_id == auth.tenant_id,
+                    ApprovalRow.task_id == task_id,
+                    ApprovalRow.status == "approved",
+                    ApprovalRow.thread_id == thread_id,
+                    ApprovalRow.checkpoint_ns == checkpoint_ns,
+                    ApprovalRow.tool_call_id == tool_call_id,
+                )
+                .order_by(ApprovalRow.created_at.desc(), ApprovalRow.approval_id.desc())
+                .limit(1)
+            )
+            if row is None:
+                return None
+            plan = session.scalar(
+                select(PlanRevisionRow).where(
+                    PlanRevisionRow.tenant_id == row.tenant_id,
+                    PlanRevisionRow.task_id == row.task_id,
+                    PlanRevisionRow.revision == row.plan_revision,
+                    PlanRevisionRow.plan_digest == row.plan_digest,
+                    PlanRevisionRow.evidence_digest == row.evidence_digest,
+                )
+            )
+            if plan is None:
+                return None
+            raw_ids = plan.plan.get("evidence_ids") if isinstance(plan.plan, dict) else None
+            evidence_ids = tuple(
+                str(evidence_id) for evidence_id in raw_ids or () if str(evidence_id)
+            )
+            return self._binding(row), evidence_ids
 
     def validate_in_session(
         self,

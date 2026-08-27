@@ -305,6 +305,7 @@ def build_task_worker(
         capability_name=settings.task_agent_capability_name,
         protocol_version=settings.task_agent_protocol_version,
         approvals=approvals,
+        objects=objects,
         close=close,
     )
     if publish_capability:

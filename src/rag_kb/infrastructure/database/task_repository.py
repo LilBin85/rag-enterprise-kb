@@ -478,7 +478,12 @@ class DatabaseTaskRepository:
                     AgentTaskRow.status.in_(
                         (TaskStatus.PLANNING.value, TaskStatus.RUNNING.value)
                     ),
-                    AgentTaskRow.task_mode == TaskMode.RESEARCH.value,
+                    # 协议门（required_capability/protocol 精确匹配）已隔离 M1/M2
+                    # Worker；M2 Worker 因此同时领取 Research 与受控任务，
+                    # 后者是 D6 崩溃窗口 3/5 的唯一重领取入口。
+                    AgentTaskRow.task_mode.in_(
+                        (TaskMode.RESEARCH.value, TaskMode.CONTROLLED_ACTION.value)
+                    ),
                     AgentTaskRow.required_capability_name == capability_name,
                     AgentTaskRow.required_protocol_version == protocol_version,
                     AgentTaskRow.cancelled.is_(False),
@@ -614,8 +619,115 @@ class DatabaseTaskRepository:
                 budgets=TaskBudgets.model_validate(row.budgets),
             )
 
+    def claim_approval_resume(
+        self,
+        *,
+        auth: AuthContext,
+        task_id: str,
+        expected_state_version: int,
+        approval_id: str,
+        worker_id: str,
+        lease_seconds: int,
+        capability_name: str | None = None,
+        protocol_version: str | None = None,
+    ) -> TaskLease:
+        """审批 decision 提交后，由服务端领取同一受控任务并授予恢复租约。
+
+        与 claim_user_resume 同构：领取即 generation+1 + state_version+1，
+        使 FencedPostgresSaver 的 fence 通过；resume payload 不经过调用方。
+        """
+        if not worker_id or lease_seconds <= 0 or not approval_id:
+            raise ValueError("invalid_task_claim")
+        capability_name, protocol_version, require_capability = self._claim_protocol(
+            capability_name, protocol_version
+        )
+        with UnitOfWork(self._database) as work:
+            assert work.session is not None
+            row = work.session.scalar(
+                select(AgentTaskRow)
+                .where(
+                    AgentTaskRow.tenant_id == auth.tenant_id,
+                    AgentTaskRow.task_id == task_id,
+                )
+                .with_for_update()
+            )
+            if row is None:
+                raise TaskRepositoryError("task_not_found")
+            if row.state_version != expected_state_version:
+                raise TaskRepositoryError("task_state_conflict")
+            if (
+                row.required_capability_name != capability_name
+                or row.required_protocol_version != protocol_version
+            ):
+                raise TaskRepositoryError("task_protocol_mismatch")
+            if row.status != TaskStatus.WAITING_FOR_APPROVAL.value:
+                raise TaskRepositoryError("task_not_waiting_for_approval")
+            if (
+                row.interrupt_kind != "tool_approval"
+                or row.interrupt_ref != approval_id
+            ):
+                raise TaskRepositoryError("task_resume_kind_invalid")
+            if require_capability and not self._has_active_worker_capability_in_session(
+                work.session,
+                capability_name=capability_name,
+                protocol_version=protocol_version,
+                worker_id=worker_id,
+                for_update=True,
+            ):
+                raise TaskRepositoryError("task_agent_unavailable")
+            now = self._lease_now(work.session)
+            deadline = _aware(row.deadline)
+            if deadline is not None and deadline <= now:
+                raise TaskRepositoryError("task_deadline_expired")
+            resumed = work.session.execute(
+                update(AgentTaskRow)
+                .where(
+                    AgentTaskRow.task_id == row.task_id,
+                    AgentTaskRow.tenant_id == auth.tenant_id,
+                    AgentTaskRow.state_version == expected_state_version,
+                    AgentTaskRow.status == TaskStatus.WAITING_FOR_APPROVAL.value,
+                    AgentTaskRow.interrupt_kind == "tool_approval",
+                    AgentTaskRow.interrupt_ref == approval_id,
+                    or_(
+                        AgentTaskRow.deadline.is_(None),
+                        AgentTaskRow.deadline
+                        > self._lease_clock_expression(work.session),
+                    ),
+                )
+                .values(
+                    status=TaskStatus.RUNNING.value,
+                    interrupt_kind=None,
+                    interrupt_summary=None,
+                    interrupt_ref=None,
+                    lease_owner=worker_id,
+                    lease_expires_at=now + timedelta(seconds=lease_seconds),
+                    lease_generation=row.lease_generation + 1,
+                    state_version=row.state_version + 1,
+                    updated_at=now,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if resumed.rowcount != 1:
+                if deadline is not None and deadline <= self._lease_now(work.session):
+                    raise TaskRepositoryError("task_deadline_expired")
+                raise TaskRepositoryError("task_state_conflict")
+            work.session.refresh(row)
+            self._append_event(
+                work.session,
+                row,
+                event_type="task_approval_resume_started",
+                trace_id=auth.request_id,
+                run_id=auth.request_id,
+            )
+            return TaskLease(
+                state=_state_from_row(row),
+                worker_id=worker_id,
+                lease_generation=row.lease_generation,
+                budgets=TaskBudgets.model_validate(row.budgets),
+            )
+
     def expire_waiting_tasks(self, *, limit: int = 100) -> int:
-        """把超时的澄清等待原子收敛为失败，后续交给正文保留策略。"""
+        """把超时的澄清/审批等待原子收敛为失败，后续交给正文保留策略。"""
         if limit <= 0:
             raise ValueError("invalid_waiting_reaper_limit")
         with UnitOfWork(self._database) as work:
@@ -635,13 +747,31 @@ class DatabaseTaskRepository:
                     .with_for_update(skip_locked=True)
                 )
             )
+            # 受控任务审批等待超时：审批过期后任务不得永久滞留
+            # waiting_for_approval；controlled 终态正文保留由批次 3 交付，
+            # 此处不设 content_expires_at。
+            rows += tuple(
+                work.session.scalars(
+                    select(AgentTaskRow)
+                    .where(
+                        AgentTaskRow.task_mode == TaskMode.CONTROLLED_ACTION.value,
+                        AgentTaskRow.status == TaskStatus.WAITING_FOR_APPROVAL.value,
+                        AgentTaskRow.deadline.is_not(None),
+                        AgentTaskRow.deadline <= clock,
+                    )
+                    .order_by(AgentTaskRow.deadline, AgentTaskRow.task_id)
+                    .limit(limit)
+                    .with_for_update(skip_locked=True)
+                )
+            )
             now = self._lease_now(work.session)
             for row in rows:
                 row.status = TaskStatus.FAILED.value
                 row.last_error_code = "task_deadline_expired"
-                row.content_expires_at = now + timedelta(
-                    days=self._task_result_retention_days()
-                )
+                if row.task_mode == TaskMode.RESEARCH.value:
+                    row.content_expires_at = now + timedelta(
+                        days=self._task_result_retention_days()
+                    )
                 row.interrupt_kind = None
                 row.interrupt_summary = None
                 row.interrupt_ref = None
@@ -840,9 +970,9 @@ class DatabaseTaskRepository:
         if status not in _TERMINAL_STATUSES:
             raise ValueError("task_status_not_terminal")
         is_result_submission = status in {TaskStatus.SUCCEEDED, TaskStatus.REFUSED}
-        if is_result_submission and (
-            result_kind != "research" or result_ref is None or result_hash is None
-        ):
+        # result_kind 的精确值按 task mode 在行锁内校验（受控任务为
+        # controlled_action）；此处只做通用非空检查。
+        if is_result_submission and (result_ref is None or result_hash is None):
             raise ValueError("task_result_binding_required")
         with UnitOfWork(self._database) as work:
             assert work.session is not None
@@ -855,6 +985,14 @@ class DatabaseTaskRepository:
                 raise TaskRepositoryError("task_not_found")
             now = self._lease_now(work.session)
             self._verify_lease(row, lease, now=now)
+            if is_result_submission:
+                expected_kind = (
+                    "controlled_action"
+                    if row.task_mode == TaskMode.CONTROLLED_ACTION.value
+                    else "research"
+                )
+                if result_kind != expected_kind:
+                    raise ValueError("task_result_binding_required")
             if is_result_submission and (
                 row.cancelled or row.status not in {"planning", "running"}
             ):

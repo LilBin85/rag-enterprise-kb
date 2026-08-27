@@ -65,22 +65,18 @@ class LocalArtifactToolAdapter:
             self._mark(artifact_id, "unknown")
             raise RuntimeError("artifact_readback_mismatch")
         self._mark(artifact_id, "ready")
+        # 模型可见面只有 artifact_id/hash/status；对象路径留在服务端内部。
         return {
             "artifact_type": self._artifact_type,
-            "storage_key": storage_key,
+            "artifact_id": artifact_id,
             "content_hash": content_hash,
             "status": "ready",
         }
 
     def verify(self, result: dict[str, object], context: ToolExecutionContext) -> bool:
-        storage_key = result.get("storage_key")
+        artifact_id = result.get("artifact_id")
         content_hash = result.get("content_hash")
-        if not isinstance(storage_key, str) or not isinstance(content_hash, str):
-            return False
-        try:
-            if _sha256(self._store.read(storage_key)) != content_hash:
-                return False
-        except (OSError, ValueError):
+        if not isinstance(artifact_id, str) or not isinstance(content_hash, str):
             return False
         with self._database.sessions() as session:
             row = session.scalar(
@@ -88,12 +84,17 @@ class LocalArtifactToolAdapter:
                     ArtifactRow.tenant_id == context.auth.tenant_id,
                     ArtifactRow.task_id == context.task_id,
                     ArtifactRow.tool_call_id == context.tool_call_id,
-                    ArtifactRow.storage_key == storage_key,
+                    ArtifactRow.artifact_id == artifact_id,
                     ArtifactRow.content_hash == content_hash,
                     ArtifactRow.status == "ready",
                 )
             )
-            return row is not None
+            if row is None or not isinstance(row.storage_key, str):
+                return False
+        try:
+            return _sha256(self._store.read(row.storage_key)) == content_hash
+        except (OSError, ValueError):
+            return False
 
     def _mark(self, artifact_id: str, status: str) -> None:
         with UnitOfWork(self._database) as work:

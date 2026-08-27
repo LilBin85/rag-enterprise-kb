@@ -48,7 +48,7 @@ from rag_kb.infrastructure.tools.artifacts import LocalArtifactToolAdapter
 
 class _VerifiedAdapter:
     def execute(self, arguments, context):
-        return {"artifact_type": "report", "storage_key": "server/generated", "content_hash": "sha256:" + "a" * 64, "status": "ready"}
+        return {"artifact_type": "report", "artifact_id": "artifact-" + context.tool_call_id[:12], "content_hash": "sha256:" + "a" * 64, "status": "ready"}
 
     def verify(self, result, context):
         return True
@@ -567,8 +567,10 @@ def test_local_artifact_is_server_keyed_exclusive_and_readback_verified(stage5) 
     executor = _executor(database, ToolRegistry(adapters={"create_report_artifact": adapter}), service)
     result = executor.execute(_request(requester, binding.approval_id, lease))
     assert result.status == "succeeded" and result.result is not None, result
-    assert str(result.result["storage_key"]).startswith("artifacts/")
+    # 模型可见面只含 artifact_id/hash/status；storage_key 不得出现。
+    assert isinstance(result.result["artifact_id"], str) and result.result["artifact_id"]
     assert result.result["content_hash"].startswith("sha256:")
+    assert "storage_key" not in result.result
     with pytest.raises(Exception, match="tool_arguments_invalid"):
         executor.execute(_request(requester, binding.approval_id, lease, {**_arguments(), "path": "C:/secret"}, "key-2"))
 
@@ -1096,3 +1098,182 @@ def test_valid_checkpoint_bound_approval_executes_exactly_once(
 
     assert result.status == "succeeded"
     assert adapter.calls == 1
+
+
+class _ArtifactIdAdapter:
+    """批次 2 目标形态 adapter：只返回 artifact_id，不暴露 storage_key。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def execute(self, _arguments, _context):
+        self.calls += 1
+        return {
+            "artifact_type": "report",
+            "artifact_id": "artifact-1",
+            "content_hash": "sha256:" + "a" * 64,
+            "status": "ready",
+        }
+
+    def verify(self, _result, _context) -> bool:
+        return True
+
+
+def test_stale_checkpoint_bound_approval_auto_rejection_writes_audit(stage5) -> None:
+    """C-1：checkpoint 绑定行的自动拒绝必须补齐 rejected_by/at/reason 审计字段。
+
+    服务端固定 actor + 稳定 code（M2_PLAN D3）；现有实现缺审计字段，
+    对绑定行触发 ck_approvals_rejected_audit_complete IntegrityError。
+    """
+    database, requester, approver, _, lease = stage5
+    service = ApprovalService(database)
+    plan_digest, evidence_digest = _binding(database)
+    pending = service.request(
+        auth=requester,
+        task_id="task-1",
+        plan_revision=1,
+        plan_digest=plan_digest,
+        evidence_digest=evidence_digest,
+        evidence_ids=("evidence-1",),
+        tool_name="create_report_artifact",
+        tool_version=None,
+        arguments=_arguments(),
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        checkpoint_binding=_checkpoint_binding(tool_call_id="call-audit"),
+    )
+    service.approve(auth=approver, approval_id=pending.approval_id)
+    with database.sessions.begin() as session:
+        grant = session.scalar(select(ACLGrantRow).where(ACLGrantRow.grant_id == "grant-1"))
+        assert grant is not None
+        session.delete(grant)
+    adapter = _CountingAdapter()
+    executor = _executor(database, ToolRegistry(adapters={"create_report_artifact": adapter}), service)
+
+    with pytest.raises(ToolExecutionError, match="evidence_authorization_stale"):
+        executor.execute(_request(requester, pending.approval_id, lease))
+    assert adapter.calls == 0
+    with database.sessions() as session:
+        approval = session.get(ApprovalRow, pending.approval_id)
+        assert approval is not None
+        assert approval.status == "rejected"
+        assert approval.rejected_by == "system:approval-reaper"
+        assert approval.rejected_at is not None
+        assert approval.rejection_reason
+        assert approval.rejection_reason.startswith("auto:")
+
+
+def test_approve_time_binding_invalidation_writes_reject_audit(stage5) -> None:
+    """approve 时发现绑定失效：同样必须写完整 reject 审计三元组（C-1 姊妹缺口）。
+
+    checkpoint 绑定行受 ck_approvals_rejected_audit_complete 约束；
+    审批者是触发拒绝的真实主体，rejected_by 取审批者。
+    """
+    database, requester, approver, _, _lease = stage5
+    service = ApprovalService(database)
+    plan_digest, evidence_digest = _binding(database)
+    pending = service.request(
+        auth=requester,
+        task_id="task-1",
+        plan_revision=1,
+        plan_digest=plan_digest,
+        evidence_digest=evidence_digest,
+        evidence_ids=("evidence-1",),
+        tool_name="create_report_artifact",
+        tool_version=None,
+        arguments=_arguments(),
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        checkpoint_binding=_checkpoint_binding(tool_call_id="call-approve-audit"),
+    )
+    with database.sessions.begin() as session:
+        grant = session.scalar(select(ACLGrantRow).where(ACLGrantRow.grant_id == "grant-1"))
+        assert grant is not None
+        session.delete(grant)
+
+    with pytest.raises(ApprovalServiceError, match="evidence_authorization_stale"):
+        service.approve(auth=approver, approval_id=pending.approval_id)
+    with database.sessions() as session:
+        approval = session.get(ApprovalRow, pending.approval_id)
+        assert approval is not None
+        assert approval.status == "rejected"
+        assert approval.rejected_by == "approver"
+        assert approval.rejected_at is not None
+        assert approval.rejection_reason
+        assert approval.rejection_reason.startswith("auto:")
+
+
+def test_repeat_same_decision_is_idempotent_and_opposite_decision_conflicts(    stage5,
+) -> None:
+    """相同 decision 幂等返回当前状态；相反 decision 返回稳定冲突错误。"""
+    database, requester, approver, _, _lease = stage5
+    service = ApprovalService(database)
+    plan_digest, evidence_digest = _binding(database)
+    common = dict(
+        auth=requester,
+        task_id="task-1",
+        plan_revision=1,
+        plan_digest=plan_digest,
+        evidence_digest=evidence_digest,
+        evidence_ids=("evidence-1",),
+        tool_name="create_report_artifact",
+        tool_version=None,
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+    first = service.request(**common, arguments=_arguments("first"))
+    approved = service.approve(auth=approver, approval_id=first.approval_id)
+    assert approved.status == "approved"
+
+    # 相同 decision 重复提交：幂等返回当前状态，不报错。
+    repeat = service.approve(auth=approver, approval_id=first.approval_id)
+    assert repeat.status == "approved"
+    assert repeat.approval_id == first.approval_id
+
+    second = service.request(**common, arguments=_arguments("second"))
+    rejected = service.reject(auth=approver, approval_id=second.approval_id)
+    assert rejected.status == "rejected"
+    repeat_reject = service.reject(auth=approver, approval_id=second.approval_id)
+    assert repeat_reject.status == "rejected"
+
+    with database.sessions() as session:
+        row = session.get(ApprovalRow, second.approval_id)
+        assert row is not None
+        assert row.rejected_by == "approver"
+        assert row.rejected_at is not None
+        assert row.rejection_reason
+
+    # 相反 decision：稳定冲突错误，不改变终态。
+    with pytest.raises(ApprovalServiceError, match="approval_decision_conflict"):
+        service.reject(auth=approver, approval_id=first.approval_id)
+    with pytest.raises(ApprovalServiceError, match="approval_decision_conflict"):
+        service.approve(auth=approver, approval_id=second.approval_id)
+    with database.sessions() as session:
+        assert session.get(ApprovalRow, first.approval_id).status == "approved"
+        assert session.get(ApprovalRow, second.approval_id).status == "rejected"
+
+
+def test_write_result_exposes_artifact_id_and_task_refs_bind_artifact_id(
+    stage5,
+) -> None:
+    """C-3/C-4：结果与 agent_tasks.artifact_refs 只绑定 artifact_id，无 storage_key。"""
+    database, requester, approver, _, lease = stage5
+    service, binding = _approved(database, requester, approver)
+    adapter = _ArtifactIdAdapter()
+    executor = _executor(database, ToolRegistry(adapters={"create_report_artifact": adapter}), service)
+
+    result = executor.execute(_request(requester, binding.approval_id, lease))
+    assert result.status == "succeeded"
+    assert result.result is not None
+    assert result.result["artifact_id"] == "artifact-1"
+    assert "storage_key" not in result.result
+
+    duplicate = executor.execute(_request(requester, binding.approval_id, lease))
+    assert duplicate.status == "succeeded"
+    assert duplicate.duplicate is True
+    assert duplicate.result is not None
+    assert duplicate.result["artifact_id"] == "artifact-1"
+    assert "storage_key" not in duplicate.result
+    assert adapter.calls == 1
+
+    with database.sessions() as session:
+        task = session.get(AgentTaskRow, "task-1")
+        assert task is not None
+        assert task.artifact_refs == ["artifact-1"]

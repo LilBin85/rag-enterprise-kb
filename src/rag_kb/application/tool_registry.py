@@ -162,11 +162,11 @@ def builtin_tool_definitions() -> tuple[ToolDefinition, ...]:
     artifact_result = _object_schema(
         {
             "artifact_type": {"enum": ["report", "work_item_draft"]},
-            "storage_key": {"type": "string", "minLength": 1},
+            "artifact_id": {"type": "string", "minLength": 1, "maxLength": 64},
             "content_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
             "status": {"const": "ready"},
         },
-        ["artifact_type", "storage_key", "content_hash", "status"],
+        ["artifact_type", "artifact_id", "content_hash", "status"],
     )
     common = {
         "version": "1.0.0",

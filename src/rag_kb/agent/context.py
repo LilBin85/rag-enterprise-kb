@@ -28,3 +28,5 @@ class AgentRunContext(BaseModel):
     plan_digest: str | None = Field(default=None, max_length=80)
     evidence_digest: str | None = Field(default=None, max_length=80)
     idempotency_key: str | None = Field(default=None, max_length=200)
+    # 服务端 plan 派生的精确证据集合；模型不可通过参数注入。
+    evidence_ids: tuple[str, ...] = ()

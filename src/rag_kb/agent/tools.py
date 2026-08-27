@@ -171,6 +171,41 @@ def render_tool_message(
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
+_WRITE_RENDER_FIELDS = ("artifact_id", "artifact_type", "content_hash")
+
+
+def render_write_tool_message(
+    tool_name: str,
+    result: ToolExecutionResult | None,
+    *,
+    error_code: str | None = None,
+) -> str:
+    """WRITE 专用 ToolMessage 渲染：只有 artifact_id/hash/status 等安全字段。
+
+    storage_key、原始参数与对象路径一律不进入模型上下文；成功结果由
+    ToolExecutionService 按 result_ref 幂等回读，渲染是确定性的。
+    """
+    status = result.status if result is not None else "failed"
+    code = error_code if result is None else result.error_code
+    payload: dict[str, object] = {
+        "tool_call_id": result.tool_call_id if result is not None else None,
+        "tool_name": tool_name,
+        "status": status,
+        "error_code": code,
+        "retryable": status == "failed" and code in _RETRYABLE_CODES,
+    }
+    if result is not None and result.result is not None:
+        body = result.result
+        for field in _WRITE_RENDER_FIELDS:
+            if field in body:
+                payload[field] = _trim_value(body[field])
+    if result is not None:
+        payload["result_ref"] = result.tool_call_id
+        if result.result_hash:
+            payload["result_hash"] = result.result_hash
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
 def _execute_read_tool(
     tool_name: str,
     arguments: dict[str, object],
@@ -244,6 +279,7 @@ def _execute_write_tool(
         plan_revision=context.plan_revision,
         plan_digest=context.plan_digest,
         evidence_digest=context.evidence_digest,
+        evidence_ids=context.evidence_ids,
     )
     try:
         result = executor.execute(request)
@@ -251,15 +287,15 @@ def _execute_write_tool(
         if exc.code in _FATAL_TOOL_CODES:
             # 失租/身份失效：穿透 middleware 使 invoke 失败，禁止渲染 ToolMessage 续跑。
             raise
-        return render_tool_message(tool_name, None, error_code=exc.code)
+        return render_write_tool_message(tool_name, None, error_code=exc.code)
     except Exception as exc:
         code = getattr(exc, "code", None)
-        return render_tool_message(
+        return render_write_tool_message(
             tool_name,
             None,
             error_code=code if isinstance(code, str) and code else "tool_execution_unavailable",
         )
-    return render_tool_message(tool_name, result)
+    return render_write_tool_message(tool_name, result)
 
 
 def build_research_tools(executor: ToolExecutionService) -> list[BaseTool]:

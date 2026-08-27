@@ -32,6 +32,7 @@ from rag_kb.infrastructure.database.models import (
     ApprovalRow,
     ArtifactRow,
     PlanRevisionRow,
+    PrincipalRow,
     ToolCallRow,
 )
 from rag_kb.infrastructure.database.session import Database
@@ -57,6 +58,10 @@ _AUTH_TOOL_CODES = frozenset(
     }
 )
 _FATAL_TOOL_CODES = _STALE_TOOL_CODES | _AUTH_TOOL_CODES
+
+# 自动失效的固定服务端 actor（M2_PLAN D3）：principals 行由拒绝事务内确保存在，
+# 满足 fk_approvals_rejected_by_principal；reason 统一带 auto: 稳定前缀。
+_SYSTEM_REJECT_ACTOR = "system:approval-reaper"
 
 
 def _aware_datetime(value: datetime | None) -> datetime | None:
@@ -159,10 +164,11 @@ class ToolExecutionService:
         if definition.mode is ToolMode.WRITE:
             try:
                 self._preflight_write(request)
-            except ToolExecutionError:
+            except ToolExecutionError as exc:
                 self._reject_stale_approval(
                     tenant_id=request.auth.tenant_id,
                     approval_id=request.approval_id,
+                    reason=exc.code,
                 )
                 raise
 
@@ -657,11 +663,32 @@ class ToolExecutionService:
         *,
         tenant_id: str,
         approval_id: str | None,
+        reason: str,
     ) -> None:
+        """审批失效的自动收敛：服务端固定 actor + 稳定 code 的完整审计。
+
+        带 checkpoint 绑定的行受 ck_approvals_rejected_audit_complete 约束，
+        rejected_by/rejected_at/rejection_reason 缺一不可（批次 2 修复 C-1）。
+        """
         if approval_id is None:
             return
         with UnitOfWork(self._database) as work:
             assert work.session is not None
+            actor = work.session.scalar(
+                select(PrincipalRow.user_id).where(
+                    PrincipalRow.tenant_id == tenant_id,
+                    PrincipalRow.user_id == _SYSTEM_REJECT_ACTOR,
+                )
+            )
+            if actor is None:
+                work.session.add(
+                    PrincipalRow(
+                        tenant_id=tenant_id,
+                        user_id=_SYSTEM_REJECT_ACTOR,
+                        roles=[],
+                        attributes={"permissions": []},
+                    )
+                )
             row = work.session.scalar(
                 select(ApprovalRow)
                 .where(
@@ -672,6 +699,9 @@ class ToolExecutionService:
             )
             if row is not None and row.status in {"pending", "approved"}:
                 row.status = "rejected"
+                row.rejected_by = _SYSTEM_REJECT_ACTOR
+                row.rejected_at = self._execution_now(work.session)
+                row.rejection_reason = f"auto:{reason}"[:200]
 
     def _complete(
         self,
@@ -816,9 +846,10 @@ class ToolExecutionService:
                     task.lease_expires_at = None
                     task.state_version += 1
                 elif row.mode == "write" and final_status == "succeeded" and result is not None:
-                    storage_key = result.get("storage_key")
-                    if isinstance(storage_key, str) and storage_key not in task.artifact_refs:
-                        task.artifact_refs = [*task.artifact_refs, storage_key]
+                    # 业务引用只绑定稳定 artifact ID，不写对象存储路径。
+                    artifact_id = result.get("artifact_id")
+                    if isinstance(artifact_id, str) and artifact_id not in task.artifact_refs:
+                        task.artifact_refs = [*task.artifact_refs, artifact_id]
                         task.state_version += 1
         except Exception:
             cleanup_ref = result_to_discard or result_ref
