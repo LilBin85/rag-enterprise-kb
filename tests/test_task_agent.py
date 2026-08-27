@@ -10,20 +10,30 @@ from types import SimpleNamespace
 
 import pytest
 from langchain.agents.structured_output import ToolStrategy
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolRuntime
 
 from rag_kb.agent import factory
 from rag_kb.agent.context import AgentRunContext
 from rag_kb.agent.result import TaskResult, TaskResultCandidate, build_task_result
 from rag_kb.agent.tools import (
+    CONTROLLED_WRITE_TOOL_NAMES,
     RESEARCH_TOOL_NAMES,
     _execute_read_tool,
+    build_controlled_action_tools,
     build_research_tools,
     render_tool_message,
 )
 from rag_kb.application.approval_service import ApprovalService
 from rag_kb.application.task_result_service import TaskResultError, TaskResultService
-from rag_kb.application.tool_execution_service import ToolExecutionRequest, ToolExecutionResult, ToolExecutionService
+from rag_kb.application.tool_execution_service import (
+    ToolExecutionError,
+    ToolExecutionRequest,
+    ToolExecutionResult,
+    ToolExecutionService,
+)
 from rag_kb.application.tool_registry import ToolRegistry, builtin_tool_definitions
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.tasks import TaskMode, TaskState, TaskStatus
@@ -531,3 +541,253 @@ def test_result_read_uses_postgres_clock_for_expiry() -> None:
     )
     with pytest.raises(TaskResultError, match="task_result_expired"):
         service.read(auth=_auth(), state=state)
+
+
+# ---------- M2 批次 1：受控动作 Agent 与 WRITE 薄 adapter ----------
+
+
+class RecordingWriteExecutor:
+    def __init__(self) -> None:
+        self.requests: list[ToolExecutionRequest] = []
+
+    def execute(self, request: ToolExecutionRequest) -> ToolExecutionResult:
+        self.requests.append(request)
+        raise ToolExecutionError("approval_required")
+
+
+def test_controlled_agent_factory_exposes_hitl_on_exactly_two_writes(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(factory, "create_agent", lambda **kwargs: captured.update(kwargs) or "agent")
+
+    result = factory.build_controlled_action_agent(
+        "model",
+        ["tool"],
+        "checkpointer",
+        max_model_calls=2,
+        max_tool_calls=3,
+    )
+
+    assert result == "agent"
+    assert captured["tools"] == ["tool"]
+    assert isinstance(captured["response_format"], ToolStrategy)
+    assert captured["response_format"].schema is TaskResultCandidate
+    assert captured["context_schema"] is AgentRunContext
+    assert captured["checkpointer"] == "checkpointer"
+    middlewares = captured["middleware"]
+    names = [type(item).__name__ for item in middlewares]
+    assert names == [
+        "TodoListMiddleware",
+        "SingleBusinessToolCallMiddleware",
+        "HumanInTheLoopMiddleware",
+        "ClarificationInterruptMiddleware",
+        "ExecutionGuardMiddleware",
+        "ModelCallLimitMiddleware",
+        "ToolCallLimitMiddleware",
+    ]
+    hitl = middlewares[2]
+    assert set(hitl.interrupt_on) == {
+        "create_report_artifact",
+        "create_work_item_draft",
+    }
+    for config in hitl.interrupt_on.values():
+        assert set(config["allowed_decisions"]) == {"approve", "reject"}
+        assert "when" not in config
+    assert middlewares[-2].thread_limit == 2
+    assert middlewares[-1].thread_limit == 3
+
+
+def test_controlled_tools_are_four_reads_plus_exactly_two_writes() -> None:
+    executor = RecordingExecutor()
+    write_executor = RecordingWriteExecutor()
+    tools = build_controlled_action_tools(write_executor)
+
+    names = tuple(tool.name for tool in tools)
+    assert names == RESEARCH_TOOL_NAMES + CONTROLLED_WRITE_TOOL_NAMES
+    write_names = [name for name in names if name.startswith("create_")]
+    assert write_names == ["create_report_artifact", "create_work_item_draft"]
+
+
+def test_write_tool_uses_server_context_and_rejects_injected_control_fields() -> None:
+    executor = RecordingWriteExecutor()
+    tools = build_controlled_action_tools(executor)
+    report_tool = next(tool for tool in tools if tool.name == "create_report_artifact")
+
+    message = report_tool.invoke(
+        {
+            "type": "tool_call",
+            "name": report_tool.name,
+            "id": "model-call-1",
+            "args": {
+                "title": "报告",
+                "content": "正文",
+                "format": "markdown",
+                "runtime": ToolRuntime(
+                    state={},
+                    context=_context(),
+                    config={},
+                    stream_writer=lambda _value: None,
+                    tool_call_id="model-call-1",
+                    store=None,
+                ),
+            },
+        }
+    )
+    payload = json.loads(message.content)
+    # 控制字段全部来自服务端 AgentRunContext（批次 1 恒无审批事实），
+    # 请求在授权门 fail-closed，业务副作用为 0。
+    assert payload["error_code"] == "approval_required"
+    assert payload["status"] == "failed"
+    assert executor.requests, "请求必须经服务端 executor 派发"
+    request = executor.requests[0]
+    assert request.auth == _context().auth
+    assert request.task_id == "task-a"
+    assert request.worker_id == "worker-a"
+    assert request.lease_generation == 1
+    assert request.approval_id is None
+    assert request.plan_revision is None
+    assert request.idempotency_key is None
+    assert request.arguments == {"title": "报告", "content": "正文", "format": "markdown"}
+
+    # 模型注入控制字段：schema additionalProperties=False 在工具边界拒绝。
+    injected = {
+        "type": "tool_call",
+        "name": report_tool.name,
+        "id": "model-call-2",
+        "args": {
+            "title": "报告",
+            "content": "正文",
+            "format": "markdown",
+            "tenant_id": "tenant-evil",
+            "roles": ["admin"],
+            "approval_id": "forged",
+            "idempotency_key": "forged",
+            "thread_id": "evil-thread",
+            "checkpoint_id": "evil-checkpoint",
+            "storage_key": "secret/path",
+        },
+    }
+    with pytest.raises(Exception):
+        report_tool.invoke(injected)
+    assert len(executor.requests) == 1
+
+
+def test_write_tool_runtime_context_is_not_model_controllable() -> None:
+    executor = RecordingWriteExecutor()
+    tools = build_controlled_action_tools(executor)
+    draft_tool = next(tool for tool in tools if tool.name == "create_work_item_draft")
+
+    assert "runtime" not in draft_tool.tool_call_schema.model_fields
+    for field in draft_tool.tool_call_schema.model_fields:
+        assert field not in {
+            "tenant_id",
+            "roles",
+            "approval_id",
+            "idempotency_key",
+            "thread_id",
+            "checkpoint_id",
+            "storage_key",
+            "worker_id",
+            "lease_generation",
+        }
+
+    # runtime 由框架注入；模型无法通过参数覆盖（extra 参数在 schema 层被拒）。
+    message = draft_tool.invoke(
+        {
+            "type": "tool_call",
+            "name": draft_tool.name,
+            "id": "model-call-3",
+            "args": {
+                "title": "草稿",
+                "description": "描述",
+                "runtime": ToolRuntime(
+                    state={},
+                    context=_context(),
+                    config={},
+                    stream_writer=lambda _value: None,
+                    tool_call_id="model-call-3",
+                    store=None,
+                ),
+            },
+        }
+    )
+    payload = json.loads(message.content)
+    assert payload["error_code"] == "approval_required"
+    request = executor.requests[0]
+    assert request.arguments == {"title": "草稿", "description": "描述"}
+
+
+class _ToolCallingFakeModel(GenericFakeChatModel):
+    """锁定版本契约测试用的假模型：支持 bind_tools 并回放预设消息。"""
+
+    def bind_tools(self, tools, **kwargs):  # noqa: ARG002
+        return self
+
+
+def test_controlled_agent_hitl_interrupt_pauses_before_write_execution() -> None:
+    """锁定版本（langchain 1.3.14）HITL 契约：interrupt 在 ToolNode 前触发。"""
+    executor = RecordingWriteExecutor()
+    tools = build_controlled_action_tools(executor)
+    write_arguments = {"title": "报告", "content": "正文", "format": "markdown"}
+    model = _ToolCallingFakeModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "create_report_artifact",
+                            "args": dict(write_arguments),
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            ]
+        )
+    )
+    agent = factory.build_controlled_action_agent(
+        model,
+        tools,
+        InMemorySaver(),
+        max_model_calls=4,
+        max_tool_calls=4,
+    )
+    context = AgentRunContext(
+        task_id="task-hitl",
+        tenant_id="tenant-a",
+        user_id="owner-a",
+        task_mode=TaskMode.CONTROLLED_ACTION,
+        worker_id="worker-a",
+        lease_generation=1,
+        run_id="run-a",
+        auth=_auth(),
+    )
+    config = {"configurable": {"thread_id": "task-hitl"}}
+
+    agent.invoke(
+        {"messages": [HumanMessage(content="基于证据生成报告")]},
+        config=config,
+        context=context,
+    )
+
+    snapshot = agent.get_state(config)
+    interrupts = tuple(snapshot.interrupts or ())
+    assert len(interrupts) == 1
+    value = interrupts[0].value
+    assert set(value) == {"action_requests", "review_configs"}
+    requests = value["action_requests"]
+    assert len(requests) == 1
+    assert requests[0]["name"] == "create_report_artifact"
+    assert requests[0]["args"] == write_arguments
+    assert set(requests[0]) == {"name", "args", "description"}
+    assert value["review_configs"] == [
+        {"action_name": "create_report_artifact", "allowed_decisions": ["approve", "reject"]}
+    ]
+    # HITL 未恢复：WRITE adapter 零调用（请求未到达 ToolExecutionService）。
+    assert executor.requests == []
+    # checkpoint 坐标可用于派生 action 绑定。
+    configurable = snapshot.config["configurable"]
+    assert configurable["thread_id"] == "task-hitl"
+    assert configurable["checkpoint_id"]
+    last_call = snapshot.values["messages"][-1].tool_calls[-1]
+    assert last_call["id"] == "call_1"

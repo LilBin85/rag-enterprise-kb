@@ -780,6 +780,51 @@ class DatabaseTaskRepository:
             )
             return _state_from_row(row)
 
+    def pause_for_approval(
+        self,
+        lease: TaskLease,
+        *,
+        interrupt_ref: str,
+        summary: str,
+        trace_id: str,
+    ) -> TaskState:
+        """工具审批暂停：业务表只保存裁剪摘要与不透明审批引用。
+
+        原始工具参数、HITL payload 与 resume 数据一律不进入 agent_tasks；
+        正文事实留在 checkpointer 线程内。
+        """
+        if not interrupt_ref.strip() or not summary.strip():
+            raise ValueError("task_interrupt_fields_required")
+        with UnitOfWork(self._database) as work:
+            assert work.session is not None
+            row = work.session.scalar(
+                select(AgentTaskRow).where(AgentTaskRow.task_id == lease.state.task_id)
+                .with_for_update()
+            )
+            if row is None:
+                raise TaskRepositoryError("task_not_found")
+            now = self._lease_now(work.session)
+            self._verify_lease(row, lease, now=now)
+            if row.state_version != lease.state.state_version:
+                raise TaskRepositoryError("task_state_conflict")
+            row.status = TaskStatus.WAITING_FOR_APPROVAL.value
+            row.interrupt_kind = "tool_approval"
+            row.interrupt_summary = summary.strip()[:2_000]
+            row.interrupt_ref = interrupt_ref.strip()[:200]
+            row.lease_owner = None
+            row.lease_expires_at = None
+            row.state_version += 1
+            row.updated_at = now
+            work.session.flush()
+            self._append_event(
+                work.session,
+                row,
+                event_type="task_waiting_for_approval",
+                trace_id=trace_id,
+                run_id=trace_id,
+            )
+            return _state_from_row(row)
+
     def finish_task(
         self,
         lease: TaskLease,

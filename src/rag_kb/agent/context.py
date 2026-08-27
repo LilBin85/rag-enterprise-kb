@@ -21,3 +21,10 @@ class AgentRunContext(BaseModel):
     lease_generation: int = Field(ge=0)
     run_id: str = Field(min_length=1, max_length=64)
     auth: AuthContext
+    # M2 受控写工具的服务端授权事实；批次 1 恒为默认 None（无审批即无执行），
+    # 批次 2 的受控 resume 才由 Worker 填充。
+    approval_id: str | None = Field(default=None, max_length=64)
+    plan_revision: int | None = Field(default=None, ge=1)
+    plan_digest: str | None = Field(default=None, max_length=80)
+    evidence_digest: str | None = Field(default=None, max_length=80)
+    idempotency_key: str | None = Field(default=None, max_length=200)

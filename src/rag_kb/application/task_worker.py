@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, Callable, Protocol
 from uuid import uuid4
 
@@ -17,6 +18,11 @@ from rag_kb.agent.result import (
     AgentResultStore,
     TaskResultCandidate,
     build_task_result,
+)
+from rag_kb.agent.tools import CONTROLLED_WRITE_TOOL_NAMES
+from rag_kb.application.approval_service import (
+    ApprovalCheckpointBinding,
+    ApprovalService,
 )
 from rag_kb.application.tool_execution_service import (
     _STALE_TOOL_CODES,
@@ -43,6 +49,9 @@ _STALE_REPOSITORY_CODES = frozenset(
     {"task_lease_generation_stale", "task_lease_expired"}
 )
 _STALE_CHECKPOINT_CODE = "task_checkpoint_lease_stale"
+_HITL_ALLOWED_DECISIONS = frozenset({"approve", "reject"})
+# approval 有效期沿用现状：默认 15 分钟、应用进程时间源（开放问题 5 未拍板）。
+_APPROVAL_EXPIRY_SECONDS = 15 * 60
 
 
 class TaskWorkerError(RuntimeError):
@@ -126,6 +135,8 @@ class TaskWorker:
         lease_seconds: int = 300,
         capability_name: str | None = None,
         protocol_version: str | None = None,
+        controlled_agent_for: Callable[[TaskBudgets], Any] | None = None,
+        approvals: ApprovalService | None = None,
         close=None,
     ) -> None:
         if (
@@ -147,6 +158,10 @@ class TaskWorker:
         self._lease_seconds = lease_seconds
         self._capability_name = capability_name
         self._protocol_version = protocol_version
+        # 受控动作（controlled_action）需要独立编译的 HITL Agent 与 ApprovalService；
+        # 未配置时受控任务保持 fail-closed，M1 Research 轨迹不变。
+        self._controlled_agent_for = controlled_agent_for
+        self._approvals = approvals
         self._close = close
         self._accepting_tasks = True
 
@@ -286,7 +301,14 @@ class TaskWorker:
             lease, lease_seconds=self._lease_seconds
         )
         state = lease.state
-        if state.task_mode is not TaskMode.RESEARCH:
+        if state.task_mode is TaskMode.RESEARCH:
+            agent = self._agent_for(lease.budgets)
+        elif state.task_mode is TaskMode.CONTROLLED_ACTION:
+            # 未装配受控 Agent（M1 Worker）时受控任务 fail-closed，不静默降级。
+            if self._controlled_agent_for is None or self._approvals is None:
+                raise TaskWorkerError("task_mode_not_supported")
+            agent = self._controlled_agent_for(lease.budgets)
+        else:
             raise TaskWorkerError("task_mode_not_supported")
         if self._capability_name is not None and (
             state.required_capability_name != self._capability_name
@@ -295,8 +317,6 @@ class TaskWorker:
             raise TaskWorkerError("task_protocol_mismatch")
         if state.deadline is not None and self._repository.current_time() >= state.deadline:
             raise TaskWorkerError("task_deadline_expired")
-
-        agent = self._agent_for(lease.budgets)
 
         run_id = uuid4().hex
         auth = self._auth_contexts.resolve(
@@ -341,7 +361,7 @@ class TaskWorker:
             self._require_user_interrupt(snapshot)
             invoke_input: object = Command(resume={"answer": resume_answer})
         elif snapshot.interrupts:
-            return self._pause_for_interrupt(lease, snapshot, run_id)
+            return self._route_interrupt(lease, snapshot, run_id)
         elif not snapshot.values:
             invoke_input = {"messages": [HumanMessage(content=state.goal)]}
         elif snapshot.next:
@@ -373,7 +393,7 @@ class TaskWorker:
 
         latest = agent.get_state(config)
         if latest.interrupts:
-            return self._pause_for_interrupt(lease, latest, run_id)
+            return self._route_interrupt(lease, latest, run_id)
         candidate = self._extract_candidate(result) or self._extract_candidate(latest.values)
         if candidate is None:
             raise TaskWorkerError("task_agent_no_result")
@@ -402,6 +422,167 @@ class TaskWorker:
             lease, question=question, trace_id=run_id
         )
         return TaskWorkerResult(status="waiting_for_user", task_id=paused.task_id)
+
+    def _route_interrupt(
+        self, lease: TaskLease, snapshot, run_id: str
+    ) -> TaskWorkerResult:
+        """按保存的 interrupt 形状严格分流：clarification 与 approval 互斥。
+
+        未知形状、多 interrupt、多 action、未知工具一律 fail-closed，
+        不进入任何恢复入口。
+        """
+        interrupts = tuple(getattr(snapshot, "interrupts", ()) or ())
+        if len(interrupts) != 1:
+            raise TaskWorkerError("task_interrupt_shape_invalid")
+        payload = getattr(interrupts[0], "value", None)
+        if isinstance(payload, dict) and payload.get("kind") == "user_clarification":
+            return self._pause_for_interrupt(lease, snapshot, run_id)
+        if (
+            isinstance(payload, dict)
+            and set(payload) == {"action_requests", "review_configs"}
+        ):
+            return self._pause_for_approval(lease, snapshot, run_id)
+        raise TaskWorkerError("task_interrupt_kind_invalid")
+
+    def _pause_for_approval(
+        self, lease: TaskLease, snapshot, run_id: str
+    ) -> TaskWorkerResult:
+        if lease.state.task_mode is not TaskMode.CONTROLLED_ACTION:
+            # HITL 审批形状只允许出现在受控任务上；Research 线程出现即 fail-closed。
+            raise TaskWorkerError("task_approval_mode_invalid")
+        assert self._approvals is not None
+        interrupt = snapshot.interrupts[0]
+        payload = interrupt.value
+        action_requests = payload.get("action_requests")
+        review_configs = payload.get("review_configs")
+        if (
+            not isinstance(action_requests, list)
+            or len(action_requests) != 1
+            or not isinstance(review_configs, list)
+            or len(review_configs) != 1
+        ):
+            raise TaskWorkerError("task_interrupt_shape_invalid")
+        action = action_requests[0]
+        review = review_configs[0]
+        if not isinstance(action, dict) or not isinstance(review, dict):
+            raise TaskWorkerError("task_interrupt_shape_invalid")
+        tool_name = action.get("name")
+        arguments = action.get("args")
+        if (
+            not isinstance(tool_name, str)
+            or tool_name not in CONTROLLED_WRITE_TOOL_NAMES
+            or not isinstance(arguments, dict)
+        ):
+            raise TaskWorkerError("task_approval_action_invalid")
+        if (
+            review.get("action_name") != tool_name
+            or set(review.get("allowed_decisions") or ()) != _HITL_ALLOWED_DECISIONS
+        ):
+            raise TaskWorkerError("task_approval_review_config_invalid")
+        tool_call_id = self._resolve_action_tool_call_id(
+            snapshot, tool_name=tool_name, arguments=arguments
+        )
+        interrupt_id = getattr(interrupt, "id", None)
+        if not isinstance(interrupt_id, str) or not interrupt_id.strip():
+            raise TaskWorkerError("task_interrupt_id_invalid")
+        configurable = dict(
+            (getattr(snapshot, "config", None) or {}).get("configurable") or {}
+        )
+        thread_id = configurable.get("thread_id")
+        checkpoint_ns = configurable.get("checkpoint_ns")
+        checkpoint_id = configurable.get("checkpoint_id")
+        if (
+            thread_id != lease.state.task_id
+            or not isinstance(checkpoint_ns, str)
+            or not isinstance(checkpoint_id, str)
+            or not checkpoint_id.strip()
+        ):
+            raise TaskWorkerError("task_checkpoint_binding_invalid")
+        binding = ApprovalCheckpointBinding(
+            thread_id=thread_id,
+            checkpoint_ns=checkpoint_ns,
+            checkpoint_id=checkpoint_id,
+            interrupt_id=interrupt_id,
+            tool_call_id=tool_call_id,
+        )
+        auth = self._auth_contexts.resolve(
+            task_id=lease.state.task_id,
+            auth_context_ref=lease.state.auth_context_ref,
+            request_id=run_id,
+        )
+        action_binding = self._approvals.ensure_action_binding(
+            auth=auth,
+            task_id=lease.state.task_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            checkpoint_binding=binding,
+        )
+        expires_at = datetime.now(UTC) + timedelta(seconds=_APPROVAL_EXPIRY_SECONDS)
+        deadline = lease.state.deadline
+        if deadline is not None:
+            # 审批有效期不得越过任务 deadline（request 内会再次强制）。
+            expires_at = min(expires_at, deadline)
+        approval = self._approvals.request(
+            auth=auth,
+            task_id=lease.state.task_id,
+            plan_revision=action_binding.plan_revision,
+            plan_digest=action_binding.plan_digest,
+            evidence_digest=action_binding.evidence_digest,
+            evidence_ids=action_binding.evidence_ids,
+            tool_name=tool_name,
+            arguments=arguments,
+            expires_at=expires_at,
+            checkpoint_binding=binding,
+        )
+        paused = self._repository.pause_for_approval(
+            lease,
+            interrupt_ref=approval.approval_id,
+            summary=self._render_approval_summary(tool_name, arguments),
+            trace_id=run_id,
+        )
+        return TaskWorkerResult(status="waiting_for_approval", task_id=paused.task_id)
+
+    @staticmethod
+    def _resolve_action_tool_call_id(
+        snapshot, *, tool_name: str, arguments: dict[str, object]
+    ) -> str:
+        """HITL payload 不携带 tool_call_id；从保存的最后一条 AI tool call 派生。
+
+        按 (name, args) 精确匹配；无匹配即 fail-closed（payload 与 checkpoint
+        事实不一致，可能是篡改或版本漂移）。
+        """
+        values = getattr(snapshot, "values", None)
+        messages = values.get("messages") if isinstance(values, dict) else None
+        if not isinstance(messages, (list, tuple)):
+            raise TaskWorkerError("task_approval_tool_call_missing")
+        from langchain_core.messages import AIMessage
+
+        for message in reversed(messages):
+            if not isinstance(message, AIMessage):
+                continue
+            for call in getattr(message, "tool_calls", ()) or ():
+                if (
+                    isinstance(call, dict)
+                    and call.get("name") == tool_name
+                    and call.get("args") == arguments
+                    and isinstance(call.get("id"), str)
+                    and call["id"].strip()
+                ):
+                    return call["id"]
+        raise TaskWorkerError("task_approval_tool_call_missing")
+
+    @staticmethod
+    def _render_approval_summary(
+        tool_name: str, arguments: dict[str, object]
+    ) -> str:
+        """服务端裁剪摘要：只含工具名与标题，不复制正文或完整参数。"""
+        title = arguments.get("title")
+        safe_title = title.strip()[:80] if isinstance(title, str) else ""
+        label = {
+            "create_report_artifact": "报告产物",
+            "create_work_item_draft": "工作项草稿",
+        }.get(tool_name, "受控写操作")
+        return f"等待人工审批：{label}「{safe_title}」" if safe_title else f"等待人工审批：{label}"
 
     @staticmethod
     def _extract_candidate(result: object) -> TaskResultCandidate | None:

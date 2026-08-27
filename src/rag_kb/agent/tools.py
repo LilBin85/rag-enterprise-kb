@@ -24,6 +24,12 @@ RESEARCH_TOOL_NAMES = (
     "compare_document_versions",
 )
 
+# M2 批次 1 精确开放的两个 WRITE 工具；HITL interrupt_on 必须与之逐字一致。
+CONTROLLED_WRITE_TOOL_NAMES = (
+    "create_report_artifact",
+    "create_work_item_draft",
+)
+
 _MAX_ITEMS = 20
 _MAX_LIST_ITEMS = 50
 _MAX_STRING_CHARS = 2_000
@@ -211,6 +217,51 @@ def _execute_read_tool(
     return render_tool_message(tool_name, result)
 
 
+def _execute_write_tool(
+    tool_name: str,
+    arguments: dict[str, object],
+    runtime: ToolRuntime,
+    executor: ToolExecutionService,
+) -> str:
+    context = runtime.context
+    if not isinstance(context, AgentRunContext):
+        return render_tool_message(
+            tool_name, None, error_code="agent_runtime_context_invalid"
+        )
+    if not runtime.tool_call_id:
+        return render_tool_message(tool_name, None, error_code="agent_tool_call_id_missing")
+    # 控制字段只取服务端 AgentRunContext；批次 1 恒无审批事实，
+    # 请求在授权门（approval_required / tool_plan_binding_required）fail-closed。
+    request = ToolExecutionRequest(
+        auth=context.auth,
+        task_id=context.task_id,
+        tool_name=tool_name,
+        arguments=arguments,
+        worker_id=context.worker_id,
+        lease_generation=context.lease_generation,
+        idempotency_key=context.idempotency_key,
+        approval_id=context.approval_id,
+        plan_revision=context.plan_revision,
+        plan_digest=context.plan_digest,
+        evidence_digest=context.evidence_digest,
+    )
+    try:
+        result = executor.execute(request)
+    except ToolExecutionError as exc:
+        if exc.code in _FATAL_TOOL_CODES:
+            # 失租/身份失效：穿透 middleware 使 invoke 失败，禁止渲染 ToolMessage 续跑。
+            raise
+        return render_tool_message(tool_name, None, error_code=exc.code)
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        return render_tool_message(
+            tool_name,
+            None,
+            error_code=code if isinstance(code, str) and code else "tool_execution_unavailable",
+        )
+    return render_tool_message(tool_name, result)
+
+
 def build_research_tools(executor: ToolExecutionService) -> list[BaseTool]:
     """只暴露 4 个只读工具；写工具暴露数为 0。"""
 
@@ -260,4 +311,54 @@ def build_research_tools(executor: ToolExecutionService) -> list[BaseTool]:
         fetch_evidence,
         list_document_versions,
         compare_document_versions,
+    ]
+
+
+def build_controlled_action_tools(executor: ToolExecutionService) -> list[BaseTool]:
+    """暴露 4 READ + 精确 2 WRITE；WRITE 由 HITL 暂停并要求服务端审批事实。"""
+
+    def _description(tool_name: str) -> str:
+        from rag_kb.application.tool_registry import builtin_tool_definitions
+
+        return next(
+            definition.description
+            for definition in builtin_tool_definitions()
+            if definition.name == tool_name
+        )
+
+    @tool("create_report_artifact", description=_description("create_report_artifact"))
+    def create_report_artifact(
+        title: str,
+        content: str,
+        format: str,
+        runtime: ToolRuntime[AgentRunContext],
+    ) -> str:
+        return _execute_write_tool(
+            "create_report_artifact",
+            {"title": title, "content": content, "format": format},
+            runtime,
+            executor,
+        )
+
+    @tool("create_work_item_draft", description=_description("create_work_item_draft"))
+    def create_work_item_draft(
+        title: str,
+        description: str,
+        runtime: ToolRuntime[AgentRunContext],
+        owner_group: str | None = None,
+        due_date: str | None = None,
+    ) -> str:
+        arguments: dict[str, object] = {"title": title, "description": description}
+        if owner_group is not None:
+            arguments["owner_group"] = owner_group
+        if due_date is not None:
+            arguments["due_date"] = due_date
+        return _execute_write_tool(
+            "create_work_item_draft", arguments, runtime, executor
+        )
+
+    return [
+        *build_research_tools(executor),
+        create_report_artifact,
+        create_work_item_draft,
     ]

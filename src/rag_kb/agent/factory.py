@@ -6,6 +6,7 @@ from typing import Any
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
+    HumanInTheLoopMiddleware,
     ModelCallLimitMiddleware,
     TodoListMiddleware,
     ToolCallLimitMiddleware,
@@ -20,8 +21,9 @@ from rag_kb.agent.middleware import (
     ExecutionGuardMiddleware,
     SingleBusinessToolCallMiddleware,
 )
-from rag_kb.agent.prompt import TASK_AGENT_PROMPT
+from rag_kb.agent.prompt import CONTROLLED_ACTION_AGENT_PROMPT, TASK_AGENT_PROMPT
 from rag_kb.agent.result import TaskResultCandidate
+from rag_kb.agent.tools import CONTROLLED_WRITE_TOOL_NAMES
 
 
 def build_research_agent(
@@ -50,6 +52,50 @@ def build_research_agent(
             ),
         ],
         # DeepSeek 当前不提供本项目所需的 native response_format；结果仍由工具调用校验。
+        response_format=ToolStrategy(TaskResultCandidate),
+        context_schema=AgentRunContext,
+        checkpointer=checkpointer,
+    )
+
+
+def build_controlled_action_agent(
+    model: Any,
+    tools: list[BaseTool],
+    checkpointer: BaseCheckpointSaver,
+    *,
+    max_model_calls: int,
+    max_tool_calls: int,
+) -> Any:
+    """编译受控动作 Agent：两个 WRITE 精确经 HITL 暂停，decision 只允许 approve/reject。
+
+    interrupt_on 与 CONTROLLED_WRITE_TOOL_NAMES 逐字一致：不配置第三个 WRITE，
+    不开放 edit/respond；权限、审批绑定与副作用资格始终由服务端决定。
+    """
+    interrupt_on = {
+        tool_name: {"allowed_decisions": ["approve", "reject"]}
+        for tool_name in CONTROLLED_WRITE_TOOL_NAMES
+    }
+    return create_agent(
+        model=model,
+        tools=tools,
+        system_prompt=CONTROLLED_ACTION_AGENT_PROMPT,
+        middleware=[
+            TodoListMiddleware(),
+            # 先拒绝多业务并行调用，HITL 只对唯一 action 请求人工决策。
+            SingleBusinessToolCallMiddleware(),
+            HumanInTheLoopMiddleware(
+                interrupt_on=interrupt_on,
+                description_prefix="受控写操作等待人工审批",
+            ),
+            ClarificationInterruptMiddleware(),
+            ExecutionGuardMiddleware(),
+            ModelCallLimitMiddleware(
+                thread_limit=max_model_calls, exit_behavior="error"
+            ),
+            ToolCallLimitMiddleware(
+                thread_limit=max_tool_calls, exit_behavior="error"
+            ),
+        ],
         response_format=ToolStrategy(TaskResultCandidate),
         context_schema=AgentRunContext,
         checkpointer=checkpointer,

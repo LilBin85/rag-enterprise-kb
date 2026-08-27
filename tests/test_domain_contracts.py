@@ -109,6 +109,70 @@ def test_task_budgets_require_positive_call_and_runtime_bounds() -> None:
         TaskBudgets(max_runtime_seconds=0)
 
 
+def test_task_state_binds_waiting_for_approval_interrupt_completeness() -> None:
+    fields = {
+        "status": TaskStatus.WAITING_FOR_APPROVAL,
+        "task_mode": TaskMode.CONTROLLED_ACTION,
+        "interrupt_kind": "tool_approval",
+        "interrupt_summary": "等待人工审批：报告产物「差旅摘要」",
+        "interrupt_ref": "approval-1",
+    }
+    paused = TaskState(**_task_fields(**fields))
+    assert paused.interrupt_kind == "tool_approval"
+    assert paused.interrupt_ref == "approval-1"
+
+    # waiting_for_approval 三字段缺一不可。
+    with pytest.raises(ValidationError, match="task_interrupt_binding_missing"):
+        TaskState(**_task_fields(status=TaskStatus.WAITING_FOR_APPROVAL))
+    with pytest.raises(ValidationError, match="task_interrupt_binding_missing"):
+        TaskState(
+            **_task_fields(
+                status=TaskStatus.WAITING_FOR_APPROVAL,
+                interrupt_kind="tool_approval",
+                interrupt_summary="等待人工审批",
+            )
+        )
+    # kind 必须精确为 tool_approval；ref 不允许为空串。
+    with pytest.raises(ValidationError, match="task_interrupt_binding_missing"):
+        TaskState(
+            **_task_fields(
+                status=TaskStatus.WAITING_FOR_APPROVAL,
+                interrupt_kind="user_clarification",
+                interrupt_summary="问题",
+                interrupt_ref="approval-1",
+            )
+        )
+    with pytest.raises(ValidationError, match="task_interrupt_binding_missing"):
+        TaskState(
+            **_task_fields(
+                status=TaskStatus.WAITING_FOR_APPROVAL,
+                interrupt_kind="tool_approval",
+                interrupt_summary="摘要",
+                interrupt_ref="",
+            )
+        )
+    # waiting_for_user 不允许携带 ref；两类 interrupt 互斥。
+    with pytest.raises(ValidationError, match="task_interrupt_binding_missing"):
+        TaskState(
+            **_task_fields(
+                status=TaskStatus.WAITING_FOR_USER,
+                interrupt_kind="user_clarification",
+                interrupt_summary="问题",
+                interrupt_ref="approval-1",
+            )
+        )
+    # 非等待状态必须清理全部 interrupt 字段。
+    with pytest.raises(ValidationError, match="task_interrupt_only_when_waiting"):
+        TaskState(
+            **_task_fields(
+                status=TaskStatus.RUNNING,
+                interrupt_kind="tool_approval",
+                interrupt_summary="摘要",
+                interrupt_ref="approval-1",
+            )
+        )
+
+
 def test_tool_definition_requires_security_declaration_fields() -> None:
     required = {
         "name",

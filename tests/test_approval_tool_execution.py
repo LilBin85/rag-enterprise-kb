@@ -1,5 +1,9 @@
 """Stage 5 批准绑定、持久执行、幂等与 UNKNOWN 回归。"""
 
+from __future__ import annotations
+
+import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
@@ -8,9 +12,15 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select, text, update
 
-from rag_kb.application.approval_service import ApprovalService, ApprovalServiceError, arguments_fingerprint, principal_fingerprint
+from rag_kb.application.approval_service import (
+    ApprovalCheckpointBinding,
+    ApprovalService,
+    ApprovalServiceError,
+    arguments_fingerprint,
+    principal_fingerprint,
+)
 from rag_kb.application.tool_execution_service import ToolExecutionError, ToolExecutionRequest, ToolExecutionService
-from rag_kb.application.tool_registry import ToolRegistry, builtin_tool_definitions
+from rag_kb.application.tool_registry import ToolRegistry, ToolRegistryError, builtin_tool_definitions
 from rag_kb.domain.evidence import canonical_evidence_snapshot
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.fingerprints import canonical_fingerprint
@@ -561,3 +571,528 @@ def test_local_artifact_is_server_keyed_exclusive_and_readback_verified(stage5) 
     assert result.result["content_hash"].startswith("sha256:")
     with pytest.raises(Exception, match="tool_arguments_invalid"):
         executor.execute(_request(requester, binding.approval_id, lease, {**_arguments(), "path": "C:/secret"}, "key-2"))
+
+
+# ---------- M2 批次 1：信任边界收紧与 checkpoint 绑定 ----------
+
+
+def _checkpoint_binding(
+    **overrides: object,
+) -> ApprovalCheckpointBinding:
+    values: dict[str, object] = {
+        "thread_id": "task-1",
+        "checkpoint_ns": "",
+        "checkpoint_id": "checkpoint-1",
+        "interrupt_id": "interrupt-1",
+        "tool_call_id": "call_1",
+    }
+    values.update(overrides)
+    return ApprovalCheckpointBinding(**values)  # type: ignore[arg-type]
+
+
+def _request_with_checkpoint_binding(
+    database,
+    requester: AuthContext,
+    expires_delta: timedelta = timedelta(minutes=5),
+) -> dict[str, object]:
+    plan_digest, evidence_digest = _binding(database)
+    return {
+        "auth": requester,
+        "task_id": "task-1",
+        "plan_revision": 1,
+        "plan_digest": plan_digest,
+        "evidence_digest": evidence_digest,
+        "evidence_ids": ("evidence-1",),
+        "tool_name": "create_report_artifact",
+        "arguments": _arguments(),
+        "expires_at": datetime.now(UTC) + expires_delta,
+    }
+
+
+def test_request_rejects_unknown_tool_and_forged_version(stage5) -> None:
+    database, requester, _approver, _, _lease = stage5
+    service = ApprovalService(database)
+    base = _request_with_checkpoint_binding(database, requester)
+
+    with pytest.raises(ApprovalServiceError, match="tool_not_registered"):
+        service.request(**{**base, "tool_name": "arbitrary_shell"})
+    with pytest.raises(ApprovalServiceError, match="approval_tool_mode_invalid"):
+        service.request(**{**base, "tool_name": "search_knowledge"})
+    forged = {**base, "tool_version": "9.9.9"}
+    with pytest.raises(ApprovalServiceError, match="approval_tool_version_invalid"):
+        service.request(**forged)
+
+    # 服务端派生版本 + 未传版本两条合法路径等价。
+    derived = service.request(**base)
+    explicit = service.request(**{**base, "tool_version": "1.0.0"})
+    assert derived.approval_id == explicit.approval_id
+    assert derived.tool_version == "1.0.0"
+
+
+def test_initiator_cannot_self_approve(stage5) -> None:
+    database, requester, _approver, tmp_path, _lease = stage5
+    # 独立场景：发起人本身持有 task:approve（身份重叠）也不能自批。
+    privileged = AuthContext(
+        tenant_id="tenant-a",
+        user_id="self-approver",
+        attributes={
+            "permissions": [
+                "artifact:write",
+                "knowledge:read",
+                "document:read",
+                "task:approve",
+            ]
+        },
+        request_id="request-self",
+    )
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO principals (tenant_id,user_id,roles,attributes,active,created_at) "
+                "VALUES ('tenant-a', 'self-approver', '[]', :attributes, 1, CURRENT_TIMESTAMP)"
+            ),
+            {"attributes": json.dumps({"permissions": privileged.attributes["permissions"]})},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO acl_grants (grant_id,tenant_id,resource_type,resource_id,"
+                "subject_type,subject_id,permissions,created_at) VALUES "
+                "('grant-self','tenant-a','document','doc-1','user','self-approver',"
+                "'[\"knowledge:read\",\"document:read\"]', CURRENT_TIMESTAMP)"
+            )
+        )
+    repository = DatabaseTaskRepository(database)
+    repository.create_task(
+        auth=privileged,
+        goal="自批测试",
+        task_mode=TaskMode.CONTROLLED_ACTION,
+        task_id="task-self",
+    )
+    # 复用既有 evidence：把 evidence-1 挂到新任务（EvidenceRecordRow 允许同 chunk 多任务引用）。
+    with UnitOfWork(database) as work:
+        assert work.session is not None
+        work.session.add(
+            EvidenceRecordRow(
+                evidence_id="evidence-self",
+                task_id="task-self",
+                query_fingerprint="sha256:query",
+                tenant_id="tenant-a",
+                document_id="doc-1",
+                version_id="version-1",
+                document_version=1,
+                chunk_id="chunk-1",
+                content_hash="sha256:chunk",
+                source_locator="doc/1",
+                permission_granted=True,
+                supported_claim_ids=[],
+            )
+        )
+        task = work.session.get(AgentTaskRow, "task-self")
+        assert task is not None
+        task.status = "running"
+        task.lease_owner = "worker-1"
+        task.lease_expires_at = datetime.now(UTC) + timedelta(seconds=60)
+        task.lease_generation = 1
+
+    service = ApprovalService(database)
+    snapshot = canonical_evidence_snapshot(("evidence-self",), require_non_empty=True)
+    plan = {"steps": ["report"], "evidence_ids": ["evidence-self"]}
+    plan_digest = canonical_fingerprint("task_plan", plan)
+    with UnitOfWork(database) as work:
+        assert work.session is not None
+        work.session.add(
+            PlanRevisionRow(
+                plan_revision_id="plan-self",
+                task_id="task-self",
+                tenant_id="tenant-a",
+                revision=1,
+                schema_version=1,
+                plan=plan,
+                plan_digest=plan_digest,
+                evidence_digest=snapshot.digest,
+                status="ready",
+            )
+        )
+
+    pending = service.request(
+        auth=privileged,
+        task_id="task-self",
+        plan_revision=1,
+        plan_digest=plan_digest,
+        evidence_digest=snapshot.digest,
+        evidence_ids=("evidence-self",),
+        tool_name="create_report_artifact",
+        arguments=_arguments(),
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+
+    with pytest.raises(ApprovalServiceError, match="approval_self_rejected"):
+        service.approve(auth=privileged, approval_id=pending.approval_id)
+    with database.sessions() as session:
+        row = session.get(ApprovalRow, pending.approval_id)
+        assert row is not None
+        # 自批是决策非法，不是 action 被拒；approval 保持 pending。
+        assert row.status == "pending"
+        assert row.approved_by is None
+
+    approver = AuthContext(
+        tenant_id="tenant-a",
+        user_id="approver",
+        attributes={"permissions": ["task:approve"]},
+        request_id="approve-2",
+    )
+    approved = service.approve(auth=approver, approval_id=pending.approval_id)
+    assert approved.status == "approved"
+
+
+def test_checkpoint_binding_persists_and_resync_reuses_active_approval(stage5) -> None:
+    database, requester, _approver, _, _lease = stage5
+    service = ApprovalService(database)
+    base = _request_with_checkpoint_binding(database, requester)
+
+    first = service.request(**base, checkpoint_binding=_checkpoint_binding())
+    assert first.status == "pending"
+    assert first.thread_id == "task-1"
+    assert first.checkpoint_ns == ""
+    assert first.checkpoint_id == "checkpoint-1"
+    assert first.interrupt_id == "interrupt-1"
+    assert first.tool_call_id == "call_1"
+    assert first.checkpoint_binding_hash
+
+    # 同一 checkpoint action 重复同步：复用同一条 active approval。
+    second = service.request(**base, checkpoint_binding=_checkpoint_binding())
+    assert second.approval_id == first.approval_id
+    with database.sessions() as session:
+        count = len(
+            list(
+                session.scalars(
+                    select(ApprovalRow).where(
+                        ApprovalRow.tenant_id == "tenant-a",
+                        ApprovalRow.task_id == "task-1",
+                    )
+                )
+            )
+        )
+    assert count == 1
+
+    # 不同 tool_call（不同 checkpoint action）不得复用同一 active approval 绑定。
+    other_action = service.request(
+        **base,
+        checkpoint_binding=_checkpoint_binding(tool_call_id="call_2", interrupt_id="interrupt-2"),
+    )
+    assert other_action.approval_id != first.approval_id
+
+
+def test_checkpoint_binding_conflict_fails_closed(stage5) -> None:
+    database, requester, _approver, _, _lease = stage5
+    service = ApprovalService(database)
+    base = _request_with_checkpoint_binding(database, requester)
+    service.request(**base, checkpoint_binding=_checkpoint_binding())
+
+    # 同一 checkpoint 绑定但执行事实被篡改：fail-closed。
+    tampered_args = {**base["arguments"], "content": "被篡改的正文"}
+    with pytest.raises(ApprovalServiceError, match="approval_checkpoint_conflict"):
+        service.request(
+            **{**base, "arguments": tampered_args},
+            checkpoint_binding=_checkpoint_binding(),
+        )
+
+
+def test_legacy_active_approval_adopts_checkpoint_binding(stage5) -> None:
+    database, requester, _approver, _, _lease = stage5
+    service = ApprovalService(database)
+    base = _request_with_checkpoint_binding(database, requester)
+
+    legacy = service.request(**base)
+    assert legacy.checkpoint_binding_hash is None
+    resumed = service.request(**base, checkpoint_binding=_checkpoint_binding())
+    assert resumed.approval_id == legacy.approval_id
+    assert resumed.checkpoint_binding_hash is not None
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("thread_id", "other-thread"),
+        ("checkpoint_id", "other-checkpoint"),
+        ("interrupt_id", "other-interrupt"),
+        ("tool_call_id", "other-call"),
+    ],
+)
+def test_checkpoint_binding_change_does_not_consume_same_approval(
+    stage5, field: str, value: str
+) -> None:
+    database, requester, _approver, _, _lease = stage5
+    service = ApprovalService(database)
+    base = _request_with_checkpoint_binding(database, requester)
+    first = service.request(**base, checkpoint_binding=_checkpoint_binding())
+    # 不同 checkpoint 事实 = 不同 action：新 approval，不消费第一条。
+    second = service.request(
+        **base, checkpoint_binding=_checkpoint_binding(**{field: value})
+    )
+    assert second.approval_id != first.approval_id
+    with database.sessions() as session:
+        statuses = {
+            row.approval_id: row.status
+            for row in session.scalars(
+                select(ApprovalRow).where(ApprovalRow.task_id == "task-1")
+            )
+        }
+    assert statuses[first.approval_id] == "pending"
+    assert statuses[second.approval_id] == "pending"
+
+
+def test_ensure_action_binding_creates_minimal_immutable_plan(stage5) -> None:
+    database, requester, _approver, _, _lease = stage5
+    service = ApprovalService(database)
+    binding = _checkpoint_binding()
+
+    action = service.ensure_action_binding(
+        auth=requester,
+        task_id="task-1",
+        tool_name="create_report_artifact",
+        arguments=_arguments(),
+        checkpoint_binding=binding,
+    )
+    assert action.plan_revision >= 1
+    assert action.evidence_ids == ("evidence-1",)
+    with database.sessions() as session:
+        row = session.scalar(
+            select(PlanRevisionRow).where(
+                PlanRevisionRow.task_id == "task-1",
+                PlanRevisionRow.revision == action.plan_revision,
+            )
+        )
+        assert row is not None
+        # plan 只含 hash 引用：原始参数、正文不进入 plan。
+        assert set(row.plan) == {
+            "tool_name",
+            "tool_version",
+            "arguments_hash",
+            "evidence_ids",
+            "checkpoint_binding_hash",
+        }
+        assert "content" not in row.plan
+        assert "正文" not in str(row.plan)
+        assert row.plan["tool_version"] == "1.0.0"
+
+    # 重复派生：同一 action 幂等复用同一 revision。
+    repeated = service.ensure_action_binding(
+        auth=requester,
+        task_id="task-1",
+        tool_name="create_report_artifact",
+        arguments=_arguments(),
+        checkpoint_binding=binding,
+    )
+    assert repeated.plan_revision == action.plan_revision
+    assert repeated.plan_digest == action.plan_digest
+
+    # 参数变化 = 不同 action：新 revision。
+    changed = service.ensure_action_binding(
+        auth=requester,
+        task_id="task-1",
+        tool_name="create_report_artifact",
+        arguments=_arguments("changed"),
+        checkpoint_binding=binding,
+    )
+    assert changed.plan_revision > action.plan_revision
+
+
+def test_ensure_action_binding_rejects_unknown_tool(stage5) -> None:
+    database, requester, _approver, _, _lease = stage5
+    service = ApprovalService(database)
+    with pytest.raises(ApprovalServiceError, match="tool_not_registered"):
+        service.ensure_action_binding(
+            auth=requester,
+            task_id="task-1",
+            tool_name="arbitrary_shell",
+            arguments={"cmd": "rm -rf /"},
+            checkpoint_binding=_checkpoint_binding(),
+        )
+
+
+def test_ensure_action_binding_rejects_invalid_checkpoint_binding(stage5) -> None:
+    database, requester, _approver, _, _lease = stage5
+    service = ApprovalService(database)
+    with pytest.raises(ApprovalServiceError, match="approval_checkpoint_binding_invalid"):
+        service.ensure_action_binding(
+            auth=requester,
+            task_id="task-1",
+            tool_name="create_report_artifact",
+            arguments=_arguments(),
+            checkpoint_binding=_checkpoint_binding(tool_call_id=""),
+        )
+
+
+def test_checkpoint_binding_hash_is_action_scoped() -> None:
+    base = _checkpoint_binding()
+    same = _checkpoint_binding()
+    assert base.checkpoint_binding_hash == same.checkpoint_binding_hash
+    # thread/checkpoint/interrupt/tool_call 任一事实变化都构成不同 action。
+    for field, value in (
+        ("thread_id", "task-2"),
+        ("checkpoint_ns", "subgraph"),
+        ("checkpoint_id", "checkpoint-2"),
+        ("interrupt_id", "interrupt-2"),
+        ("tool_call_id", "call_2"),
+    ):
+        assert _checkpoint_binding(**{field: value}).checkpoint_binding_hash != (
+            base.checkpoint_binding_hash
+        )
+
+
+_BOTH_WRITE_TOOLS = (
+    ("create_report_artifact", {"title": "报告", "content": "正文", "format": "markdown"}),
+    ("create_work_item_draft", {"title": "草稿", "description": "工作项描述", "owner_group": "platform"}),
+)
+
+
+@pytest.mark.parametrize("tool_name,arguments", _BOTH_WRITE_TOOLS)
+@pytest.mark.parametrize(
+    "dimension",
+    ("task", "tool", "arguments", "evidence", "principal", "expiry"),
+)
+def test_binding_tampering_keeps_write_adapter_unexecuted(
+    stage5, tool_name: str, arguments: dict, dimension: str
+) -> None:
+    """两个 WRITE 工具参数化覆盖执行绑定；任一字段被篡改时 adapter 调用为 0。"""
+    database, requester, approver, _, lease = stage5
+    clock = [datetime.now(UTC)]
+    service = ApprovalService(database, now=lambda: clock[0])
+    plan_digest, evidence_digest = _binding(database)
+    # evidence 维度会触发 preflight 失败 → _reject_stale_approval 自动拒绝路径；
+    # checkpoint 绑定行的自动拒绝审计字段（批次 0 已知缺口，批次 2 修复）尚未接线，
+    # 因此该维度使用 legacy 绑定（binding IS NULL 不受审计 CHECK 约束）。
+    checkpoint_binding = (
+        None
+        if dimension == "evidence"
+        else _checkpoint_binding(tool_call_id=f"call-{tool_name}")
+    )
+    pending = service.request(
+        auth=requester,
+        task_id="task-1",
+        plan_revision=1,
+        plan_digest=plan_digest,
+        evidence_digest=evidence_digest,
+        evidence_ids=("evidence-1",),
+        tool_name=tool_name,
+        tool_version=None,
+        arguments=arguments,
+        expires_at=clock[0] + timedelta(minutes=5),
+        checkpoint_binding=checkpoint_binding,
+    )
+    binding = service.approve(auth=approver, approval_id=pending.approval_id)
+    adapter = _CountingAdapter()
+    executor = _executor(
+        database,
+        ToolRegistry(
+            adapters={
+                "create_report_artifact": adapter,
+                "create_work_item_draft": adapter,
+            }
+        ),
+        service,
+    )
+    request = ToolExecutionRequest(
+        auth=requester,
+        task_id="task-1",
+        tool_name=tool_name,
+        arguments=dict(arguments),
+        worker_id=lease.worker_id,
+        lease_generation=lease.lease_generation,
+        idempotency_key="tamper-key-1",
+        approval_id=binding.approval_id,
+        plan_revision=1,
+        plan_digest=plan_digest,
+        evidence_digest=evidence_digest,
+        evidence_ids=("evidence-1",),
+    )
+
+    if dimension == "expiry":
+        clock[0] = clock[0] + timedelta(minutes=6)
+    elif dimension == "task":
+        request = replace(request, task_id="other-task")
+    elif dimension == "tool":
+        other = (
+            "create_work_item_draft"
+            if tool_name == "create_report_artifact"
+            else "create_report_artifact"
+        )
+        request = replace(request, tool_name=other)
+    elif dimension == "arguments":
+        request = replace(request, arguments={**arguments, "title": "被篡改的标题"})
+    elif dimension == "evidence":
+        request = replace(request, evidence_ids=("evidence-1", "evidence-2"))
+    elif dimension == "principal":
+        forged = AuthContext(
+            tenant_id="tenant-a",
+            user_id="requester",
+            attributes={
+                "permissions": [
+                    "artifact:write",
+                    "knowledge:read",
+                    "document:read",
+                    "extra:permission",
+                ]
+            },
+            request_id="forged-principal",
+        )
+        request = replace(request, auth=forged)
+
+    with pytest.raises((ToolExecutionError, ApprovalServiceError, ToolRegistryError)):
+        executor.execute(request)
+    assert adapter.calls == 0
+
+
+@pytest.mark.parametrize("tool_name,arguments", _BOTH_WRITE_TOOLS)
+def test_valid_checkpoint_bound_approval_executes_exactly_once(
+    stage5, tool_name: str, arguments: dict
+) -> None:
+    """对照组：绑定完整未篡改时，两个 WRITE 工具各恰好执行一次。"""
+    database, requester, approver, _, lease = stage5
+    service = ApprovalService(database)
+    plan_digest, evidence_digest = _binding(database)
+    binding = service.request(
+        auth=requester,
+        task_id="task-1",
+        plan_revision=1,
+        plan_digest=plan_digest,
+        evidence_digest=evidence_digest,
+        evidence_ids=("evidence-1",),
+        tool_name=tool_name,
+        tool_version=None,
+        arguments=arguments,
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        checkpoint_binding=_checkpoint_binding(tool_call_id=f"call-{tool_name}"),
+    )
+    service.approve(auth=approver, approval_id=binding.approval_id)
+    adapter = _CountingAdapter()
+    executor = _executor(
+        database,
+        ToolRegistry(
+            adapters={
+                "create_report_artifact": adapter,
+                "create_work_item_draft": adapter,
+            }
+        ),
+        service,
+    )
+    request = ToolExecutionRequest(
+        auth=requester,
+        task_id="task-1",
+        tool_name=tool_name,
+        arguments=dict(arguments),
+        worker_id=lease.worker_id,
+        lease_generation=lease.lease_generation,
+        idempotency_key="valid-key-1",
+        approval_id=binding.approval_id,
+        plan_revision=1,
+        plan_digest=plan_digest,
+        evidence_digest=evidence_digest,
+        evidence_ids=("evidence-1",),
+    )
+
+    result = executor.execute(request)
+
+    assert result.status == "succeeded"
+    assert adapter.calls == 1

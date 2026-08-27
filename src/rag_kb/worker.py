@@ -14,9 +14,15 @@ from uuid import uuid4
 from qdrant_client import QdrantClient
 
 from rag_kb.agent.checkpointer import open_postgres_checkpointer
-from rag_kb.agent.factory import build_research_agent
+from rag_kb.agent.factory import (
+    build_controlled_action_agent,
+    build_research_agent,
+)
 from rag_kb.agent.result import AgentResultStore
-from rag_kb.agent.tools import build_research_tools
+from rag_kb.agent.tools import (
+    build_controlled_action_tools,
+    build_research_tools,
+)
 from rag_kb.application.ingestion_worker import (
     DocumentRegistryIngestionJobPort,
     IngestionWorker,
@@ -236,21 +242,37 @@ def build_task_worker(
     try:
         model = _build_research_model(settings)
         research_tools = build_research_tools(tools)
-        agents: dict[tuple[int, int], Any] = {}
+        controlled_tools = build_controlled_action_tools(tools)
+        research_agents: dict[tuple[int, int], Any] = {}
+        controlled_agents: dict[tuple[int, int], Any] = {}
 
         def agent_for(budgets: TaskBudgets) -> Any:
             key = (budgets.max_model_calls, budgets.max_tool_calls)
-            if key not in agents:
-                agents[key] = build_research_agent(
+            if key not in research_agents:
+                research_agents[key] = build_research_agent(
                     model,
                     research_tools,
                     checkpointer,
                     max_model_calls=budgets.max_model_calls,
                     max_tool_calls=budgets.max_tool_calls,
                 )
-            return agents[key]
+            return research_agents[key]
+
+        def controlled_agent_for(budgets: TaskBudgets) -> Any:
+            key = (budgets.max_model_calls, budgets.max_tool_calls)
+            if key not in controlled_agents:
+                controlled_agents[key] = build_controlled_action_agent(
+                    model,
+                    controlled_tools,
+                    checkpointer,
+                    max_model_calls=budgets.max_model_calls,
+                    max_tool_calls=budgets.max_tool_calls,
+                )
+            return controlled_agents[key]
 
         # Capability 仅代表默认预算 Agent 已经可用；其他持久预算按需编译并缓存。
+        # 受控 Agent 与 Research Agent 共用已验证的 model/checkpointer，
+        # 首个受控任务时惰性编译（编译失败由 worker 错误路径 fail-closed）。
         agent_for(task_budgets_from_settings(settings))
     except Exception:
         tools.close()
@@ -274,6 +296,7 @@ def build_task_worker(
         repository=repository,
         auth_contexts=DatabaseTaskAuthContextPort(database),
         agent_for=agent_for,
+        controlled_agent_for=controlled_agent_for,
         results=AgentResultStore(objects),
         evidence=EvidenceLedgerRepository(),
         tools=tools,
@@ -281,6 +304,7 @@ def build_task_worker(
         worker_id=identity,
         capability_name=settings.task_agent_capability_name,
         protocol_version=settings.task_agent_protocol_version,
+        approvals=approvals,
         close=close,
     )
     if publish_capability:

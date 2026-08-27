@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import SchemaError, ValidationError
 
 from rag_kb.domain.identity import AuthContext, Permission
@@ -16,6 +16,10 @@ class ToolRegistryError(RuntimeError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+# format=date 等格式声明必须在工具边界真实生效（如 due_date）。
+_FORMAT_CHECKER = FormatChecker()
 
 
 @dataclass(frozen=True)
@@ -118,7 +122,9 @@ class ToolRegistry:
     @staticmethod
     def validate_input(tool: RegisteredTool, arguments: dict[str, object]) -> None:
         try:
-            Draft202012Validator(tool.definition.input_schema).validate(arguments)
+            Draft202012Validator(
+                tool.definition.input_schema, format_checker=_FORMAT_CHECKER
+            ).validate(arguments)
         except ValidationError as exc:
             raise ToolRegistryError("tool_arguments_invalid") from exc
 

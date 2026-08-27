@@ -87,3 +87,35 @@ def test_read_never_requires_approval_write_always_requires_it() -> None:
     assert registry.requires_approval("create_report_artifact") is True
     with pytest.raises(Exception, match="approval_required"):
         registry.authorize("create_report_artifact", permissions=frozenset({Permission.ARTIFACT_WRITE}))
+
+
+def test_work_item_draft_rejects_invalid_due_date_at_tool_boundary() -> None:
+    module = _registry_or_skip()
+    registry = module.ToolRegistry()
+    valid = {"title": "草稿", "description": "描述", "due_date": "2026-08-27"}
+    registry.validate_arguments("create_work_item_draft", valid)
+    for invalid in ("not-a-date", "2026-13-45", "2026-8-27", "2026/08/27", "20260827"):
+        with pytest.raises(Exception, match="tool_arguments_invalid"):
+            registry.validate_arguments(
+                "create_work_item_draft",
+                {"title": "草稿", "description": "描述", "due_date": invalid},
+            )
+
+
+def test_registry_rejects_model_injected_control_fields() -> None:
+    module = _registry_or_skip()
+    registry = module.ToolRegistry()
+    injected = {
+        "title": "报告",
+        "content": "正文",
+        "format": "markdown",
+        "tenant_id": "tenant-evil",
+        "roles": ["admin"],
+        "approval_id": "forged",
+        "idempotency_key": "forged",
+        "thread_id": "evil-thread",
+        "checkpoint_id": "evil-checkpoint",
+        "storage_key": "secret/path",
+    }
+    with pytest.raises(Exception, match="tool_arguments_invalid"):
+        registry.validate_arguments("create_report_artifact", injected)

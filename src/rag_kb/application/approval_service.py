@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 
 from rag_kb.domain.approvals import ApprovalBinding
 from rag_kb.domain.evidence import canonical_evidence_snapshot
 from rag_kb.domain.identity import AuthContext, Permission
 from rag_kb.domain.fingerprints import canonical_fingerprint
-from rag_kb.infrastructure.database.models import ApprovalRow, AgentTaskRow, PlanRevisionRow
+from rag_kb.domain.tools import ToolMode
+from rag_kb.application.tool_registry import RegisteredTool, ToolRegistry, ToolRegistryError
+from rag_kb.infrastructure.database.models import (
+    ApprovalRow,
+    AgentTaskRow,
+    EvidenceRecordRow,
+    PlanRevisionRow,
+)
 from rag_kb.infrastructure.database.session import Database
 from rag_kb.infrastructure.database.task_execution import (
     DatabaseTaskEvidencePort,
@@ -43,17 +52,219 @@ def arguments_fingerprint(arguments: dict[str, object]) -> str:
     return canonical_fingerprint("tool_arguments", arguments)
 
 
+def checkpoint_binding_fingerprint(
+    *,
+    thread_id: str,
+    checkpoint_ns: str,
+    checkpoint_id: str,
+    interrupt_id: str,
+    tool_call_id: str,
+) -> str:
+    return canonical_fingerprint(
+        "approval_checkpoint_binding",
+        {
+            "thread_id": thread_id,
+            "checkpoint_ns": checkpoint_ns,
+            "checkpoint_id": checkpoint_id,
+            "interrupt_id": interrupt_id,
+            "tool_call_id": tool_call_id,
+        },
+    )
+
+
+@dataclass(frozen=True)
+class ApprovalCheckpointBinding:
+    """审批与 LangGraph checkpoint action 的服务端绑定事实（批次 1 新增）。
+
+    同一 thread/checkpoint/interrupt/tool_call 的重复同步必须命中同一条
+    active approval（uq_approvals_active_checkpoint_binding 兜底）。
+    """
+
+    thread_id: str
+    checkpoint_ns: str
+    checkpoint_id: str
+    interrupt_id: str
+    # LangGraph checkpoint action ID，不是 tool_calls 外键。
+    tool_call_id: str
+
+    @property
+    def checkpoint_binding_hash(self) -> str:
+        return checkpoint_binding_fingerprint(
+            thread_id=self.thread_id,
+            checkpoint_ns=self.checkpoint_ns,
+            checkpoint_id=self.checkpoint_id,
+            interrupt_id=self.interrupt_id,
+            tool_call_id=self.tool_call_id,
+        )
+
+
+@dataclass(frozen=True)
+class ActionBinding:
+    """服务端从 Evidence Ledger 派生的最小不可变 action binding（PlanRevision 事实）。"""
+
+    plan_revision: int
+    plan_digest: str
+    evidence_digest: str
+    evidence_ids: tuple[str, ...]
+
+
 class ApprovalService:
     def __init__(
         self,
         database: Database,
         *,
         evidence_validator: DatabaseTaskEvidencePort | None = None,
+        registry: ToolRegistry | None = None,
         now=None,
     ) -> None:
         self._database = database
         self._evidence_validator = evidence_validator or DatabaseTaskEvidencePort(database)
+        # 信任边界：tool/version 只从注册表白名单派生，拒绝任意工具或伪造版本。
+        self._registry = registry or ToolRegistry()
         self._now = now or (lambda: datetime.now(UTC))
+
+    def _require_writable_tool(self, tool_name: str) -> RegisteredTool:
+        try:
+            registered = self._registry.get(tool_name)
+        except ToolRegistryError as exc:
+            raise ApprovalServiceError("tool_not_registered") from exc
+        if registered.definition.mode is not ToolMode.WRITE:
+            raise ApprovalServiceError("approval_tool_mode_invalid")
+        return registered
+
+    @staticmethod
+    def _require_valid_checkpoint_binding(
+        checkpoint_binding: ApprovalCheckpointBinding,
+    ) -> None:
+        if (
+            not isinstance(checkpoint_binding.thread_id, str)
+            or not checkpoint_binding.thread_id.strip()
+            or not isinstance(checkpoint_binding.checkpoint_ns, str)
+            or not isinstance(checkpoint_binding.checkpoint_id, str)
+            or not checkpoint_binding.checkpoint_id.strip()
+            or not isinstance(checkpoint_binding.interrupt_id, str)
+            or not checkpoint_binding.interrupt_id.strip()
+            or not isinstance(checkpoint_binding.tool_call_id, str)
+            or not checkpoint_binding.tool_call_id.strip()
+        ):
+            raise ApprovalServiceError("approval_checkpoint_binding_invalid")
+
+    def ensure_action_binding(
+        self,
+        *,
+        auth: AuthContext,
+        task_id: str,
+        tool_name: str,
+        arguments: dict[str, object],
+        checkpoint_binding: ApprovalCheckpointBinding,
+    ) -> ActionBinding:
+        """从当前任务 Evidence Ledger 生成最小、不可变的 action binding（PlanRevision）。
+
+        plan 只保存 hash 引用，不保存原始参数；evidence IDs、digest、principal、
+        arguments hash 与 checkpoint binding hash 全部由服务端计算。同一 action
+        重复同步按 (plan_digest, evidence_digest) 幂等复用同一 revision。
+        """
+        registered = self._require_writable_tool(tool_name)
+        self._require_valid_checkpoint_binding(checkpoint_binding)
+        arguments_hash = arguments_fingerprint(arguments)
+        try:
+            with UnitOfWork(self._database) as work:
+                assert work.session is not None
+                task = work.session.scalar(
+                    select(AgentTaskRow)
+                    .where(
+                        AgentTaskRow.tenant_id == auth.tenant_id,
+                        AgentTaskRow.task_id == task_id,
+                        AgentTaskRow.user_id == auth.user_id,
+                    )
+                    .with_for_update()
+                )
+                if task is None or task.task_mode != "controlled_action":
+                    raise ApprovalServiceError("approval_plan_binding_invalid")
+                evidence_ids = tuple(
+                    work.session.scalars(
+                        select(EvidenceRecordRow.evidence_id)
+                        .where(
+                            EvidenceRecordRow.tenant_id == auth.tenant_id,
+                            EvidenceRecordRow.task_id == task_id,
+                        )
+                        .order_by(EvidenceRecordRow.evidence_id)
+                    )
+                )
+                snapshot = canonical_evidence_snapshot(
+                    evidence_ids, require_non_empty=True
+                )
+                plan = {
+                    "tool_name": tool_name,
+                    "tool_version": registered.definition.version,
+                    "arguments_hash": arguments_hash,
+                    "evidence_ids": list(snapshot.evidence_ids),
+                    "checkpoint_binding_hash": checkpoint_binding.checkpoint_binding_hash,
+                }
+                plan_digest = canonical_fingerprint("task_plan", plan)
+                existing = work.session.scalar(
+                    select(PlanRevisionRow).where(
+                        PlanRevisionRow.tenant_id == auth.tenant_id,
+                        PlanRevisionRow.task_id == task_id,
+                        PlanRevisionRow.plan_digest == plan_digest,
+                        PlanRevisionRow.evidence_digest == snapshot.digest,
+                    )
+                )
+                if existing is not None:
+                    return ActionBinding(
+                        plan_revision=existing.revision,
+                        plan_digest=plan_digest,
+                        evidence_digest=snapshot.digest,
+                        evidence_ids=snapshot.evidence_ids,
+                    )
+                revision = int(
+                    work.session.scalar(
+                        select(func.max(PlanRevisionRow.revision)).where(
+                            PlanRevisionRow.tenant_id == auth.tenant_id,
+                            PlanRevisionRow.task_id == task_id,
+                        )
+                    )
+                    or 0
+                ) + 1
+                work.session.add(
+                    PlanRevisionRow(
+                        plan_revision_id=uuid4().hex,
+                        task_id=task_id,
+                        tenant_id=auth.tenant_id,
+                        revision=revision,
+                        schema_version=1,
+                        plan=plan,
+                        plan_digest=plan_digest,
+                        evidence_digest=snapshot.digest,
+                        status="ready",
+                    )
+                )
+                work.session.flush()
+                return ActionBinding(
+                    plan_revision=revision,
+                    plan_digest=plan_digest,
+                    evidence_digest=snapshot.digest,
+                    evidence_ids=snapshot.evidence_ids,
+                )
+        except IntegrityError:
+            # 并发写入同一不可变 plan：按唯一绑定复读复用。
+            with self._database.sessions() as session:
+                existing = session.scalar(
+                    select(PlanRevisionRow).where(
+                        PlanRevisionRow.tenant_id == auth.tenant_id,
+                        PlanRevisionRow.task_id == task_id,
+                        PlanRevisionRow.plan_digest == plan_digest,
+                        PlanRevisionRow.evidence_digest == snapshot.digest,
+                    )
+                )
+                if existing is not None:
+                    return ActionBinding(
+                        plan_revision=existing.revision,
+                        plan_digest=plan_digest,
+                        evidence_digest=snapshot.digest,
+                        evidence_ids=snapshot.evidence_ids,
+                    )
+            raise
 
     def request(
         self,
@@ -65,10 +276,18 @@ class ApprovalService:
         evidence_digest: str,
         evidence_ids: tuple[str, ...],
         tool_name: str,
-        tool_version: str,
+        tool_version: str | None = None,
         arguments: dict[str, object],
         expires_at: datetime,
+        checkpoint_binding: ApprovalCheckpointBinding | None = None,
     ) -> ApprovalBinding:
+        registered = self._require_writable_tool(tool_name)
+        if tool_version is not None and tool_version != registered.definition.version:
+            # 拒绝调用方/模型自报版本；版本唯一事实源是 ToolRegistry。
+            raise ApprovalServiceError("approval_tool_version_invalid")
+        tool_version = registered.definition.version
+        if checkpoint_binding is not None:
+            self._require_valid_checkpoint_binding(checkpoint_binding)
         self.expire_due()
         now = self._now()
         if expires_at.tzinfo is None or expires_at <= now:
@@ -125,20 +344,61 @@ class ApprovalService:
                 deadline is not None and expires_at > deadline
             ) or expires_at > now + timedelta(minutes=15):
                 raise ApprovalServiceError("approval_expiry_invalid")
-            existing = work.session.scalar(
-                select(ApprovalRow).where(
-                    ApprovalRow.tenant_id == auth.tenant_id,
-                    ApprovalRow.task_id == task_id,
-                    ApprovalRow.plan_revision == plan_revision,
-                    ApprovalRow.plan_digest == plan_digest,
-                    ApprovalRow.evidence_digest == evidence_digest,
-                    ApprovalRow.tool_name == tool_name,
-                    ApprovalRow.tool_version == tool_version,
-                    ApprovalRow.arguments_hash == arguments_hash,
-                    ApprovalRow.principal_hash == principal_hash,
-                    ApprovalRow.status.in_(("pending", "approved")),
+            existing = None
+            if checkpoint_binding is not None:
+                # 同一 checkpoint action 的重复同步必须复用同一条 active approval；
+                # 绑定事实与十列执行绑定任一不符即冲突，fail-closed。
+                existing = work.session.scalar(
+                    select(ApprovalRow).where(
+                        ApprovalRow.tenant_id == auth.tenant_id,
+                        ApprovalRow.task_id == task_id,
+                        ApprovalRow.checkpoint_binding_hash
+                        == checkpoint_binding.checkpoint_binding_hash,
+                        ApprovalRow.status.in_(("pending", "approved")),
+                    )
                 )
-            )
+                if existing is not None and (
+                    existing.plan_revision != plan_revision
+                    or existing.plan_digest != plan_digest
+                    or existing.evidence_digest != evidence_digest
+                    or existing.tool_name != tool_name
+                    or existing.tool_version != tool_version
+                    or existing.arguments_hash != arguments_hash
+                    or existing.principal_hash != principal_hash
+                    or existing.thread_id != checkpoint_binding.thread_id
+                    or existing.checkpoint_ns != checkpoint_binding.checkpoint_ns
+                    or existing.checkpoint_id != checkpoint_binding.checkpoint_id
+                    or existing.interrupt_id != checkpoint_binding.interrupt_id
+                    or existing.tool_call_id != checkpoint_binding.tool_call_id
+                ):
+                    raise ApprovalServiceError("approval_checkpoint_conflict")
+            if existing is None:
+                existing = work.session.scalar(
+                    select(ApprovalRow).where(
+                        ApprovalRow.tenant_id == auth.tenant_id,
+                        ApprovalRow.task_id == task_id,
+                        ApprovalRow.plan_revision == plan_revision,
+                        ApprovalRow.plan_digest == plan_digest,
+                        ApprovalRow.evidence_digest == evidence_digest,
+                        ApprovalRow.tool_name == tool_name,
+                        ApprovalRow.tool_version == tool_version,
+                        ApprovalRow.arguments_hash == arguments_hash,
+                        ApprovalRow.principal_hash == principal_hash,
+                        ApprovalRow.status.in_(("pending", "approved")),
+                        ApprovalRow.checkpoint_binding_hash.is_(None),
+                    )
+                )
+                if existing is not None and checkpoint_binding is not None:
+                    # 同一执行绑定的 legacy active approval：补齐 checkpoint 绑定后复用。
+                    existing.thread_id = checkpoint_binding.thread_id
+                    existing.checkpoint_ns = checkpoint_binding.checkpoint_ns
+                    existing.checkpoint_id = checkpoint_binding.checkpoint_id
+                    existing.interrupt_id = checkpoint_binding.interrupt_id
+                    existing.tool_call_id = checkpoint_binding.tool_call_id
+                    existing.checkpoint_binding_hash = (
+                        checkpoint_binding.checkpoint_binding_hash
+                    )
+                    work.session.flush()
             if existing is None:
                 existing = ApprovalRow(
                     approval_id=uuid4().hex,
@@ -154,6 +414,26 @@ class ApprovalService:
                     status="pending",
                     expires_at=expires_at,
                     created_at=now,
+                    thread_id=(
+                        checkpoint_binding.thread_id if checkpoint_binding else None
+                    ),
+                    checkpoint_ns=(
+                        checkpoint_binding.checkpoint_ns if checkpoint_binding else None
+                    ),
+                    checkpoint_id=(
+                        checkpoint_binding.checkpoint_id if checkpoint_binding else None
+                    ),
+                    interrupt_id=(
+                        checkpoint_binding.interrupt_id if checkpoint_binding else None
+                    ),
+                    tool_call_id=(
+                        checkpoint_binding.tool_call_id if checkpoint_binding else None
+                    ),
+                    checkpoint_binding_hash=(
+                        checkpoint_binding.checkpoint_binding_hash
+                        if checkpoint_binding
+                        else None
+                    ),
                 )
                 work.session.add(existing)
                 work.session.flush()
@@ -210,6 +490,11 @@ class ApprovalService:
                 )
             ):
                 raise ApprovalServiceError("approval_plan_binding_invalid")
+            if auth.user_id == task.user_id:
+                # 开放问题 3（已拍板）：发起人不能自批。判定以 agent_tasks.user_id
+                # （任务发起人）为准，与 decision 主体（approved_by）同一即拒绝；
+                # approval 保持 pending，合格审批者仍可批准。
+                raise ApprovalServiceError("approval_self_rejected")
             expires_at = row.expires_at
             if expires_at.tzinfo is None:
                 expires_at = expires_at.replace(tzinfo=UTC)
@@ -341,6 +626,9 @@ class ApprovalService:
             expires_at = expires_at.replace(tzinfo=UTC)
         if approved_at is not None and approved_at.tzinfo is None:
             approved_at = approved_at.replace(tzinfo=UTC)
+        rejected_at = row.rejected_at
+        if rejected_at is not None and rejected_at.tzinfo is None:
+            rejected_at = rejected_at.replace(tzinfo=UTC)
         return ApprovalBinding(
             approval_id=row.approval_id,
             task_id=row.task_id,
@@ -355,4 +643,14 @@ class ApprovalService:
             expires_at=expires_at,
             approved_by=row.approved_by,
             approved_at=approved_at,
+            status=row.status,
+            thread_id=row.thread_id,
+            checkpoint_ns=row.checkpoint_ns,
+            checkpoint_id=row.checkpoint_id,
+            interrupt_id=row.interrupt_id,
+            tool_call_id=row.tool_call_id,
+            checkpoint_binding_hash=row.checkpoint_binding_hash,
+            rejected_by=row.rejected_by,
+            rejected_at=rejected_at,
+            rejection_reason=row.rejection_reason,
         )
