@@ -57,7 +57,7 @@ conda run -n rag-kb --no-capture-output python -m rag_kb.worker --watch --includ
 - `GET /v1/documents/{document_id}`、`GET /v1/ingestion-jobs/{job_id}`：租户与 ACL 约束的查询。
 - `POST /v1/tasks` 仅接受 `research`；`GET /v1/tasks/{task_id}/result` 返回经服务端重验的 citation，`/continue` 只恢复服务端确认的澄清 interrupt。
 
-身份来自 `Authorization: Bearer ...` 或本地演示 `X-Demo-Role-Token`，角色不能由请求正文提升。应用只提供版本化 `/v1` 业务接口。
+身份来自 `Authorization: Bearer ...` 或本地演示 `X-Demo-Role-Token`，角色不能由请求正文提升。本地演示主体的初始化请运行 `python scripts/init_demo_principals.py`，它按令牌真实解析的 permissions attributes 写入，不要手工插入空 attributes 的记录。应用只提供版本化 `/v1` 业务接口。
 
 ## 验证
 
