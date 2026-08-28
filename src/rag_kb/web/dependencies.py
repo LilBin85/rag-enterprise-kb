@@ -196,11 +196,6 @@ def build_artifact_content_service() -> ArtifactContentService:
     )
 
 
-@lru_cache
-def build_agent_result_store() -> AgentResultStore:
-    return AgentResultStore(LocalObjectStore(get_settings().object_store_root))
-
-
 def build_task_result_service() -> TaskResultService:
     settings = get_settings()
     return TaskResultService(

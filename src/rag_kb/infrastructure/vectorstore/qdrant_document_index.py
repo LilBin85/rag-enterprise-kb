@@ -131,7 +131,7 @@ def projection_key(tenant_id: str, version_id: str, generation: int) -> str:
 
 
 class QdrantDocumentIndex(DocumentIndexPort):
-    """写入新 collection 的三阶段文档索引；不依赖旧 ``ChunkStore``。"""
+    """写入新 collection 的三阶段文档索引。"""
 
     def __init__(
         self,

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from scripts.benchmark_enterprise_retrieval import (
     CaseObservation,
     _evaluate_document_version_cases,
     _select_pipeline_configuration,
+    main,
 )
-from rag_kb.retrieval_acceptance import AcceptanceCase
+from rag_kb.retrieval_acceptance import AcceptanceCase, load_acceptance_dataset
 from rag_kb.models import Role
 
 
@@ -189,3 +192,30 @@ def test_document_version_evaluator_accepts_an_explicit_evaluated_subset() -> No
 
     assert evaluation["metrics"]["case_count"] == 1
     assert development.case_id not in {item["case_id"] for item in evaluation["cases"]}
+
+
+def test_cli_defaults_to_v2_dataset(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_benchmark(**kwargs):
+        captured.update(kwargs)
+        return {"status": "completed"}, 0
+
+    monkeypatch.setenv("RAG_KB_DATABASE_URL", "postgresql://unused")
+    monkeypatch.setattr(
+        "scripts.benchmark_enterprise_retrieval.run_benchmark", fake_run_benchmark
+    )
+
+    assert main([]) == 0
+    assert captured["dataset_path"] == Path("data/benchmarks/retrieval_acceptance_v2.yaml")
+    assert captured["schema_path"] == Path("schemas/retrieval-acceptance-v2.schema.json")
+
+
+def test_v2_acceptance_dataset_loads() -> None:
+    dataset = load_acceptance_dataset(
+        Path("data/benchmarks/retrieval_acceptance_v2.yaml"),
+        Path("schemas/retrieval-acceptance-v2.schema.json"),
+    )
+
+    assert dataset.version == 2
+    assert {"development", "calibration", "test"} <= set(dataset.split_counts)

@@ -8,7 +8,7 @@
 2. 启动 PostgreSQL、Qdrant，再启动 API 与 Worker；只有 Worker 全部构建完成并注册 `task-agent/m2-fenced-v1` capability lease 后才恢复任务入口。
 3. 使用新版 `/v1` 客户端；首个版本使用 `POST /v1/documents`，同一文档的后续版本使用 `POST /v1/documents/{document_id}/versions`，两者都必须提供 `Idempotency-Key`。
 4. 旧接口兼容层已删除，客户端必须使用 `/v1` 接口。
-5. 迁移验收以 `docs/acceptance/latest.json` 为准；它与独立的 M1/M2 E2E 报告共同记录当前工作树的最终机器验收。
+5. `docs/acceptance/latest.json` 与独立的 M1/M2 E2E 报告是其记录 revision/worktree 的历史机器验收快照；迁移或发布当前工作树前必须重新运行验收，不能复用其中的结论。
 
 ## 0010 Research Agent 状态收缩
 
@@ -66,4 +66,4 @@ conda run -n rag-kb --no-capture-output python -m pytest -q tests/test_database_
 
 ## 旧测试与文档
 
-旧 Planner/Runtime、pending-action 调度和确定性任务模拟不再是 Agent 的验收依据。当前覆盖由 Agent 工厂、PostgreSQL checkpointer interrupt/resume、READ/受控 WRITE 工具适配器、审批、artifact 正文读取、版本上传，以及隔离的 M1 Research / M2 controlled-write E2E 组成。旧验收报告、中文学习笔记及用户材料仅作历史参考，不删除、不覆盖。
+旧 Planner/Runtime、pending-action 调度和确定性任务模拟不再是 Agent 的验收依据。当前覆盖由 Agent 工厂、PostgreSQL checkpointer interrupt/resume、READ/受控 WRITE 工具适配器、审批、artifact 正文读取、版本上传，以及隔离的 M1 Research / M2 controlled-write E2E 组成。历史验收报告与基线保留为可追溯的历史参考，不删除、不覆盖；中文学习笔记及用户材料亦仅作历史参考。V0 源码、role-only 文件及其运行/验收命令均已退役，不得作为当前运行指引。

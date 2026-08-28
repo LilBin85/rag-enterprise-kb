@@ -1,5 +1,7 @@
 # 企业知识任务 Agent 工程案例、现状评估与重构计划
 
+> **历史 V0 实现说明：** 本文提及的旧 role-only 文件已退役，请勿按旧路径或命令操作。当前入口见 [README.md](README.md)、[docs/architecture.md](docs/architecture.md) 和 [TASK_PROGRESS.md](TASK_PROGRESS.md)。
+
 > - 审查日期：2026-08-25
 > - 迁移决策同步：2026-08-25；**实施状态同步：2026-08-27 —— M1 已全部完成并验证**（批次 0-4 收口，`create_agent` + PostgreSQL checkpointer + 4 个 READ 工具 + 严格真实 E2E 通过，全量 441 passed / 0 skip，`docs/acceptance/latest.json` verdict=passed）。第 1-3 章描述的“迁移前现状”为审查时快照，仅供历史对照；当前事实源以 `TASK_PROGRESS.md` 与机器验收报告为准。M2 尚未开始。
 > - 审查范围：当前工作区源码、配置、迁移、冻结语料、测试与历史验收产物；外部项目的 GitHub 仓库和官方文档

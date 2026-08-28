@@ -36,8 +36,6 @@ class Settings(BaseSettings):
     demo_role_tokens: dict[str, str] = {}
     # Qdrant
     qdrant_url: str = "http://localhost:6333"
-    qdrant_collection: str = "kb_chunks"
-    # 新版企业投影与旧 role-only collection 物理隔离，迁移评测通过前不切别名。
     qdrant_v2_collection: str = "kb_chunks_v2"
 
     # PostgreSQL 是业务与任务状态的生产事实源。SQLite URL 只用于本地轻量测试；
@@ -86,25 +84,11 @@ class Settings(BaseSettings):
     task_result_retention_days: int = Field(default=7, ge=1)
     result_object_orphan_grace_seconds: int = Field(default=3600, ge=1)
 
-    # 规划复用检索 tool 上限；模型决策和结构修复另行有界，避免隐式循环。
-    planner_max_model_decisions: int = Field(default=6, ge=1, le=10)
-    planner_max_repairs: int = Field(default=2, ge=0, le=5)
-    # 已点名制度时先由服务端做一次 ACL 受权检索；空集直接拒绝，避免模型把
-    # 权限/证据问题误判成需要用户澄清。可在测试或灰度环境显式关闭。
-    planner_preflight_named_policy_search: bool = True
-
-    # 策略落地规划的本地恢复状态；SQLite 不承载知识证据正文。
-    policy_rollout_db_path: Path = ROOT_DIR / "data" / "local" / "policy_rollout_tasks.sqlite3"
-    policy_rollout_draft_dir: Path = ROOT_DIR / "data" / "local" / "policy_rollout_drafts"
-    policy_rollout_claim_ttl_seconds: int = Field(default=300, ge=1, le=3600)
-
     # 服务端生成对象键；请求和模型均不得指定任意文件路径。
     object_store_root: Path = ROOT_DIR / "data" / "local" / "objects"
 
     # bge-m3 dense 向量维度(工作单元 3 使用)
     embedding_dim: int = 1024
-
-    corpus_dir: Path = ROOT_DIR / "data" / "corpus"
 
     @model_validator(mode="after")
     def validate_retention_windows(self) -> "Settings":

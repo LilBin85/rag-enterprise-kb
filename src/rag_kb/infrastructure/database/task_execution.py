@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -27,14 +25,6 @@ class TaskExecutionContextError(RuntimeError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
-
-
-@dataclass(frozen=True)
-class TaskPlanBinding:
-    plan_revision: int
-    plan_digest: str
-    evidence_digest: str
-    evidence_ids: tuple[str, ...]
 
 
 def current_task_auth(
@@ -120,30 +110,6 @@ class DatabaseTaskAuthContextPort:
                 task=task,
                 auth_context_ref=auth_context_ref,
                 request_id=request_id,
-            )
-
-
-class DatabaseTaskPlanBindingPort:
-    def __init__(self, database: Database) -> None:
-        self._database = database
-
-    def load(self, *, auth: AuthContext, task_id: str, revision: int) -> TaskPlanBinding:
-        with self._database.sessions() as session:
-            row = session.scalar(
-                select(PlanRevisionRow).where(
-                    PlanRevisionRow.tenant_id == auth.tenant_id,
-                    PlanRevisionRow.task_id == task_id,
-                    PlanRevisionRow.revision == revision,
-                )
-            )
-            if row is None:
-                raise TaskExecutionContextError("task_plan_binding_missing")
-            snapshot = _plan_evidence_snapshot(row, require_non_empty=False)
-            return TaskPlanBinding(
-                plan_revision=row.revision,
-                plan_digest=row.plan_digest,
-                evidence_digest=row.evidence_digest,
-                evidence_ids=snapshot.evidence_ids,
             )
 
 

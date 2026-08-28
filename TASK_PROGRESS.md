@@ -1,8 +1,9 @@
 # 重构任务进度记录
 
 > 最后更新：2026-08-28
-> 当前阶段：M1 与 M2 批次 0-4 均已完成并验证；最新正式验收覆盖严格真实 E2E、PostgreSQL 故障矩阵、双库全量回归、检索 benchmark 与清理门禁，`docs/acceptance/latest.json` verdict 为 `passed`。
+> 当前阶段：M1 与 M2 批次 0-4 的历史交付均已完成并验证；`docs/acceptance/latest.json` 是绑定其记录 revision/worktree 的正式验收快照，当前工作树发布前必须重新验收。
 > 开发依据：`AGENT_REFACTOR_PLAN.md`、`M2_PLAN.md`（未跟踪实施设计）；当前交付状态以本文为准。
+> V0/V1 退役验证：两套隔离 PostgreSQL 库分别用于 head + checkpointer 和空库 migration round-trip，完整 `python -B -m pytest -q` 为 `478 passed`；两库均已删除。真实 V2 benchmark 的测试切分 Recall@5、MRR、无答案准确率均为 `1.0`，ACL 泄漏率为 `0`；其随机 tenant、collection 和对象目录均已清理。
 
 ## 执行约束
 

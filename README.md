@@ -2,7 +2,7 @@
 
 面向企业制度与技术规范的租户隔离知识任务智能体。`/v1` 接口以 PostgreSQL 事实源、Qdrant 授权检索、证据账本和可恢复任务状态为核心。
 
-机器报告 [docs/acceptance/latest.json](docs/acceptance/latest.json) 记录当前工作树已完成的 M1/M2 验收。最终报告必须以 `verdict`、`gates`、`unverified` 和检索质量门为准，不能由文档补写缺失证据。
+机器报告 [docs/acceptance/latest.json](docs/acceptance/latest.json) 保留其记录的 revision/worktree 的 M1/M2 验收快照，不代表当前工作树已经通过验收。发布前必须重新生成报告，并以 `verdict`、`gates`、`unverified` 和检索质量门为准，不能由文档补写缺失证据。
 
 ## 架构与运行模式
 
@@ -109,7 +109,7 @@ conda run -n rag-kb --no-capture-output python scripts/build_project_acceptance_
   --output docs/acceptance/latest.json
 ```
 
-M1/M2 严格真实 E2E 已在隔离资源上通过：M1 验证 V1/V2 上传、精确四个 READ 工具与结果引用；M2 验证 31 个受控任务、HITL、批准/拒绝、artifact 隔离、恢复窗口、严格 msgpack 与终态审计。最终双库全量回归为 `550 passed / 0 failed / 0 skipped`，检索质量与 ACL 门均通过。脚本不会从文档继承指标或填充缺失数字。
+报告中记录的 M1/M2 严格真实 E2E 曾在隔离资源上通过：M1 验证 V1/V2 上传、精确四个 READ 工具与结果引用；M2 验证 31 个受控任务、HITL、批准/拒绝、artifact 隔离、恢复窗口、严格 msgpack 与终态审计。其双库全量回归为 `550 passed / 0 failed / 0 skipped`，是历史快照而非当前工作树结论；脚本不会从文档继承指标或填充缺失数字。
 
 ## 目录边界
 

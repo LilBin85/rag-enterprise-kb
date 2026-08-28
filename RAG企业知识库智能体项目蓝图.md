@@ -465,8 +465,6 @@ DeepSeek 输出不能单独作为可信来源。最终响应中的引用必须�
 
 确定性的摄取、状态、ACL 和引用验证必须完全脱离真实 LLM 输出。大多数单元测试应 mock DeepSeek API；真实模型只用于显式授权、调用预算受控且与默认回归分离的验收。这样可避免模型随机性、网络问题和 API 成本破坏回归稳定性。2026-08-14 最新冻结回归为 202 项通过；真实 Planner 11×3 共 33 次均通过终态、任务结果、计划约束、澄清利用、Todo、依赖、引用、安全和成本门。精确轨迹匹配仅保留为诊断指标，外部 Provider 内部重试及部分 Token 元数据仍不可观测。
 
-策略比较另有 `tests/test_policy_compare.py` 聚焦测试：授权比较、added/modified 章节、越权、withdrawn/deleted/missing、非法/反向/相同版本、工具绑定、步数/工具次数、模型和工具失败、引用完整性、只读约束及端点契约。基准脚本 `scripts/benchmark_policy_comparisons.py` 读取 manifest 的 `policy_comparisons` 和固定语料 fixture，不依赖运行态 Qdrant 数据；它将实际 case pass/fail、ACL 泄漏、版本不匹配、引用完整性、护栏违规、拒答错误计数与耗时写入 `data/local/benchmarks/`；报告结构由 `schemas/policy-comparison-report.schema.json` 固定，不预填结果。
-
 在没有实际跑出结果之前，不写入任何准确率、召回率、延迟、幻觉率或成本数字。后续若进行评测，应将结果与数据集版本、配置和失败样例一起记录。
 
 ## 11. 安全与数据边界

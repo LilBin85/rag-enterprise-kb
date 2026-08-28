@@ -93,7 +93,6 @@ openai==2.53.0
 opencv-python==5.0.0.93
 openpyxl==3.1.5
 orjson==3.11.9
-ormsgpack==1.12.2
 packaging==26.0
 pandas==3.0.5
 peft==0.20.0

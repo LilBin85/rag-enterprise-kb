@@ -597,9 +597,13 @@ def run_benchmark(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", type=Path, default=Path("data/benchmarks/retrieval_acceptance.yaml"))
     parser.add_argument(
-        "--schema", type=Path, default=Path("schemas/retrieval-acceptance-dataset.schema.json")
+        "--dataset",
+        type=Path,
+        default=Path("data/benchmarks/retrieval_acceptance_v2.yaml"),
+    )
+    parser.add_argument(
+        "--schema", type=Path, default=Path("schemas/retrieval-acceptance-v2.schema.json")
     )
     parser.add_argument("--corpus", type=Path, default=Path("data/corpus"))
     parser.add_argument(
