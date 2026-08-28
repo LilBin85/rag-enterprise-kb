@@ -14,6 +14,7 @@ _DEMO_USER_PERMISSIONS = (
     "task:read",
     "artifact:write",
 )
+_DEMO_APPROVER_PERMISSIONS = ("task:approve",)
 
 
 def demo_token_principals(
@@ -25,7 +26,13 @@ def demo_token_principals(
             tenant_id=tenant_id,
             user_id=f"demo-{role}",
             roles=frozenset({role}),
-            attributes={"permissions": list(_DEMO_USER_PERMISSIONS)},
+            attributes={
+                "permissions": list(
+                    _DEMO_APPROVER_PERMISSIONS
+                    if role == "approver"
+                    else _DEMO_USER_PERMISSIONS
+                )
+            },
         )
         for role, token in role_tokens.items()
         if token

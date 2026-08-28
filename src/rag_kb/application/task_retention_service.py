@@ -1,4 +1,4 @@
-"""Research 任务正文、checkpoint 与孤儿对象的周期收敛。"""
+"""任务正文、checkpoint、产物与孤儿对象的周期收敛。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from sqlalchemy import func, or_, select
 
 from rag_kb.agent.result import AgentResultStore
 from rag_kb.domain.tasks import TaskMode, TaskStatus
-from rag_kb.infrastructure.database.models import AgentTaskRow, ToolCallRow
+from rag_kb.infrastructure.database.models import AgentTaskRow, ArtifactRow, ToolCallRow
 from rag_kb.infrastructure.database.session import Database
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
@@ -30,7 +30,7 @@ _TERMINAL_STATUS_VALUES = tuple(
         TaskStatus.UNKNOWN,
     )
 )
-_RESULT_PREFIXES = ("tool-results", "task-results")
+_RESULT_PREFIXES = ("tool-results", "task-results", "artifacts")
 _ORPHAN_RETRY_CAPACITY = 100
 
 
@@ -46,6 +46,12 @@ class _TaskContentCandidate:
     checkpoint_pending: bool
     result_pending: bool
     result_ref: str | None
+
+
+@dataclass(frozen=True)
+class _ArtifactContentCandidate:
+    artifact_id: str
+    storage_key: str
 
 
 class TaskRetentionService:
@@ -111,7 +117,7 @@ class TaskRetentionService:
         return purged
 
     def purge_finished_task_content(self, *, limit: int = 100) -> int:
-        """删除过期 Research checkpoint 与最终正文，分段提交 marker 以支持重扫。"""
+        """删除过期终态 checkpoint、结果与产物正文，分段提交 marker 以支持重扫。"""
         self._validate_limit(limit)
         purged = 0
         for candidate in self._expired_task_content(limit):
@@ -145,6 +151,20 @@ class TaskRetentionService:
                     result_ready_to_mark=result_ready_to_mark,
                 ):
                     purged += 1
+        return purged + self.purge_expired_artifact_content(limit=limit)
+
+    def purge_expired_artifact_content(self, *, limit: int = 100) -> int:
+        """产物正文删除成功后才清内部引用并写 purge marker。"""
+        self._validate_limit(limit)
+        purged = 0
+        for candidate in self._expired_artifact_content(limit):
+            try:
+                self._objects.delete_exact(candidate.storage_key)
+            except (OSError, ValueError):
+                logger.error("产物正文删除失败 artifact_id=%s", candidate.artifact_id)
+                continue
+            if self._mark_artifact_content_purged(candidate):
+                purged += 1
         return purged
 
     def purge_orphaned_result_objects(self, *, limit: int = 100) -> int:
@@ -211,7 +231,9 @@ class TaskRetentionService:
             try:
                 self._objects.delete_exact(ref)
             except (OSError, ValueError):
-                logger.error("孤儿结果对象删除失败 ref=%s", ref)
+                logger.error(
+                    "孤儿对象删除失败 prefix=%s", PurePosixPath(ref).parts[0]
+                )
                 self._queue_orphan_retry(ref)
                 continue
             self._discard_orphan_retry(ref)
@@ -293,7 +315,6 @@ class TaskRetentionService:
                 work.session.scalars(
                     select(AgentTaskRow)
                     .where(
-                        AgentTaskRow.task_mode == TaskMode.RESEARCH.value,
                         AgentTaskRow.status.in_(_TERMINAL_STATUS_VALUES),
                         AgentTaskRow.content_expires_at.is_not(None),
                         AgentTaskRow.content_expires_at <= clock,
@@ -316,6 +337,55 @@ class TaskRetentionService:
                 )
                 for row in rows
             )
+
+    def _expired_artifact_content(self, limit: int) -> tuple[_ArtifactContentCandidate, ...]:
+        with UnitOfWork(self._database) as work:
+            assert work.session is not None
+            clock = self._clock_expression(work.session)
+            rows = tuple(
+                work.session.scalars(
+                    select(ArtifactRow)
+                    .where(
+                        ArtifactRow.storage_key.is_not(None),
+                        ArtifactRow.content_expires_at.is_not(None),
+                        ArtifactRow.content_expires_at <= clock,
+                        ArtifactRow.content_purged_at.is_(None),
+                    )
+                    .order_by(ArtifactRow.content_expires_at, ArtifactRow.artifact_id)
+                    .limit(limit)
+                    .with_for_update(skip_locked=True)
+                )
+            )
+            return tuple(
+                _ArtifactContentCandidate(
+                    artifact_id=row.artifact_id,
+                    storage_key=row.storage_key,
+                )
+                for row in rows
+                if isinstance(row.storage_key, str)
+            )
+
+    def _mark_artifact_content_purged(self, candidate: _ArtifactContentCandidate) -> bool:
+        with UnitOfWork(self._database) as work:
+            assert work.session is not None
+            row = work.session.scalar(
+                select(ArtifactRow)
+                .where(ArtifactRow.artifact_id == candidate.artifact_id)
+                .with_for_update()
+            )
+            if row is None or row.content_purged_at is not None:
+                return False
+            now = self._database_now(work.session)
+            expires_at = _aware(row.content_expires_at)
+            if (
+                row.storage_key != candidate.storage_key
+                or expires_at is None
+                or expires_at > now
+            ):
+                return False
+            row.storage_key = None
+            row.content_purged_at = now
+            return True
 
     def _mark_task_content_purged(
         self,
@@ -360,6 +430,9 @@ class TaskRetentionService:
             *session.scalars(
                 select(AgentTaskRow.result_ref).where(AgentTaskRow.result_ref.is_not(None))
             ),
+            *session.scalars(
+                select(ArtifactRow.storage_key).where(ArtifactRow.storage_key.is_not(None))
+            ),
         }
 
     def _running_tool_refs(self, session) -> set[str]:
@@ -392,7 +465,6 @@ class TaskRetentionService:
             session.scalars(
                 select(AgentTaskRow.task_id).where(
                     AgentTaskRow.task_id.in_(task_ids),
-                    AgentTaskRow.task_mode == TaskMode.RESEARCH.value,
                     AgentTaskRow.status.in_(
                         (TaskStatus.PLANNING.value, TaskStatus.RUNNING.value)
                     ),
@@ -424,8 +496,7 @@ class TaskRetentionService:
     def _is_expired_terminal_task(row: AgentTaskRow, now: datetime) -> bool:
         expires_at = _aware(row.content_expires_at)
         return (
-            row.task_mode == TaskMode.RESEARCH.value
-            and row.status in _TERMINAL_STATUS_VALUES
+            row.status in _TERMINAL_STATUS_VALUES
             and expires_at is not None
             and expires_at <= now
         )

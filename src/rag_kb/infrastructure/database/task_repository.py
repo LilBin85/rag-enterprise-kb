@@ -29,6 +29,7 @@ from rag_kb.domain.tasks import (
 from rag_kb.infrastructure.database.models import (
     AgentCapabilityLeaseRow,
     AgentTaskRow,
+    ArtifactRow,
     TaskEventRow,
 )
 from rag_kb.infrastructure.database.session import Database
@@ -176,7 +177,7 @@ class DatabaseTaskRepository:
             if deadline <= now:
                 raise TaskRepositoryError("task_deadline_expired")
             if (
-                task_mode is TaskMode.RESEARCH
+                task_mode in {TaskMode.RESEARCH, TaskMode.CONTROLLED_ACTION}
                 and self._creation_capability_required
                 and not self._has_active_capability_in_session(
                     work.session,
@@ -185,7 +186,11 @@ class DatabaseTaskRepository:
                     for_update=True,
                 )
             ):
-                raise TaskRepositoryError("research_agent_unavailable")
+                raise TaskRepositoryError(
+                    "research_agent_unavailable"
+                    if task_mode is TaskMode.RESEARCH
+                    else "task_agent_unavailable"
+                )
             row = AgentTaskRow(
                 task_id=task_id or uuid4().hex,
                 tenant_id=auth.tenant_id,
@@ -545,8 +550,6 @@ class DatabaseTaskRepository:
                 raise TaskRepositoryError("task_not_found")
             if row.state_version != expected_state_version:
                 raise TaskRepositoryError("task_state_conflict")
-            if row.task_mode != TaskMode.RESEARCH.value:
-                raise TaskRepositoryError("task_mode_not_supported")
             if (
                 row.required_capability_name != capability_name
                 or row.required_protocol_version != protocol_version
@@ -575,7 +578,9 @@ class DatabaseTaskRepository:
                     AgentTaskRow.tenant_id == auth.tenant_id,
                     AgentTaskRow.user_id == auth.user_id,
                     AgentTaskRow.state_version == expected_state_version,
-                    AgentTaskRow.task_mode == TaskMode.RESEARCH.value,
+                    AgentTaskRow.task_mode.in_(
+                        (TaskMode.RESEARCH.value, TaskMode.CONTROLLED_ACTION.value)
+                    ),
                     AgentTaskRow.required_capability_name == capability_name,
                     AgentTaskRow.required_protocol_version == protocol_version,
                     AgentTaskRow.status == TaskStatus.WAITING_FOR_USER.value,
@@ -733,45 +738,34 @@ class DatabaseTaskRepository:
         with UnitOfWork(self._database) as work:
             assert work.session is not None
             clock = self._lease_clock_expression(work.session)
-            rows = tuple(
-                work.session.scalars(
-                    select(AgentTaskRow)
-                    .where(
-                        AgentTaskRow.task_mode == TaskMode.RESEARCH.value,
-                        AgentTaskRow.status == TaskStatus.WAITING_FOR_USER.value,
-                        AgentTaskRow.deadline.is_not(None),
-                        AgentTaskRow.deadline <= clock,
+            rows: list[AgentTaskRow] = []
+            for task_mode, status in (
+                (TaskMode.RESEARCH.value, TaskStatus.WAITING_FOR_USER.value),
+                (TaskMode.CONTROLLED_ACTION.value, TaskStatus.WAITING_FOR_APPROVAL.value),
+                (TaskMode.CONTROLLED_ACTION.value, TaskStatus.WAITING_FOR_USER.value),
+            ):
+                remaining = limit - len(rows)
+                if remaining == 0:
+                    break
+                rows.extend(
+                    work.session.scalars(
+                        select(AgentTaskRow)
+                        .where(
+                            AgentTaskRow.task_mode == task_mode,
+                            AgentTaskRow.status == status,
+                            AgentTaskRow.deadline.is_not(None),
+                            AgentTaskRow.deadline <= clock,
+                        )
+                        .order_by(AgentTaskRow.deadline, AgentTaskRow.task_id)
+                        .limit(remaining)
+                        .with_for_update(skip_locked=True)
                     )
-                    .order_by(AgentTaskRow.deadline, AgentTaskRow.task_id)
-                    .limit(limit)
-                    .with_for_update(skip_locked=True)
                 )
-            )
-            # 受控任务审批等待超时：审批过期后任务不得永久滞留
-            # waiting_for_approval；controlled 终态正文保留由批次 3 交付，
-            # 此处不设 content_expires_at。
-            rows += tuple(
-                work.session.scalars(
-                    select(AgentTaskRow)
-                    .where(
-                        AgentTaskRow.task_mode == TaskMode.CONTROLLED_ACTION.value,
-                        AgentTaskRow.status == TaskStatus.WAITING_FOR_APPROVAL.value,
-                        AgentTaskRow.deadline.is_not(None),
-                        AgentTaskRow.deadline <= clock,
-                    )
-                    .order_by(AgentTaskRow.deadline, AgentTaskRow.task_id)
-                    .limit(limit)
-                    .with_for_update(skip_locked=True)
-                )
-            )
             now = self._lease_now(work.session)
             for row in rows:
                 row.status = TaskStatus.FAILED.value
                 row.last_error_code = "task_deadline_expired"
-                if row.task_mode == TaskMode.RESEARCH.value:
-                    row.content_expires_at = now + timedelta(
-                        days=self._task_result_retention_days()
-                    )
+                self._set_terminal_content_expiry(work.session, row, now=now)
                 row.interrupt_kind = None
                 row.interrupt_summary = None
                 row.interrupt_ref = None
@@ -1026,10 +1020,7 @@ class DatabaseTaskRepository:
             row.result_ref = result_ref
             row.result_hash = result_hash
             row.last_error_code = error_code
-            if row.task_mode == TaskMode.RESEARCH.value:
-                row.content_expires_at = self._database_now(work.session) + timedelta(
-                    days=self._task_result_retention_days()
-                )
+            self._set_terminal_content_expiry(work.session, row, now=now)
             row.interrupt_kind = None
             row.interrupt_summary = None
             row.interrupt_ref = None
@@ -1074,10 +1065,7 @@ class DatabaseTaskRepository:
             now = self._lease_now(work.session)
             row.cancelled = True
             row.status = TaskStatus.CANCELLED.value
-            if row.task_mode == TaskMode.RESEARCH.value:
-                row.content_expires_at = self._database_now(work.session) + timedelta(
-                    days=self._task_result_retention_days()
-                )
+            self._set_terminal_content_expiry(work.session, row, now=now)
             row.interrupt_kind = None
             row.interrupt_summary = None
             row.interrupt_ref = None
@@ -1130,6 +1118,32 @@ class DatabaseTaskRepository:
         from rag_kb.config import get_settings
 
         return get_settings().task_result_retention_days
+
+    def _set_terminal_content_expiry(self, session, row: AgentTaskRow, *, now: datetime) -> None:
+        if row.task_mode not in {
+            TaskMode.RESEARCH.value,
+            TaskMode.CONTROLLED_ACTION.value,
+        }:
+            return
+        expires_at = now + timedelta(days=self._task_result_retention_days())
+        row.content_expires_at = expires_at
+        if row.task_mode != TaskMode.CONTROLLED_ACTION.value:
+            return
+        # 终态字段和租约会在调用方同一次 flush 提交，不能让此查询提前刷出。
+        with session.no_autoflush:
+            artifacts = tuple(
+                session.scalars(
+                    select(ArtifactRow)
+                    .where(
+                        ArtifactRow.tenant_id == row.tenant_id,
+                        ArtifactRow.task_id == row.task_id,
+                        ArtifactRow.content_purged_at.is_(None),
+                    )
+                    .with_for_update()
+                )
+            )
+        for artifact in artifacts:
+            artifact.content_expires_at = expires_at
 
     @staticmethod
     def _append_event(

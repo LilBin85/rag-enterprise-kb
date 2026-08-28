@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from rag_kb.config import get_settings, task_budgets_from_settings
 from rag_kb.application.approval_service import ApprovalService
+from rag_kb.application.artifact_content_service import ArtifactContentService
 from rag_kb.application.query_service import KnowledgeQueryService
 from rag_kb.application.task_query_service import DatabaseTaskQueryService
 from rag_kb.application.task_result_service import TaskResultService
@@ -187,6 +188,15 @@ def build_task_query_service() -> DatabaseTaskQueryService:
 
 
 @lru_cache
+def build_artifact_content_service() -> ArtifactContentService:
+    settings = get_settings()
+    return ArtifactContentService(
+        build_database(settings.database_url),
+        LocalObjectStore(settings.object_store_root),
+    )
+
+
+@lru_cache
 def build_agent_result_store() -> AgentResultStore:
     return AgentResultStore(LocalObjectStore(get_settings().object_store_root))
 
@@ -209,7 +219,7 @@ def build_task_resume_worker() -> Generator[object, None, None]:
             worker_id=f"api-resume-{uuid4().hex[:12]}", publish_capability=True
         )
     except TaskAgentConfigurationError as exc:
-        raise HTTPException(status_code=503, detail="Research Agent 暂不可用") from exc
+        raise HTTPException(status_code=503, detail="任务 Agent 暂不可用") from exc
     try:
         yield worker
     finally:

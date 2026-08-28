@@ -250,6 +250,7 @@ class TaskWorker:
         expected_state_version: int,
         approval_id: str,
         decision: str,
+        reason: str | None = None,
     ) -> TaskWorkerResult:
         """审批 decision → 受控 resume：decision 先落库，服务端驱动同 thread 恢复。
 
@@ -263,9 +264,20 @@ class TaskWorker:
         if self._approvals is None:
             raise TaskWorkerError("task_mode_not_supported")
         if decision == "approve":
-            self._approvals.approve(auth=auth, approval_id=approval_id)
+            self._approvals.approve(
+                auth=auth,
+                approval_id=approval_id,
+                expected_task_id=task_id,
+                expected_task_state_version=expected_state_version,
+            )
         else:
-            self._approvals.reject(auth=auth, approval_id=approval_id)
+            self._approvals.reject(
+                auth=auth,
+                approval_id=approval_id,
+                reason=reason,
+                expected_task_id=task_id,
+                expected_task_state_version=expected_state_version,
+            )
         claim: dict[str, object] = {
             "auth": auth,
             "task_id": task_id,
@@ -953,8 +965,8 @@ class TaskWorker:
                 raise TaskWorkerError("task_artifact_binding_invalid")
             try:
                 content = self._objects.read(row.storage_key)
-            except OSError as exc:
-                raise TaskWorkerError("task_artifact_binding_invalid") from exc
+            except (OSError, ValueError):
+                raise TaskWorkerError("task_artifact_binding_invalid") from None
             digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
             if digest != row.content_hash:
                 raise TaskWorkerError("task_artifact_binding_invalid")

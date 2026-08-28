@@ -36,6 +36,9 @@ from rag_kb.domain.tasks import TaskMode, TaskStatus
 from rag_kb.infrastructure.database import build_database
 from rag_kb.infrastructure.database.models import (
     AgentTaskRow,
+    ApprovalRow,
+    ArtifactRow,
+    PlanRevisionRow,
     PrincipalRow,
     TaskEventRow,
     TenantRow,
@@ -103,6 +106,10 @@ def postgres_db(tmp_path: Path):
 
         with database.engine.begin() as connection:
             connection.execute(
+                text("DELETE FROM approvals WHERE tenant_id = :tenant"),
+                {"tenant": ids.tenant_id},
+            )
+            connection.execute(
                 text("DELETE FROM tenants WHERE tenant_id = :tenant"),
                 {"tenant": ids.tenant_id},
             )
@@ -156,6 +163,141 @@ def _expire_task_content(database, *, tenant_id: str, task_id: str) -> None:
 def _set_mtime(objects: LocalObjectStore, ref: str, when: datetime) -> None:
     path = objects.root.joinpath(*PurePosixPath(ref).parts)
     os.utime(path, (when.timestamp(), when.timestamp()))
+
+
+def _controlled_artifact(database, objects, auth, ids):
+    task_id = f"controlled-{ids.task_id.rsplit('-', 1)[-1]}"
+    repository = DatabaseTaskRepository(database)
+    repository.create_task(
+        auth=auth,
+        goal="生成报告",
+        task_mode=TaskMode.CONTROLLED_ACTION,
+        task_id=task_id,
+    )
+    lease = repository.claim_next(worker_id="worker-a", lease_seconds=60)
+    assert lease is not None
+    ref = f"artifacts/tenant-hash/{task_id}/report/body.md"
+    content = b"controlled artifact"
+    objects.put_exclusive(ref, content)
+    now = datetime.now(UTC)
+    with database.sessions.begin() as session:
+        session.add(
+            PlanRevisionRow(
+                plan_revision_id=f"plan-{task_id}",
+                task_id=task_id,
+                tenant_id=ids.tenant_id,
+                revision=1,
+                schema_version=1,
+                plan={},
+                plan_digest="sha256:" + "p" * 64,
+                evidence_digest="sha256:" + "e" * 64,
+                status="ready",
+            )
+        )
+        session.flush()
+        session.add(
+            ApprovalRow(
+                approval_id=f"approval-{task_id}",
+                task_id=task_id,
+                tenant_id=ids.tenant_id,
+                plan_revision=1,
+                plan_digest="sha256:" + "p" * 64,
+                evidence_digest="sha256:" + "e" * 64,
+                tool_name="create_report_artifact",
+                tool_version="1.0.0",
+                arguments_hash="sha256:" + "a" * 64,
+                principal_hash="sha256:" + "u" * 64,
+                status="approved",
+                approved_by=ids.user_id,
+                approved_at=now,
+                expires_at=now + timedelta(minutes=10),
+                created_at=now,
+                thread_id=task_id,
+                checkpoint_ns="",
+                checkpoint_id="checkpoint-1",
+                interrupt_id="interrupt-1",
+                tool_call_id="action-1",
+                checkpoint_binding_hash="sha256:" + "c" * 64,
+            )
+        )
+        session.add(
+            ToolCallRow(
+                tool_call_id=f"call-{task_id}",
+                task_id=task_id,
+                tenant_id=ids.tenant_id,
+                approval_id=None,
+                plan_revision=None,
+                plan_digest=None,
+                evidence_digest=None,
+                tool_name="search_knowledge",
+                tool_version="1.0.0",
+                arguments_hash="arguments",
+                principal_hash="principal",
+                mode="read",
+                idempotency_key=None,
+                risk_level="low",
+                status="failed",
+                error_code="fixture_artifact",
+                completed_at=now,
+                execution_deadline=now + timedelta(minutes=1),
+            )
+        )
+        session.flush()
+        session.add(
+            ArtifactRow(
+                artifact_id=f"artifact-{task_id}",
+                task_id=task_id,
+                tenant_id=ids.tenant_id,
+                tool_call_id=f"call-{task_id}",
+                artifact_type="report",
+                storage_key=ref,
+                content_hash="sha256:" + "a" * 64,
+                status="ready",
+            )
+        )
+    repository.finish_task(
+        lease,
+        status=TaskStatus.FAILED,
+        error_code="task_agent_failed",
+        trace_id="trace",
+    )
+    return repository, task_id, ref
+
+
+@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="postgres_test_url_unconfigured")
+def test_controlled_artifact_purge_uses_postgres_clock_and_preserves_approval(postgres_db) -> None:
+    database, objects, auth, ids = postgres_db
+    repository, task_id, ref = _controlled_artifact(database, objects, auth, ids)
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE artifacts SET content_expires_at = clock_timestamp() - INTERVAL '1 second' "
+                "WHERE tenant_id = :tenant_id AND task_id = :task_id"
+            ),
+            {"tenant_id": ids.tenant_id, "task_id": task_id},
+        )
+    retention = TaskRetentionService(
+        database=database,
+        repository=repository,
+        objects=objects,
+        results=AgentResultStore(objects),
+        orphan_grace_seconds=60,
+    )
+
+    assert retention.purge_expired_artifact_content(limit=10) == 1
+    assert not _object_exists(objects, ref)
+    with database.sessions() as session:
+        artifact = session.get(ArtifactRow, f"artifact-{task_id}")
+        approval = session.get(ApprovalRow, f"approval-{task_id}")
+        task = session.get(AgentTaskRow, task_id)
+        assert artifact is not None and artifact.storage_key is None
+        assert artifact.content_purged_at is not None
+        assert approval is not None
+        assert approval.status == "approved"
+        assert approval.checkpoint_binding_hash == "sha256:" + "c" * 64
+        assert approval.arguments_hash == "sha256:" + "a" * 64
+        assert task is not None and task.status == TaskStatus.FAILED.value
+    assert retention.purge_expired_artifact_content(limit=10) == 0
 
 
 @pytest.mark.skipif(not POSTGRES_TEST_URL, reason="postgres_test_url_unconfigured")

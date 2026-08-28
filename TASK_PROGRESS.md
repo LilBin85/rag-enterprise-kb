@@ -1,16 +1,16 @@
 # 重构任务进度记录
 
 > 最后更新：2026-08-28
-> 当前阶段：M2 进行中——批次 0（0013 与协议事实）、批次 1（HITL 暂停与审批事实）、批次 2（双层恢复与副作用安全）已完成并验证；批次 3-4 未实施。M1 保持全部完成与验证，未回归。
-> 开发依据：`AGENT_REFACTOR_PLAN.md`、`M2_PLAN.md`（未跟踪实施方案权威）
+> 当前阶段：M2 进行中——批次 0（0013 与协议事实）、批次 1（HITL 暂停与审批事实）、批次 2（双层恢复与副作用安全）、批次 3（公共 API 与正文生命周期）已完成并验证；批次 4（故障注入、严格真实 M2 E2E 与最终验收）未开始。M1 保持全部完成与验证，未回归。
+> 开发依据：`AGENT_REFACTOR_PLAN.md`、`M2_PLAN.md`（未跟踪实施设计）；当前交付状态以本文为准。
 
 ## 执行约束
 
-- 只实现 M1 Research Agent，不进入 M2 WRITE、HITL 审批、多 Agent、MCP、代码执行或长期记忆。
-- 按 `M1_FIX_PLAN.md` 固定顺序推进：批次 0 → 批次 1 → 批次 2 → 批次 3 → 批次 4。
-- 0012 发布采用 stop-the-world：先停止任务 Worker，再迁移和部署，最后只启动兼容新协议的 Worker；禁止 0011 旧 Worker 与 0012 新 Worker 滚动混跑。
+- M2 当前范围限定为受控 WRITE、HITL 审批、正文生命周期和最终验收；不进入 P2/P3、多 Agent、MCP、代码执行或长期记忆。
+- 按 M2 计划固定顺序推进：批次 0 → 批次 1 → 批次 2 → 批次 3 → 批次 4。
+- 0013 发布采用 stop-the-world：先停止任务 Worker，再迁移和部署，最后只启动兼容 `task-agent/m2-fenced-v1` 的 Worker；禁止旧协议 Worker 与 0013 新 Worker 滚动混跑。
 - 不使用破坏性 Git 操作，不覆盖已有未提交改动；敏感连接信息只从环境变量或容器读取。
-- Python 验证统一使用：`conda run -n rag-kb --no-capture-output ...`。
+- Python 验证统一使用 `rag-kb` 环境的解释器，不混用全局 Python。
 
 ## 总体状态
 
@@ -26,7 +26,8 @@
 | M2 批次 0 | 已完成并验证 | 0013 迁移、task 协议绑定（claim/resume/checkpoint 门）、approval checkpoint 绑定与 reject 审计列、artifact content 生命周期列、strict serializer 门禁；提交 `0ec0049`。 |
 | M2 批次 1 | 已完成并验证 | 两个 WRITE 薄 adapter + HITL 精确暂停、interrupt 双分类严格分流、服务端最小 action binding（PlanRevision）、pending approval checkpoint 绑定幂等、发起人自批拒绝、FormatChecker；提交 `0f4474d`，详见 M2 批次 1 小节。 |
 | M2 批次 2 | 已完成并验证 | 幂等 decision + 服务端受控 resume（同 thread）、D7 稳定 action key、claim_approval_resume/claim_next 受控重领取、三类崩溃窗口（真实 PG + FencedPostgresSaver）、失效矩阵 adapter 0、storage_key 全面收口（artifact_id）、TaskResultCandidate.artifact_ids 与受控 settle、reject 审计三元组；详见 M2 批次 2 小节。 |
-| M2 批次 3-4 | 未实施 | 公共 API 与正文生命周期、故障注入与最终验收均未开始。 |
+| M2 批次 3 | 已完成并验证 | controlled_action 创建、审批 API、artifact content 与正文 TTL/purge 已交付；全量双库验证 `546 passed / 0 failed / 0 skipped`。 |
+| M2 批次 4 | 未开始 | 故障注入、严格真实 M2 E2E、acceptance artifacts 与最终验收尚未执行。 |
 
 ## 已完成的 M1 基础能力
 
@@ -176,7 +177,16 @@
 
 ## 当前交付边界
 
-- M1 批次 0-4 全部完成并验证，M2 批次 0-2 完成并验证（上述基线）；正式进度为 M2 批次 3 未开始。
-- M2 批次 2 交付后：approve/reject 的应用层能力齐备（get/list/幂等 decision/受控 resume），但未实现公开 approval API、controlled_action 创建入口、artifact content 路由与 retention——HTTP 契约与正文生命周期由批次 3 交付；UNKNOWN 永不自动重放、无盲重试入口。
-- 受控任务 waiting_for_user 暂留态仍未处理（批次 3 前无生产创建入口）。
-- 0012/0013 的真实发布仍必须遵守 stop-the-world 顺序；本进度记录不替代正式发布 runbook。
+- M1 批次 0-4 全部完成并验证，M2 批次 0-3 完成并验证；M2 批次 4 尚未开始，M2 尚未完成。
+- 批次 3 已交付公开 controlled_action 创建、approval list/detail/decision、artifact content 路由与 retention；UNKNOWN 永不自动重放、客户端不能提交 graph resume payload。
+- controlled_action 若进入 `waiting_for_user`，可通过 `/v1/tasks/{task_id}/continue` 在同一 `task_id` 恢复；批次 4 的故障注入与严格 E2E 必须覆盖该边界。
+- 0013 的真实发布仍必须遵守 stop-the-world 顺序；本进度记录不替代正式发布 runbook。
+
+## M2 批次 3：公共 API 与正文生命周期（已完成并验证）
+
+- `POST /v1/tasks` 已公开 `controlled_action` 创建入口：feature gate 默认开启，创建事务同时要求兼容 `task-agent/m2-fenced-v1` capability；不可用时 503 且不插入任务。
+- 新增 `/v1/approvals` 列表、详情与 decision API：独立 `approver` 演示身份仅持有 `task:approve`；审批仅返回安全摘要与绑定 hash，重复同决定返回当前状态，相反决定稳定 409，发起人自批为 403。
+- 新增 owner + `task:read` 授权的 artifact content 读取；逐项复核 tenant/task/artifact 归属、ready、TTL/purge 与 SHA-256，正文响应不暴露对象键、filename、MIME、Range 或 Content-Disposition。所有请求验证错误使用脱敏 422，避免回显注入字段。
+- controlled 终态、取消、waiting 超时和 WRITE UNKNOWN 均写入正文保留窗口；artifact purge 保留 hash/status 审计，递归 orphan 扫描覆盖 `artifacts/` 且保持 grace、游标、重试和前缀公平性。
+- 验证：批次 3 六组 SQLite/HTTP 门禁全部通过；隔离 PostgreSQL retention、迁移 round-trip、真实 M2 approval/recovery/concurrency 路径通过；双库协议下全量 `546 passed in 308.91s`，`0 failed / 0 skipped`，`git diff --check` 通过。
+- 上述是批次 3 回归验证，不代表 M2 已完成；严格真实 M2 E2E、acceptance artifacts 与最终机器报告仍待批次 4。

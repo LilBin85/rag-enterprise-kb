@@ -23,6 +23,7 @@ from rag_kb.domain.tasks import TaskMode, TaskStatus
 from rag_kb.infrastructure.database import Base, build_database
 from rag_kb.infrastructure.database.models import (
     AgentTaskRow,
+    ArtifactRow,
     PrincipalRow,
     TenantRow,
     ToolCallRow,
@@ -138,6 +139,125 @@ def _execute_tool(runtime, task_id: str):
 def _set_mtime(objects: LocalObjectStore, ref: str, when: datetime) -> None:
     path = objects.root.joinpath(*PurePosixPath(ref).parts)
     os.utime(path, (when.timestamp(), when.timestamp()))
+
+
+def _controlled_artifact(runtime, task_id: str):
+    database, clock, auth, objects, repository, _checkpointer, _retention = runtime
+    repository.create_task(
+        auth=auth,
+        goal="生成报告",
+        task_mode=TaskMode.CONTROLLED_ACTION,
+        task_id=task_id,
+    )
+    lease = repository.claim_next(worker_id="worker-a", lease_seconds=120)
+    assert lease is not None
+    ref = f"artifacts/tenant-hash/{task_id}/report/body.md"
+    content = b"controlled artifact"
+    objects.put_exclusive(ref, content)
+    with database.sessions.begin() as session:
+        session.add(
+            ToolCallRow(
+                tool_call_id=f"call-{task_id}",
+                task_id=task_id,
+                tenant_id=auth.tenant_id,
+                approval_id=None,
+                plan_revision=None,
+                plan_digest=None,
+                evidence_digest=None,
+                tool_name="search_knowledge",
+                tool_version="1.0.0",
+                arguments_hash="arguments",
+                principal_hash="principal",
+                mode="read",
+                idempotency_key=None,
+                risk_level="low",
+                status="running",
+                created_at=clock.value,
+                execution_deadline=clock.value + timedelta(seconds=120),
+            )
+        )
+        session.flush()
+        session.add(
+            ArtifactRow(
+                artifact_id=f"artifact-{task_id}",
+                task_id=task_id,
+                tenant_id=auth.tenant_id,
+                tool_call_id=f"call-{task_id}",
+                artifact_type="report",
+                storage_key=ref,
+                content_hash="sha256:" + "a" * 64,
+                status="ready",
+            )
+        )
+    return lease, ref
+
+
+def test_controlled_terminal_sets_artifact_window_and_purge_retries(runtime, monkeypatch) -> None:
+    database, clock, _auth, objects, repository, _checkpointer, retention = runtime
+    lease, ref = _controlled_artifact(runtime, "controlled-expiry")
+    repository.finish_task(
+        lease,
+        status=TaskStatus.FAILED,
+        error_code="task_agent_failed",
+        trace_id="trace-a",
+    )
+    with database.sessions.begin() as session:
+        task = session.get(AgentTaskRow, "controlled-expiry")
+        artifact = session.get(ArtifactRow, "artifact-controlled-expiry")
+        assert task is not None and artifact is not None
+        assert task.content_expires_at is not None
+        assert artifact.content_expires_at == task.content_expires_at
+        artifact.content_expires_at = clock.value - timedelta(seconds=1)
+
+    original_delete = objects.delete_exact
+
+    def fail_delete(_ref: str) -> None:
+        raise OSError("object_store_unavailable")
+
+    monkeypatch.setattr(objects, "delete_exact", fail_delete)
+    assert retention.purge_expired_artifact_content(limit=10) == 0
+    with database.sessions() as session:
+        retained = session.get(ArtifactRow, "artifact-controlled-expiry")
+        assert retained is not None
+        assert retained.storage_key == ref
+        assert retained.content_purged_at is None
+        assert retained.status == "ready"
+
+    monkeypatch.setattr(objects, "delete_exact", original_delete)
+    assert retention.purge_expired_artifact_content(limit=10) == 1
+    with database.sessions() as session:
+        purged = session.get(ArtifactRow, "artifact-controlled-expiry")
+        assert purged is not None
+        assert purged.storage_key is None
+        assert purged.content_purged_at is not None
+        assert purged.content_hash == "sha256:" + "a" * 64
+        assert purged.status == "ready"
+    with pytest.raises(OSError):
+        objects.read(ref)
+    assert retention.purge_expired_artifact_content(limit=10) == 0
+
+
+def test_artifact_orphan_scan_honors_nested_refs_grace_and_idempotency(runtime) -> None:
+    _database, clock, _auth, objects, _repository, _checkpointer, retention = runtime
+    _lease, referenced_ref = _controlled_artifact(runtime, "controlled-referenced")
+    orphan_ref = "artifacts/tenant-hash/orphan-task/report/orphan.md"
+    fresh_ref = "artifacts/tenant-hash/fresh-task/report/fresh.md"
+    objects.put_exclusive(orphan_ref, b"orphan")
+    objects.put_exclusive(fresh_ref, b"fresh")
+    _set_mtime(objects, referenced_ref, clock.value - timedelta(seconds=61))
+    _set_mtime(objects, orphan_ref, clock.value - timedelta(seconds=61))
+    _set_mtime(objects, fresh_ref, clock.value - timedelta(seconds=30))
+
+    removed = 0
+    for _ in range(4):
+        removed += retention.purge_orphaned_result_objects(limit=3)
+
+    assert removed == 1
+    assert objects.read(referenced_ref) == b"controlled artifact"
+    assert objects.read(fresh_ref) == b"fresh"
+    with pytest.raises(OSError):
+        objects.read(orphan_ref)
+    assert retention.purge_orphaned_result_objects(limit=3) == 0
 
 
 def test_tool_result_gc_preserves_success_audit_and_retries_delete_failure(runtime, monkeypatch) -> None:
@@ -392,18 +512,23 @@ def test_orphan_scanner_retries_delete_failures_before_advancing_cursor(runtime,
     assert retention.purge_orphaned_result_objects(limit=1) == 0
     objects.put_exclusive(later_ref, b"later")
     _set_mtime(objects, later_ref, clock.value - timedelta(seconds=61))
-    # tool-results 在 limit=1 下隔轮被处理；失败重试不能永久挡住新孤儿。
+    # 三个受管前缀轮转；失败重试不能永久挡住同前缀的新孤儿。
     assert retention.purge_orphaned_result_objects(limit=1) == 0
     assert retention.purge_orphaned_result_objects(limit=1) == 0
     assert retention.purge_orphaned_result_objects(limit=1) == 0
-    assert retention.purge_orphaned_result_objects(limit=1) == 1
+    assert sum(
+        retention.purge_orphaned_result_objects(limit=1)
+        for _ in task_retention_module._RESULT_PREFIXES
+    ) == 1
     assert objects.read(failed_ref) == b"failed"
     with pytest.raises(OSError):
         objects.read(later_ref)
 
     monkeypatch.setattr(objects, "delete_exact", original_delete)
-    assert retention.purge_orphaned_result_objects(limit=1) == 0
-    assert retention.purge_orphaned_result_objects(limit=1) == 1
+    assert sum(
+        retention.purge_orphaned_result_objects(limit=1)
+        for _ in task_retention_module._RESULT_PREFIXES
+    ) == 1
     with pytest.raises(OSError):
         objects.read(failed_ref)
 
@@ -540,12 +665,16 @@ def test_object_store_retention_enumeration_is_fixed_prefix_stably_bounded(runti
     )
     assert len(entries) == 1
     assert exhausted is False
+    artifact_ref = "artifacts/tenant-a/task-a/report.md"
+    objects.put_exclusive(artifact_ref, b"body")
+    _set_mtime(objects, artifact_ref, clock.value - timedelta(seconds=61))
+    assert objects.iter_refs(
+        "artifacts/",
+        older_than=clock.value - timedelta(seconds=60),
+        limit=1,
+    ) == (artifact_ref,)
     with pytest.raises(ValueError, match="invalid_object_scan_prefix"):
-        objects.iter_refs(
-            "artifacts/",
-            older_than=clock.value,
-            limit=1,
-        )
+        objects.iter_refs("uploads/", older_than=clock.value, limit=1)
 
 
 def test_iter_ref_entries_resumes_across_windows_until_exhausted(runtime) -> None:

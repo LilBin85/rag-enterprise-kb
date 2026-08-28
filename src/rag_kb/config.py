@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     retrieval_rrf_k: int = Field(default=60, ge=1, le=1000)
     enable_hybrid_retrieval: bool = False
 
-    # M1 Research Agent：Settings 只决定新任务的预算默认值。
+    # M2 任务 Agent：Settings 只决定新任务的预算默认值。
     agent_max_model_calls: int = Field(
         default=DEFAULT_MAX_MODEL_CALLS, ge=1, le=100
     )
@@ -79,6 +79,7 @@ class Settings(BaseSettings):
     task_agent_capability_name: str = TASK_AGENT_CAPABILITY_NAME
     task_agent_protocol_version: str = TASK_AGENT_PROTOCOL_VERSION
     langgraph_strict_msgpack: bool = True
+    enable_controlled_action_tasks: bool = True
 
     # 敏感正文保留策略（M1_FIX_PLAN 修复 5）：工具结果与任务结果/checkpoint 过期即清理。
     tool_result_ttl_seconds: int = Field(default=7 * 24 * 3600, ge=1)

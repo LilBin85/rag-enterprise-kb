@@ -74,6 +74,12 @@ def _default_tool_result_ttl_seconds() -> int:
     return get_settings().tool_result_ttl_seconds
 
 
+def _default_task_content_retention_days() -> int:
+    from rag_kb.config import get_settings
+
+    return get_settings().task_result_retention_days
+
+
 class ToolExecutionError(RuntimeError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
@@ -831,15 +837,23 @@ class ToolExecutionService:
                 row.completed_at = now
                 row.verified_at = now if final_status == "succeeded" else None
                 if row.mode == "write" and final_status == "unknown":
+                    expires_at = None
+                    if task.task_mode == "controlled_action":
+                        expires_at = now + timedelta(
+                            days=_default_task_content_retention_days()
+                        )
+                        task.content_expires_at = expires_at
                     for artifact in work.session.scalars(
                         select(ArtifactRow).where(
                             ArtifactRow.tenant_id == row.tenant_id,
                             ArtifactRow.task_id == row.task_id,
-                            ArtifactRow.tool_call_id == row.tool_call_id,
-                            ArtifactRow.status.in_(("creating", "ready")),
+                            ArtifactRow.content_purged_at.is_(None),
                         )
                     ):
-                        artifact.status = "unknown"
+                        if artifact.status in ("creating", "ready"):
+                            artifact.status = "unknown"
+                        if expires_at is not None:
+                            artifact.content_expires_at = expires_at
                     task.status = "unknown"
                     task.last_error_code = final_error
                     task.lease_owner = None
@@ -917,15 +931,7 @@ class ToolExecutionService:
                 row.error_code = "execution_deadline_expired"
                 row.completed_at = now
                 if row.mode == "write":
-                    for artifact in work.session.scalars(
-                        select(ArtifactRow).where(
-                            ArtifactRow.tenant_id == row.tenant_id,
-                            ArtifactRow.task_id == row.task_id,
-                            ArtifactRow.tool_call_id == row.tool_call_id,
-                            ArtifactRow.status.in_(("creating", "ready")),
-                        )
-                    ):
-                        artifact.status = "unknown"
+                    expires_at = None
                     task = work.session.scalar(
                         select(AgentTaskRow)
                         .where(
@@ -934,6 +940,22 @@ class ToolExecutionService:
                         )
                         .with_for_update()
                     )
+                    if task is not None and task.task_mode == "controlled_action":
+                        expires_at = now + timedelta(
+                            days=_default_task_content_retention_days()
+                        )
+                        task.content_expires_at = expires_at
+                    for artifact in work.session.scalars(
+                        select(ArtifactRow).where(
+                            ArtifactRow.tenant_id == row.tenant_id,
+                            ArtifactRow.task_id == row.task_id,
+                            ArtifactRow.content_purged_at.is_(None),
+                        )
+                    ):
+                        if artifact.status in ("creating", "ready"):
+                            artifact.status = "unknown"
+                        if expires_at is not None:
+                            artifact.content_expires_at = expires_at
                     if task is not None:
                         task.status = "unknown"
                         task.last_error_code = "execution_deadline_expired"

@@ -144,6 +144,14 @@ class ActionBinding:
     evidence_ids: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ApprovalDetail:
+    """审批 HTTP 展示所需的安全摘要，不包含原始 checkpoint 或工具参数。"""
+
+    binding: ApprovalBinding
+    summary: str | None
+
+
 class ApprovalService:
     def __init__(
         self,
@@ -482,6 +490,7 @@ class ApprovalService:
         approval_id: str,
         expected_task_id: str | None = None,
         expected_plan_revision: int | None = None,
+        expected_task_state_version: int | None = None,
     ) -> ApprovalBinding:
         if not auth.has_permission(Permission.TASK_APPROVE):
             raise ApprovalServiceError("approver_permission_denied")
@@ -546,6 +555,11 @@ class ApprovalService:
                 raise ApprovalServiceError("approval_decision_conflict")
             if row.status != "pending":
                 raise ApprovalServiceError("approval_not_pending")
+            self._require_pending_resume_target(
+                task,
+                row,
+                expected_task_state_version=expected_task_state_version,
+            )
             plan = work.session.scalar(
                 select(PlanRevisionRow)
                 .where(
@@ -593,6 +607,8 @@ class ApprovalService:
         auth: AuthContext,
         approval_id: str,
         reason: str | None = None,
+        expected_task_id: str | None = None,
+        expected_task_state_version: int | None = None,
     ) -> ApprovalBinding:
         """业务拒绝：写完整 reject 审计三元组；相同 decision 幂等，相反冲突。"""
         if not auth.has_permission(Permission.TASK_APPROVE):
@@ -622,6 +638,25 @@ class ApprovalService:
                 raise ApprovalServiceError("approval_decision_conflict")
             if row.status != "pending":
                 raise ApprovalServiceError("approval_not_pending")
+            task = work.session.scalar(
+                select(AgentTaskRow)
+                .where(
+                    AgentTaskRow.tenant_id == auth.tenant_id,
+                    AgentTaskRow.task_id == row.task_id,
+                )
+                .with_for_update()
+            )
+            if (
+                task is None
+                or task.cancelled
+                or (expected_task_id is not None and row.task_id != expected_task_id)
+            ):
+                raise ApprovalServiceError("approval_plan_binding_invalid")
+            self._require_pending_resume_target(
+                task,
+                row,
+                expected_task_state_version=expected_task_state_version,
+            )
             row.status = "rejected"
             row.rejected_by = auth.user_id
             row.rejected_at = now
@@ -642,6 +677,25 @@ class ApprovalService:
                 raise ApprovalServiceError("approval_not_found")
             return self._binding(row)
 
+    def get_detail(self, *, tenant_id: str, approval_id: str) -> ApprovalDetail:
+        with self._database.sessions() as session:
+            result = session.execute(
+                select(ApprovalRow, AgentTaskRow.interrupt_summary)
+                .join(
+                    AgentTaskRow,
+                    (AgentTaskRow.tenant_id == ApprovalRow.tenant_id)
+                    & (AgentTaskRow.task_id == ApprovalRow.task_id),
+                )
+                .where(
+                    ApprovalRow.tenant_id == tenant_id,
+                    ApprovalRow.approval_id == approval_id,
+                )
+            ).one_or_none()
+            if result is None:
+                raise ApprovalServiceError("approval_not_found")
+            row, summary = result
+            return ApprovalDetail(binding=self._binding(row), summary=summary)
+
     def list(
         self,
         *,
@@ -649,16 +703,42 @@ class ApprovalService:
         status: str | None = "pending",
         task_id: str | None = None,
     ) -> tuple[ApprovalBinding, ...]:
-        statement = select(ApprovalRow).where(
-            ApprovalRow.tenant_id == tenant_id,
-            ApprovalRow.status == status,
-        )
+        statement = select(ApprovalRow).where(ApprovalRow.tenant_id == tenant_id)
+        if status is not None:
+            statement = statement.where(ApprovalRow.status == status)
         if task_id is not None:
             statement = statement.where(ApprovalRow.task_id == task_id)
         statement = statement.order_by(ApprovalRow.created_at, ApprovalRow.approval_id)
         with self._database.sessions() as session:
             return tuple(
                 self._binding(row) for row in session.scalars(statement)
+            )
+
+    def list_details(
+        self,
+        *,
+        tenant_id: str,
+        status: str | None = "pending",
+        task_id: str | None = None,
+    ) -> tuple[ApprovalDetail, ...]:
+        statement = (
+            select(ApprovalRow, AgentTaskRow.interrupt_summary)
+            .join(
+                AgentTaskRow,
+                (AgentTaskRow.tenant_id == ApprovalRow.tenant_id)
+                & (AgentTaskRow.task_id == ApprovalRow.task_id),
+            )
+            .where(ApprovalRow.tenant_id == tenant_id)
+        )
+        if status is not None:
+            statement = statement.where(ApprovalRow.status == status)
+        if task_id is not None:
+            statement = statement.where(ApprovalRow.task_id == task_id)
+        statement = statement.order_by(ApprovalRow.created_at, ApprovalRow.approval_id)
+        with self._database.sessions() as session:
+            return tuple(
+                ApprovalDetail(binding=self._binding(row), summary=summary)
+                for row, summary in session.execute(statement)
             )
 
     def load_action_facts(
@@ -819,6 +899,25 @@ class ApprovalService:
             assert work.session is not None
             result = work.session.execute(statement.values(status="expired"))
             return int(result.rowcount or 0)
+
+    @staticmethod
+    def _require_pending_resume_target(
+        task: AgentTaskRow,
+        row: ApprovalRow,
+        *,
+        expected_task_state_version: int | None,
+    ) -> None:
+        """pending decision 只能消费当前保存的 tool_approval interrupt。"""
+        if expected_task_state_version is None:
+            return
+        if task.state_version != expected_task_state_version:
+            raise ApprovalServiceError("approval_resume_state_conflict")
+        if (
+            task.status != "waiting_for_approval"
+            or task.interrupt_kind != "tool_approval"
+            or task.interrupt_ref != row.approval_id
+        ):
+            raise ApprovalServiceError("approval_resume_kind_invalid")
 
     @staticmethod
     def _binding(row: ApprovalRow) -> ApprovalBinding:

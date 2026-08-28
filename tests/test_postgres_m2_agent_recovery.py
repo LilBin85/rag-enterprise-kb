@@ -278,22 +278,9 @@ def _build_stage(tmp_path: Path) -> _Stage:
         task_capability_name="task-agent",
         task_capability_protocol_version="m2-fenced-v1",
     )
-    repository.create_task(
-        auth=requester,
-        goal="受控恢复验证",
-        task_mode=TaskMode.CONTROLLED_ACTION,
-        task_id=task_id,
-    )
-    evidence_id = f"evidence-{suffix}"
     with UnitOfWork(database) as work:
         assert work.session is not None
-        task = work.session.scalar(_select_task(task_id))
-        assert task is not None
-        task.status = "running"
-        task.lease_owner = "worker-1"
-        task.lease_expires_at = datetime.now(UTC) + timedelta(seconds=300)
-        task.lease_generation = 1
-        # capability 租约是全局行（无 tenant）：先清理遗留，再为本次注册。
+        # capability 租约是全局行（无 tenant）：先清理遗留，再为创建门注册。
         work.session.execute(
             text(
                 "DELETE FROM agent_capability_leases "
@@ -309,6 +296,21 @@ def _build_stage(tmp_path: Path) -> _Stage:
                 updated_at=datetime.now(UTC),
             )
         )
+    repository.create_task(
+        auth=requester,
+        goal="受控恢复验证",
+        task_mode=TaskMode.CONTROLLED_ACTION,
+        task_id=task_id,
+    )
+    evidence_id = f"evidence-{suffix}"
+    with UnitOfWork(database) as work:
+        assert work.session is not None
+        task = work.session.scalar(_select_task(task_id))
+        assert task is not None
+        task.status = "running"
+        task.lease_owner = "worker-1"
+        task.lease_expires_at = datetime.now(UTC) + timedelta(seconds=300)
+        task.lease_generation = 1
         work.session.flush()
         work.session.add_all(
             [

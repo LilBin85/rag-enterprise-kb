@@ -2,6 +2,7 @@ from pathlib import Path
 
 from scripts.init_demo_principals import sync_demo_principals
 
+from rag_kb.domain.identity import Permission
 from rag_kb.domain.tasks import TaskMode
 from rag_kb.infrastructure.auth.providers import DemoTokenIdentityProvider
 from rag_kb.infrastructure.database import Base, build_database
@@ -26,7 +27,9 @@ def test_demo_principal_sync_repairs_auth_snapshot_for_task_worker(tmp_path: Pat
             )
         )
 
-    synced = sync_demo_principals(database, {"engineer": "demo-token"})
+    synced = sync_demo_principals(
+        database, {"engineer": "demo-token", "approver": "approver-token"}
+    )
     auth = DemoTokenIdentityProvider.from_role_tokens({"engineer": "demo-token"}).authenticate(
         "demo-token", request_id="request-1"
     )
@@ -44,6 +47,12 @@ def test_demo_principal_sync_repairs_auth_snapshot_for_task_worker(tmp_path: Pat
         request_id="worker-1",
     )
 
-    assert synced == ("demo-engineer",)
+    approver = DemoTokenIdentityProvider.from_role_tokens(
+        {"engineer": "demo-token", "approver": "approver-token"}
+    ).authenticate("approver-token", request_id="request-2")
+
+    assert synced == ("demo-engineer", "demo-approver")
     assert resolved.roles == auth.roles
     assert resolved.attributes == auth.attributes
+    assert approver is not None and approver.has_permission(Permission.TASK_APPROVE)
+    assert not approver.has_permission(Permission.TASK_CREATE)

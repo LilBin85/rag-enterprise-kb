@@ -2,7 +2,7 @@
 
 ## 事实源与边界
 
-PostgreSQL 保存租户、主体、文档版本、ACL、Research 任务、工具调用和证据账本；Qdrant 只保存可重建的向量 projection。任何检索候选必须同时通过 SQL 授权集和 Qdrant payload 过滤：tenant、active/current、version generation、allowed principals。
+PostgreSQL 保存租户、主体、文档版本、ACL、Research 与 controlled_action 任务、审批、产物、工具调用和证据账本；Qdrant 只保存可重建的向量 projection。任何检索候选必须同时通过 SQL 授权集和 Qdrant payload 过滤：tenant、active/current、version generation、allowed principals。
 
 ## 请求路径
 
@@ -22,7 +22,7 @@ Qdrant 的 `allowed_principals` 使用 `user|group|role:<非空标识>`；标识
 
 ## 状态与恢复
 
-Research 任务由唯一的 LangGraph `create_agent` 图执行，`thread_id = task_id`。PostgreSQL checkpointer 保存消息、ToolMessage、Todo 与 interrupt/resume；`agent_tasks` 只保存业务生命周期、所有者、租约、中断摘要和不可变结果引用，不复制消息或用户回答正文。worker 重启后从同一 checkpointer 恢复，不能为历史 Runtime 建立双写或回退路径。
+Research 与 controlled_action 任务均以 `thread_id = task_id` 使用 LangGraph 图执行。PostgreSQL checkpointer 保存消息、ToolMessage、Todo 与 interrupt/resume；`agent_tasks` 只保存业务生命周期、所有者、租约、中断摘要和不可变结果引用，不复制消息或用户回答正文。controlled_action 的 WRITE 在同一线程先被 HITL 暂停，再由 `ApprovalService` 绑定 checkpoint、工具、参数和证据摘要；只有服务端可构造固定 resume。worker 重启后从同一 checkpointer 恢复，不能为历史 Runtime 建立双写或回退路径。
 
 任务预算只有一个任务级事实源：创建时由 Settings 派生的 `TaskBudgets` 以 JSON 精确持久化到 `agent_tasks.budgets`，Worker 按租约携带的持久值选择（并按小元组缓存）Agent，模型/工具两个 limit middleware 与 recursion limit 全部来自该值；环境变量只影响新任务的初始派生，不改变已持久化任务。
 
@@ -33,9 +33,9 @@ Research 任务由唯一的 LangGraph `create_agent` 图执行，`thread_id = ta
 3. **幂等回放**：身份快照（tenant/user/roles/groups/attributes 的指纹）与回放校验绑定；身份变化后相同 idempotency key 返回 `task_auth_context_changed` 且不读取旧正文。
 4. **最终任务提交**：`finish_task()` 在任务行锁内以 PostgreSQL `clock_timestamp()` 终检租约、状态、取消和 deadline；deadline 已过时只能原子收敛为 `failed/task_deadline_expired` 并补偿未绑定结果对象，不可能先 succeeded 再被后台改写。
 
-只有构建完成的 Worker 才注册 `m1-fenced-v2` capability lease（独立心跳续租，与任务 invoke 解耦）；创建 Research 任务的仓储门在插入事务内复核 capability 名称、协议版本和租期，缺失、错版本或过期时返回 `research_agent_unavailable`（HTTP 503），同步知识查询、文档接口和全局 readiness 不受影响。任务执行期间按租约三分之一间隔续租，失败则本次结果不提交，任务保持可安全恢复。
+只有构建完成的 Worker 才注册 `task-agent/m2-fenced-v1` capability lease（独立心跳续租，与任务 invoke 解耦）；创建 Research 或 controlled_action 任务的仓储门在插入事务内复核 capability 名称、协议版本和租期，缺失、错版本或过期时返回 503，同步知识查询、文档接口和全局 readiness 不受影响。受控创建还受 feature gate 约束。任务执行期间按租约三分之一间隔续租，失败则本次结果不提交，任务保持可安全恢复。
 
-执行结论与正文可用性分离：独立的 `TaskRetentionService` 周期收敛 waiting deadline reaper、工具正文 GC、任务 checkpoint/结果 GC 和固定前缀孤儿对象扫描；GC 只删除正文对象并写 purge 标记，绝不改写 succeeded/refused 等历史执行终态。结果读取在返回前于行锁内二次复核 deadline、授权和证据账本：到期为 410、未完成/无结果为 409、完整性错误 fail-close 为 500。"object 写成功、DB 绑定前崩溃"的对象由即时补偿加固定前缀 grace 重扫双保险兜底，删除失败保留引用供下轮重试。checkpointer 的 msgpack serializer 只 allowlist `TaskResultCandidate`、显式禁用 pickle fallback，并在 `LANGGRAPH_STRICT_MSGPACK=true` 下叠加运行时 schema allowlist。
+执行结论与正文可用性分离：独立的 `TaskRetentionService` 周期收敛 waiting deadline reaper、工具正文 GC、任务 checkpoint/结果 GC 与 `artifacts/` 固定前缀孤儿对象扫描；GC 只删除正文对象并写 purge 标记，绝不改写 succeeded/refused 等历史执行终态。artifact 正文读取要求任务 owner 与 `task:read`，并逐项复核 tenant/task/artifact 绑定、ready 状态、TTL/purge 与 SHA-256；对象键不离开服务边界。结果读取在返回前于行锁内二次复核 deadline、授权和证据账本：到期为 410、未完成/无结果为 409、完整性错误 fail-close 为 500。"object 写成功、DB 绑定前崩溃"的对象由即时补偿加固定前缀 grace 重扫双保险兜底，删除失败保留引用供下轮重试。checkpointer 的 msgpack serializer 只 allowlist `TaskResultCandidate`、显式禁用 pickle fallback，并在 `LANGGRAPH_STRICT_MSGPACK=true` 下叠加运行时 schema allowlist。
 
 摄取和投影处理使用后台心跳续租；失去租约后旧 worker 不能提交。已有 receipt 的发布恢复跳过解析和 embedding。达到普通重试上限但仍可能遗留 Qdrant 世代时，任务进入可重复领取的 cleanup 阶段，清理成功后才写入最终失败。
 
@@ -43,8 +43,10 @@ worker 周期扫描“对象已写入、SQL 尚未推进”的上传预留，只
 
 启用通用任务后，worker 按 `task → ingestion → projection` 轮转，每轮每队列最多处理一项；只有全部队列均空闲才休眠。Agent 调用期间按 lease 的三分之一间隔续租；续租失败时本次结果不提交，任务保持可安全恢复。恢复扫描使用有界批次和时间预算，不计作普通队列任务；模型初始化失败只安全关闭领取到的通用任务，不阻断摄取。
 
-## Research 工具与结果
+## 任务工具与结果
 
-M1 仅公开 `research`，且只注册 `search_knowledge`、`fetch_evidence`、`list_document_versions`、`compare_document_versions` 四个 READ 工具。工具适配器只能读取服务端注入的 `AgentRunContext`，并委托 `ToolExecutionService` 校验参数、权限和证据；模型不能传递 tenant、权限、lease、批准或存储路径。
+`research` 只注册 `search_knowledge`、`fetch_evidence`、`list_document_versions`、`compare_document_versions` 四个 READ 工具。`controlled_action` 复用四个 READ 工具，并只增加两个固定 WRITE adapter；每次 WRITE 均须通过 HITL 和服务端审批。工具适配器只能读取服务端注入的 `AgentRunContext`，并委托 `ToolExecutionService` 校验参数、权限和证据；模型不能传递 tenant、权限、lease、批准或存储路径。
 
-每个 ToolMessage 只保留允许字段。任务成功前，服务端重新读取证据账本并验证 `TaskResult` 的 evidence_ids/citations，再原子绑定不可变结果 ref/hash；缺失、越权或过期证据会使任务失败关闭。checkpointer 的 msgpack serializer 只 allowlist `TaskResultCandidate`，并显式禁用 pickle fallback。ExecutionGuard 仅统计四个 READ 业务工具：完整轨迹中连续失败达到阈值、或同参重复调用超限时提前停止；最近一次成功会重置连续计数，Todo、结构化结果和未知工具不参与计数。普通工具异常的稳定业务码原样进入 ToolMessage，`task_checkpoint_lease_stale` 等致命码直接抛出。
+每个 ToolMessage 只保留允许字段。任务成功前，服务端重新读取证据账本并验证 `TaskResult` 的 evidence_ids/citations，再原子绑定不可变结果 ref/hash；controlled_action 还逐项核验 artifact 的归属、ready 状态和正文 hash。缺失、越权或过期证据会使任务失败关闭。checkpointer 的 msgpack serializer 只 allowlist `TaskResultCandidate`，并显式禁用 pickle fallback。ExecutionGuard 仅统计四个 READ 业务工具：完整轨迹中连续失败达到阈值、或同参重复调用超限时提前停止；最近一次成功会重置连续计数，Todo、结构化结果和未知工具不参与计数。普通工具异常的稳定业务码原样进入 ToolMessage，`task_checkpoint_lease_stale` 等致命码直接抛出。
+
+上述是 M2 批次 3 的实现边界；严格真实 M2 E2E、故障注入与最终 acceptance 仍待批次 4。

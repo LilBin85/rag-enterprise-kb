@@ -24,14 +24,17 @@ from rag_kb.web.dependencies import (
     build_task_result_service,
     build_task_resume_worker,
 )
+from rag_kb.web.routers import tasks as tasks_router
 
 
 def _state(
     *,
+    task_mode: TaskMode = TaskMode.RESEARCH,
     status: TaskStatus = TaskStatus.PLANNING,
     state_version: int = 1,
     interrupt_kind: str | None = None,
     interrupt_summary: str | None = None,
+    interrupt_ref: str | None = None,
     result_ref: str | None = None,
     result_hash: str | None = None,
     content_expires_at: datetime | None = None,
@@ -42,12 +45,19 @@ def _state(
         task_id="task-1",
         auth_context_ref="sha256:internal-auth-context",
         goal="核对上线制度",
-        task_mode=TaskMode.RESEARCH,
+        task_mode=task_mode,
         status=status,
         state_version=state_version,
         interrupt_kind=interrupt_kind,
         interrupt_summary=interrupt_summary,
-        result_kind="research" if result_hash else None,
+        interrupt_ref=interrupt_ref,
+        result_kind=(
+            "controlled_action"
+            if result_hash and task_mode is TaskMode.CONTROLLED_ACTION
+            else "research"
+            if result_hash
+            else None
+        ),
         result_ref=result_ref,
         result_hash=result_hash,
         content_expires_at=(
@@ -108,6 +118,8 @@ class FakeResumeWorker:
         self.calls: list[dict[str, object]] = []
 
     def resume_for_user(self, **kwargs: object) -> object:
+        if self._repository.current.interrupt_kind != "user_clarification":
+            raise TaskRepositoryError("task_resume_kind_invalid")
         if kwargs["expected_state_version"] != self._repository.current.state_version:
             raise TaskRepositoryError("task_state_conflict")
         self.calls.append(kwargs)
@@ -235,6 +247,81 @@ def test_create_rejects_non_research_task_modes(setup_app) -> None:
     assert repository.created == []
 
 
+def test_create_controlled_action_requires_enabled_gate_and_live_capability(
+    setup_app, monkeypatch
+) -> None:
+    client, repository, _ = setup_app
+    monkeypatch.setattr(
+        tasks_router,
+        "get_settings",
+        lambda: SimpleNamespace(enable_controlled_action_tasks=False),
+    )
+
+    disabled = client.post(
+        "/v1/tasks",
+        headers=_headers(),
+        json={"goal": "创建报告草稿", "task_mode": "controlled_action"},
+    )
+
+    assert disabled.status_code == 503
+    assert repository.created == []
+
+    monkeypatch.setattr(
+        tasks_router,
+        "get_settings",
+        lambda: SimpleNamespace(enable_controlled_action_tasks=True),
+    )
+    repository.create_error = "task_agent_unavailable"
+    unavailable = client.post(
+        "/v1/tasks",
+        headers=_headers(),
+        json={"goal": "创建报告草稿", "task_mode": "controlled_action"},
+    )
+
+    assert unavailable.status_code == 503
+    assert repository.created == []
+
+
+def test_create_controlled_action_uses_server_protocol_and_rejects_injection(
+    setup_app, monkeypatch
+) -> None:
+    client, repository, _ = setup_app
+    monkeypatch.setattr(
+        tasks_router,
+        "get_settings",
+        lambda: SimpleNamespace(enable_controlled_action_tasks=True),
+    )
+    repository.current = _state(task_mode=TaskMode.CONTROLLED_ACTION)
+
+    created = client.post(
+        "/v1/tasks",
+        headers=_headers(),
+        json={"goal": "创建报告草稿", "task_mode": "controlled_action"},
+    )
+    injected = client.post(
+        "/v1/tasks",
+        headers=_headers(),
+        json={
+            "goal": "创建报告草稿",
+            "task_mode": "controlled_action",
+            "thread_id": "client-thread",
+            "checkpoint_id": "client-checkpoint",
+            "required_capability_name": "other-agent",
+            "required_protocol_version": "other-version",
+            "storage_key": "artifacts/private/sentinel",
+        },
+    )
+
+    assert created.status_code == 202
+    assert created.json()["task_mode"] == "controlled_action"
+    assert len(repository.created) == 1
+    assert repository.created[0]["goal"] == "创建报告草稿"
+    assert repository.created[0]["task_mode"] is TaskMode.CONTROLLED_ACTION
+    assert set(repository.created[0]) == {"auth", "goal", "task_mode"}
+    assert injected.status_code == 422
+    assert "artifacts/private/sentinel" not in injected.text
+
+
 def test_create_returns_503_without_compatible_worker_capability(setup_app) -> None:
     client, repository, _ = setup_app
     repository.create_error = "research_agent_unavailable"
@@ -332,6 +419,38 @@ def test_continue_passes_answer_only_to_controlled_worker_resume(setup_app) -> N
     assert worker.calls[0]["answer"] == "人力资源部"
     assert "answer" not in response.json()
     assert response.json()["result_available"] is True
+
+
+def test_continue_rejects_injected_resume_fields_and_tool_approval(setup_app) -> None:
+    client, repository, worker = setup_app
+    repository.current = _state(
+        task_mode=TaskMode.CONTROLLED_ACTION,
+        status=TaskStatus.WAITING_FOR_APPROVAL,
+        interrupt_kind="tool_approval",
+        interrupt_summary="等待人工审批",
+        interrupt_ref="approval-1",
+    )
+
+    wrong_route = client.post(
+        "/v1/tasks/task-1/continue",
+        headers=_headers(),
+        json={"answer": "批准", "expected_state_version": 1},
+    )
+    injected = client.post(
+        "/v1/tasks/task-1/continue",
+        headers=_headers(),
+        json={
+            "answer": "人力资源部",
+            "expected_state_version": 1,
+            "thread_id": "client-thread",
+            "checkpoint_id": "client-checkpoint",
+            "resume": {"decisions": [{"type": "approve"}]},
+        },
+    )
+
+    assert wrong_route.status_code == 409
+    assert injected.status_code == 422
+    assert worker.calls == []
 
 
 def test_cancel_events_and_cross_tenant_errors_are_stable(setup_app) -> None:

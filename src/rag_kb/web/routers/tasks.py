@@ -3,20 +3,26 @@
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 
 from rag_kb.agent.result import TaskResult
 from rag_kb.application.task_query_service import DatabaseTaskQueryService, TaskQueryError
 from rag_kb.application.task_result_service import TaskResultError, TaskResultService
 from rag_kb.application.task_worker import TaskWorker
+from rag_kb.application.artifact_content_service import (
+    ArtifactContentError,
+    ArtifactContentService,
+)
+from rag_kb.config import get_settings
 from rag_kb.domain.identity import AuthContext, Permission
-from rag_kb.domain.tasks import TaskState
+from rag_kb.domain.tasks import TaskMode, TaskState
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository, TaskRepositoryError
 from rag_kb.web.dependencies import (
     build_task_query_service,
     build_task_repository,
     build_task_result_service,
     build_task_resume_worker,
+    build_artifact_content_service,
     resolve_auth_context,
 )
 from rag_kb.web.schemas.tasks import (
@@ -52,8 +58,8 @@ def _task_response(*, state: TaskState, now: datetime) -> TaskResponse:
 def _repository_error(exc: TaskRepositoryError) -> HTTPException:
     if exc.code == "task_not_found":
         return HTTPException(status_code=404, detail="任务不存在")
-    if exc.code == "research_agent_unavailable":
-        return HTTPException(status_code=503, detail="Research Agent 暂不可用")
+    if exc.code in {"research_agent_unavailable", "task_agent_unavailable"}:
+        return HTTPException(status_code=503, detail="任务 Agent 暂不可用")
     if exc.code in {
         "task_state_conflict",
         "task_not_waiting_for_user",
@@ -73,6 +79,11 @@ def create_task(
     repository: Annotated[DatabaseTaskRepository, Depends(build_task_repository)],
 ) -> TaskResponse:
     _require(auth, Permission.TASK_CREATE)
+    if (
+        request.task_mode is TaskMode.CONTROLLED_ACTION
+        and not get_settings().enable_controlled_action_tasks
+    ):
+        raise HTTPException(status_code=503, detail="受控动作暂不可用")
     try:
         return _task_response(
             state=repository.create_task(
@@ -84,6 +95,31 @@ def create_task(
         raise _repository_error(exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="任务请求非法") from exc
+
+
+@router.get("/{task_id}/artifacts/{artifact_id}/content")
+def get_artifact_content(
+    task_id: str,
+    artifact_id: str,
+    auth: Annotated[AuthContext, Depends(resolve_auth_context)],
+    artifacts: Annotated[ArtifactContentService, Depends(build_artifact_content_service)],
+) -> Response:
+    try:
+        return Response(
+            content=artifacts.read(
+                auth=auth, task_id=task_id, artifact_id=artifact_id
+            )
+        )
+    except ArtifactContentError as exc:
+        if exc.code == "task_read_denied":
+            raise HTTPException(status_code=403, detail="任务权限不足") from None
+        if exc.code == "artifact_not_found":
+            raise HTTPException(status_code=404, detail="产物不存在") from None
+        if exc.code == "artifact_content_expired":
+            raise HTTPException(status_code=410, detail="产物正文已过期") from None
+        if exc.code == "artifact_content_unavailable":
+            raise HTTPException(status_code=409, detail="产物正文不可用") from None
+        raise HTTPException(status_code=500, detail="产物正文校验失败") from None
 
 
 @router.get("/{task_id}", response_model=TaskResponse)

@@ -6,7 +6,7 @@ from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
 
-_RETENTION_PREFIXES = frozenset({"tool-results", "task-results"})
+_RETENTION_PREFIXES = frozenset({"tool-results", "task-results", "artifacts"})
 
 
 def _safe_object_component(value: str) -> bool:
@@ -150,19 +150,38 @@ class LocalObjectStore:
             raise ValueError("invalid_object_scan_cursor")
 
         namespace_path = self.root / namespace
-        try:
-            # ponytail: 目录名单每轮重排序 O(D log D)；D 到 10⁵+ 且不收缩时升级持久化游标表。
-            # 键带尾部 "/"，使目录间排序与完整 ref 字符串序严格一致，位置游标不回跳。
-            task_names = sorted(
-                (
-                    entry.name
-                    for entry in os.scandir(namespace_path)
-                    if entry.is_dir(follow_symlinks=False)
-                    and _safe_object_component(entry.name)
-                ),
-                key=lambda name: f"{name}/",
-            )
-        except (FileNotFoundError, NotADirectoryError):
+        refs: list[tuple[Path, str]] = []
+
+        def collect(directory: Path, parts: tuple[str, ...]) -> None:
+            try:
+                children = tuple(
+                    sorted(os.scandir(directory), key=lambda entry: entry.name)
+                )
+            except (FileNotFoundError, NotADirectoryError):
+                return
+            for child in children:
+                if not _safe_object_component(child.name):
+                    continue
+                child_parts = (*parts, child.name)
+                child_path = Path(child.path)
+                if child.is_dir(follow_symlinks=False):
+                    collect(child_path, child_parts)
+                elif child.is_file(follow_symlinks=False):
+                    refs.append(
+                        (
+                            child_path,
+                            PurePosixPath(namespace, *child_parts).as_posix(),
+                        )
+                    )
+            if parts:
+                try:
+                    if self._windows_long_path(directory).stat().st_mtime < older_than.timestamp():
+                        self._windows_long_path(directory).rmdir()
+                except OSError:
+                    pass
+
+        collect(namespace_path, ())
+        if not refs and not namespace_path.exists():
             return (), True, None
 
         cutoff = older_than.timestamp()
@@ -170,53 +189,29 @@ class LocalObjectStore:
         scanned = 0
         exhausted = True
         resume: str | None = None
-        for task_name in task_names:
-            task_path = namespace_path / task_name
-            try:
-                object_names = sorted(
-                    entry.name
-                    for entry in os.scandir(task_path)
-                    if _safe_object_component(entry.name)
-                    and entry.is_file(follow_symlinks=False)
-                )
-            except (FileNotFoundError, NotADirectoryError):
+        for object_path, ref in sorted(refs, key=lambda item: item[1]):
+            if after is not None and ref <= after:
                 continue
-            # 扫描期机会式清理过期空目录（mtime 早于 cutoff 且无有效条目）。
-            if not object_names:
-                try:
-                    if task_path.stat().st_mtime < cutoff:
-                        self._windows_long_path(task_path).rmdir()
-                except OSError:
-                    pass
-                continue
-            for object_name in object_names:
-                ref = PurePosixPath(namespace, task_name, object_name).as_posix()
-                if after is not None and ref <= after:
-                    continue
-                scanned += 1
-                if scanned > max_scanned:
-                    # 预算溢出点尚未检验，不能作游标（否则下轮被 after 永久
-                    # 跳过、夹缝对象不可达）；回退到最后一个已检验位置。
-                    exhausted = False
-                    break
-                try:
-                    mtime = self._windows_long_path(
-                        task_path / object_name
-                    ).stat().st_mtime
-                except FileNotFoundError:
-                    continue
-                resume = ref
-                if mtime < cutoff and ref not in exclude:
-                    if len(entries) == limit:
-                        # 规范序收满 limit 即截断；游标停到最后一个已返回的
-                        # 候选上——溢出候选下轮重检，绝不落到游标之下形成
-                        # 永久跳过夹缝。
-                        exhausted = False
-                        resume = entries[-1][1]
-                        break
-                    entries.append((mtime, ref))
-            if not exhausted:
+            scanned += 1
+            if scanned > max_scanned:
+                # 预算溢出点尚未检验，不能作游标（否则下轮被 after 永久
+                # 跳过、夹缝对象不可达）；回退到最后一个已检验位置。
+                exhausted = False
                 break
+            try:
+                mtime = self._windows_long_path(object_path).stat().st_mtime
+            except FileNotFoundError:
+                continue
+            resume = ref
+            if mtime < cutoff and ref not in exclude:
+                if len(entries) == limit:
+                    # 规范序收满 limit 即截断；游标停到最后一个已返回的
+                    # 候选上——溢出候选下轮重检，绝不落到游标之下形成
+                    # 永久跳过夹缝。
+                    exhausted = False
+                    resume = entries[-1][1]
+                    break
+                entries.append((mtime, ref))
         if exhausted:
             return tuple(sorted(entries)), True, None
         return tuple(sorted(entries)), False, resume

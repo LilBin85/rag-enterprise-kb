@@ -44,8 +44,13 @@ class TaskResultService:
         self._now = now or (lambda: datetime.now(UTC))
 
     def read(self, *, auth: AuthContext, state: TaskState) -> TaskResult:
+        expected_kind = (
+            "controlled_action"
+            if state.task_mode.value == "controlled_action"
+            else "research"
+        )
         if (
-            state.result_kind != "research"
+            state.result_kind != expected_kind
             or state.result_hash is None
             or state.status not in {TaskStatus.SUCCEEDED, TaskStatus.REFUSED}
         ):
@@ -62,7 +67,11 @@ class TaskResultService:
         except (OSError, ValueError) as exc:
             raise TaskResultError("task_result_integrity_failed") from exc
         expected_status = "succeeded" if state.status is TaskStatus.SUCCEEDED else "refused"
-        if result.task_id != state.task_id or result.status != expected_status:
+        if (
+            result.task_id != state.task_id
+            or result.status != expected_status
+            or result.result_kind != expected_kind
+        ):
             raise TaskResultError("task_result_binding_invalid")
         if result.status == "refused":
             if result.evidence_ids or result.citations:

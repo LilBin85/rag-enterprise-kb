@@ -34,7 +34,6 @@ class TaskEventResult:
 class TaskArtifactResult:
     artifact_id: str
     artifact_type: str
-    storage_key: str
     content_hash: str
     status: str
     created_at: datetime
@@ -90,7 +89,6 @@ class DatabaseTaskQueryService:
             TaskArtifactResult(
                 artifact_id=row.artifact_id,
                 artifact_type=row.artifact_type,
-                storage_key=row.storage_key,
                 content_hash=row.content_hash,
                 status=row.status,
                 created_at=row.created_at,

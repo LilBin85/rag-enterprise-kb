@@ -1,4 +1,4 @@
-"""M1 Research Agent HTTP 契约；不暴露图节点或 checkpoint 载荷。"""
+"""任务 HTTP 契约；不暴露图节点或 checkpoint 载荷。"""
 
 from datetime import datetime
 from typing import Any
@@ -16,9 +16,9 @@ class TaskCreateRequest(BaseModel):
 
     @field_validator("task_mode")
     @classmethod
-    def require_research(cls, value: TaskMode) -> TaskMode:
-        if value is not TaskMode.RESEARCH:
-            raise ValueError("M1 仅支持 research 任务")
+    def require_public_mode(cls, value: TaskMode) -> TaskMode:
+        if value not in {TaskMode.RESEARCH, TaskMode.CONTROLLED_ACTION}:
+            raise ValueError("仅支持 research 或 controlled_action 任务")
         return value
 
 

@@ -15,7 +15,12 @@ from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.tasks import TaskBudgets, TaskMode, TaskStatus
 from rag_kb.infrastructure.database import Base, build_database
 from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerRepository
-from rag_kb.infrastructure.database.models import AgentTaskRow, PrincipalRow, TenantRow
+from rag_kb.infrastructure.database.models import (
+    AgentCapabilityLeaseRow,
+    AgentTaskRow,
+    PrincipalRow,
+    TenantRow,
+)
 from rag_kb.infrastructure.database.task_repository import (
     DatabaseTaskRepository,
     TaskRepositoryError,
@@ -423,6 +428,16 @@ def test_controlled_finish_binds_result_and_repeat_sync_cannot_change_terminal(
         task_capability_name="task-agent",
         task_capability_protocol_version="m2-fenced-v1",
     )
+    with database.sessions.begin() as session:
+        session.add(
+            AgentCapabilityLeaseRow(
+                capability_name="task-agent",
+                protocol_version="m2-fenced-v1",
+                worker_id="worker-a",
+                lease_expires_at=datetime.now(UTC) + timedelta(seconds=300),
+                updated_at=datetime.now(UTC),
+            )
+        )
     controlled_repository.create_task(
         auth=auth,
         goal="受控报告",

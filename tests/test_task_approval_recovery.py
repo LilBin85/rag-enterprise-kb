@@ -245,6 +245,18 @@ def _build_stage(tmp_path: Path, *, task_mode: TaskMode) -> SimpleNamespace:
         task_capability_name="task-agent",
         task_capability_protocol_version="m2-fenced-v1",
     ) if task_mode is TaskMode.CONTROLLED_ACTION else DatabaseTaskRepository(database)
+    if task_mode is TaskMode.CONTROLLED_ACTION:
+        with database.sessions.begin() as session:
+            # controlled 创建门要求兼容 worker 已在线。
+            session.add(
+                AgentCapabilityLeaseRow(
+                    capability_name="task-agent",
+                    protocol_version="m2-fenced-v1",
+                    worker_id="worker-1",
+                    lease_expires_at=datetime.now(UTC) + timedelta(seconds=300),
+                    updated_at=datetime.now(UTC),
+                )
+            )
     repository.create_task(
         auth=requester,
         goal="创建制度摘要报告",
@@ -261,17 +273,6 @@ def _build_stage(tmp_path: Path, *, task_mode: TaskMode) -> SimpleNamespace:
         task.lease_owner = "worker-1"
         task.lease_expires_at = datetime.now(UTC) + timedelta(seconds=60)
         task.lease_generation = 1
-        # 生产 Worker 领取/恢复前必须持有 task-agent capability 租约；
-        # stage 等效注册（协议门 require_capability 为真）。
-        work.session.add(
-            AgentCapabilityLeaseRow(
-                capability_name="task-agent",
-                protocol_version="m2-fenced-v1",
-                worker_id="worker-1",
-                lease_expires_at=datetime.now(UTC) + timedelta(seconds=300),
-                updated_at=datetime.now(UTC),
-            )
-        )
         work.session.add_all(
             [
                 DocumentRow(
