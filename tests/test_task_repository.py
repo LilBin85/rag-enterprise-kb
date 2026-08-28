@@ -310,6 +310,16 @@ def test_finished_research_task_requires_immutable_result_and_is_not_reclaimed(d
         repository.finish_task(lease, status=TaskStatus.SUCCEEDED, trace_id="trace-a")
     with pytest.raises(ValueError, match="task_result_binding_required"):
         repository.finish_task(lease, status=TaskStatus.REFUSED, trace_id="trace-a")
+    with pytest.raises(ValueError, match="task_event_counts_invalid"):
+        repository.finish_task(
+            lease,
+            status=TaskStatus.SUCCEEDED,
+            result_kind="research",
+            result_ref="task-results/task-a/result.json",
+            result_hash="sha256:" + "a" * 64,
+            trace_id="trace-a",
+            counts={"model_calls": -1},
+        )
     finished = repository.finish_task(
         lease,
         status=TaskStatus.SUCCEEDED,
@@ -317,6 +327,7 @@ def test_finished_research_task_requires_immutable_result_and_is_not_reclaimed(d
         result_ref="task-results/task-a/result.json",
         result_hash="sha256:" + "a" * 64,
         trace_id="trace-a",
+        counts={"model_calls": 2, "tool_calls": 1},
     )
     assert finished.status is TaskStatus.SUCCEEDED
     assert finished.content_expires_at is not None
@@ -325,12 +336,13 @@ def test_finished_research_task_requires_immutable_result_and_is_not_reclaimed(d
     with database.sessions() as session:
         events = tuple(
             session.scalars(
-                select(TaskEventRow.event_type)
+                select(TaskEventRow)
                 .where(TaskEventRow.task_id == "task-a")
                 .order_by(TaskEventRow.sequence)
             )
         )
-    assert events == ("task_created", "task_succeeded")
+    assert tuple(event.event_type for event in events) == ("task_created", "task_succeeded")
+    assert events[-1].counts == {"model_calls": 2, "tool_calls": 1}
 
 
 def test_finished_research_task_uses_injected_sqlite_clock_for_content_expiry(database) -> None:

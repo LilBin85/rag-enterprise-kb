@@ -959,10 +959,20 @@ class DatabaseTaskRepository:
         result_hash: str | None = None,
         error_code: str | None = None,
         trace_id: str,
+        counts: dict[str, int] | None = None,
     ) -> TaskState:
         """终态写入：succeeded 必须原子绑定有效结果（计划 §11.4 门禁）。"""
         if status not in _TERMINAL_STATUSES:
             raise ValueError("task_status_not_terminal")
+        if counts is None:
+            event_counts: dict[str, int] = {}
+        elif not isinstance(counts, dict) or any(
+            not isinstance(name, str) or type(value) is not int or value < 0
+            for name, value in counts.items()
+        ):
+            raise ValueError("task_event_counts_invalid")
+        else:
+            event_counts = dict(counts)
         is_result_submission = status in {TaskStatus.SUCCEEDED, TaskStatus.REFUSED}
         # result_kind 的精确值按 task mode 在行锁内校验（受控任务为
         # controlled_action）；此处只做通用非空检查。
@@ -1035,6 +1045,7 @@ class DatabaseTaskRepository:
                 event_type=f"task_{status.value}",
                 trace_id=trace_id,
                 run_id=trace_id,
+                counts=event_counts,
             )
             return _state_from_row(row)
 
@@ -1153,6 +1164,7 @@ class DatabaseTaskRepository:
         event_type: str,
         trace_id: str,
         run_id: str,
+        counts: dict[str, int] | None = None,
     ) -> None:
         sequence = session.scalar(
             select(func.coalesce(func.max(TaskEventRow.sequence), -1) + 1).where(
@@ -1171,7 +1183,7 @@ class DatabaseTaskRepository:
                 run_id=run_id,
                 stage=row.status,
                 status=row.status,
-                counts={},
+                counts=dict(counts or {}),
                 token_usage=None,
                 error_code=row.last_error_code,
             )

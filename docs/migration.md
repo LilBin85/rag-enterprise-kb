@@ -8,7 +8,7 @@
 2. 启动 PostgreSQL、Qdrant，再启动 API 与 Worker；只有 Worker 全部构建完成并注册 `task-agent/m2-fenced-v1` capability lease 后才恢复任务入口。
 3. 使用新版 `/v1` 客户端；首个版本使用 `POST /v1/documents`，同一文档的后续版本使用 `POST /v1/documents/{document_id}/versions`，两者都必须提供 `Idempotency-Key`。
 4. 旧接口兼容层已删除，客户端必须使用 `/v1` 接口。
-5. `docs/acceptance/latest.json` 仍是 M1 历史验收报告；M2 批次 3 的回归验证已完成，但 M2 最终迁移验收必须等待批次 4 重新生成机器报告。
+5. 迁移验收以 `docs/acceptance/latest.json` 为准；它与独立的 M1/M2 E2E 报告共同记录当前工作树的最终机器验收。
 
 ## 0010 Research Agent 状态收缩
 
@@ -52,7 +52,7 @@
 4. 执行 `alembic upgrade head` 至 `20260827_0013` 并初始化 checkpointer schema。
 5. 部署 API 与 Worker 新代码。
 6. 启动 Worker，确认 capability 名称 `task-agent`、协议 `m2-fenced-v1` 的租约有效。
-7. 恢复任务入口；M2 最终发布前仍须执行批次 4 的故障注入与严格真实 E2E。
+7. 恢复任务入口；发布前重新执行故障注入、严格真实 E2E 与迁移 round-trip，不能复用历史报告。
 
 **禁止混跑**：已上线 0013 后不允许旧协议 Worker 接入任务队列；capability 门会拒绝一切非 `task-agent/m2-fenced-v1` Worker 创建/领取语义。降级只能恢复物理结构，不能恢复已删除的任务/工具/artifact 正文和已终止状态；含 M2 协议、审批或 artifact 生命周期事实的数据不得降级。正文删除不可逆，异常优先前向修复。downgrade/upgrade 后必须重新验证真实 round-trip 命令。
 
@@ -66,4 +66,4 @@ conda run -n rag-kb --no-capture-output python -m pytest -q tests/test_database_
 
 ## 旧测试与文档
 
-旧 Planner/Runtime、pending-action 调度和确定性任务模拟不再是 Agent 的验收依据。当前覆盖由 Agent 工厂、PostgreSQL checkpointer interrupt/resume、READ/受控 WRITE 工具适配器、审批、artifact 正文读取、版本上传和隔离真实 Research E2E 组成。M2 严格真实 E2E 与最终 acceptance 仍待批次 4；旧验收报告、中文学习笔记及用户材料仅作历史参考，不删除、不覆盖。
+旧 Planner/Runtime、pending-action 调度和确定性任务模拟不再是 Agent 的验收依据。当前覆盖由 Agent 工厂、PostgreSQL checkpointer interrupt/resume、READ/受控 WRITE 工具适配器、审批、artifact 正文读取、版本上传，以及隔离的 M1 Research / M2 controlled-write E2E 组成。旧验收报告、中文学习笔记及用户材料仅作历史参考，不删除、不覆盖。

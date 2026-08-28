@@ -2,7 +2,7 @@
 
 面向企业制度与技术规范的租户隔离知识任务智能体。`/v1` 接口以 PostgreSQL 事实源、Qdrant 授权检索、证据账本和可恢复任务状态为核心。
 
-机器报告 [docs/acceptance/latest.json](docs/acceptance/latest.json) 是已完成 M1 验收的事实记录，不覆盖当前 M2 批次 3 实现。M2 严格真实 E2E 与最终 acceptance 尚未执行；在新的报告生成前，文档不推断 M2“全部通过”。最终报告必须以 `verdict`、`gates`、`unverified` 和检索质量门为准，不能由文档补写缺失证据。
+机器报告 [docs/acceptance/latest.json](docs/acceptance/latest.json) 记录当前工作树已完成的 M1/M2 验收。最终报告必须以 `verdict`、`gates`、`unverified` 和检索质量门为准，不能由文档补写缺失证据。
 
 ## 架构与运行模式
 
@@ -103,13 +103,14 @@ conda run -n rag-kb --no-capture-output python scripts/build_project_acceptance_
   --pytest-xml data/local/acceptance/pytest-stage9.xml `
   --retrieval-report data/local/benchmarks/enterprise-retrieval-stage9-sufficiency-aligned.json `
   --m1-e2e-report docs/acceptance/m1-research-e2e.json `
+  --m2-e2e-report docs/acceptance/m2-controlled-write-e2e.json `
   --dataset data/benchmarks/retrieval_acceptance_v2.yaml `
   --config pyproject.toml `
   --output docs/acceptance/latest.json
 ```
 
-M1 严格真实 E2E 已在隔离资源上验证 V1/V2 上传和精确四工具轨迹。M2 批次 3 的 SQLite/HTTP、隔离 PostgreSQL 和双库全量回归已通过 `546 passed / 0 failed / 0 skipped`；严格真实 M2 E2E 与最终机器报告仍待批次 4，不能以现有 `latest.json` 代替。脚本不会从文档继承指标或填充缺失数字。
+M1/M2 严格真实 E2E 已在隔离资源上通过：M1 验证 V1/V2 上传、精确四个 READ 工具与结果引用；M2 验证 31 个受控任务、HITL、批准/拒绝、artifact 隔离、恢复窗口、严格 msgpack 与终态审计。最终双库全量回归为 `550 passed / 0 failed / 0 skipped`，检索质量与 ACL 门均通过。脚本不会从文档继承指标或填充缺失数字。
 
 ## 目录边界
 
-`src/rag_kb/` 为新应用；`tests/` 为分层回归；`schemas/` 为机器契约；`scripts/` 为可复现入口；`data/benchmarks/` 为任务集。用户的 `.obsidian/`、`output/`、面试材料和历史验收报告均属于受保护资产，不在迁移中删除或覆盖。E2E 结束后，调用方必须删除本次创建的临时 PostgreSQL 数据库、`m1_e2e_*` Qdrant collection 和 `data/local/e2e/m1_e2e_*` 对象目录；正式保留的验收证据只有 `docs/acceptance/m1-research-e2e.json`、`docs/acceptance/latest.json`、`data/local/acceptance/pytest-stage9.xml` 和对应的 stage9 检索报告。
+`src/rag_kb/` 为新应用；`tests/` 为分层回归；`schemas/` 为机器契约；`scripts/` 为可复现入口；`data/benchmarks/` 为任务集。用户的 `.obsidian/`、`output/`、面试材料和历史验收报告均属于受保护资产，不在迁移中删除或覆盖。E2E 结束后，调用方必须删除本次创建的临时 PostgreSQL 数据库、专属 Qdrant collection 和对象目录；正式机器证据为 `docs/acceptance/m1-research-e2e.json`、`docs/acceptance/m2-controlled-write-e2e.json` 与 `docs/acceptance/latest.json`。

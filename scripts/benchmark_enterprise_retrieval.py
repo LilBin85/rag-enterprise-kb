@@ -472,6 +472,7 @@ def run_benchmark(
         phase = "ingest_documents"
         worker_outcomes = [asdict(worker.run_once()) for _ in ingested]
         if any(outcome["status"] != "succeeded" for outcome in worker_outcomes):
+            report["ingestion"] = {"uploads": ingested, "worker_outcomes": worker_outcomes}
             raise RuntimeError("enterprise_benchmark_ingestion_failed")
         authorization = DatabaseAuthorizationPort(database)
         vectors = QdrantAuthorizedSearch(client, embedder, collection=collection)

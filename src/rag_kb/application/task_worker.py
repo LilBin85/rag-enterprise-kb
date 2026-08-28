@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from rag_kb.agent.context import AgentRunContext
 from rag_kb.agent.result import (
@@ -40,7 +40,7 @@ from rag_kb.infrastructure.database.evidence_repository import (
     EvidenceLedgerConflict,
     EvidenceLedgerRepository,
 )
-from rag_kb.infrastructure.database.models import AgentTaskRow, ArtifactRow
+from rag_kb.infrastructure.database.models import AgentTaskRow, ArtifactRow, ToolCallRow
 from rag_kb.infrastructure.database.task_repository import (
     DatabaseTaskRepository,
     TaskLease,
@@ -312,9 +312,11 @@ class TaskWorker:
         resume_decision: str | None = None,
         resume_approval_id: str | None = None,
     ) -> TaskWorkerResult:
+        run_id = uuid4().hex
         try:
             return self._advance(
                 lease,
+                run_id=run_id,
                 resume_answer=resume_answer,
                 resume_decision=resume_decision,
                 resume_approval_id=resume_approval_id,
@@ -327,7 +329,7 @@ class TaskWorker:
                     exc.code,
                     exc_info=True,
                 )
-                stale_code = self._fail_safely(lease, exc.code)
+                stale_code = self._fail_safely(lease, exc.code, run_id)
                 if stale_code is not None:
                     return TaskWorkerResult(
                         status="stale",
@@ -361,7 +363,7 @@ class TaskWorker:
                 code,
                 exc_info=True,
             )
-            stale_code = self._fail_safely(lease, code)
+            stale_code = self._fail_safely(lease, code, run_id)
             if stale_code is not None:
                 return TaskWorkerResult(
                     status="stale",
@@ -376,6 +378,7 @@ class TaskWorker:
         self,
         lease: TaskLease,
         *,
+        run_id: str | None = None,
         resume_answer: str | None = None,
         resume_decision: str | None = None,
         resume_approval_id: str | None = None,
@@ -401,7 +404,7 @@ class TaskWorker:
         if state.deadline is not None and self._repository.current_time() >= state.deadline:
             raise TaskWorkerError("task_deadline_expired")
 
-        run_id = uuid4().hex
+        run_id = run_id or uuid4().hex
         auth = self._auth_contexts.resolve(
             task_id=state.task_id,
             auth_context_ref=state.auth_context_ref,
@@ -510,7 +513,7 @@ class TaskWorker:
         if candidate.status == "needs_clarification":
             # middleware 必须把它转为 interrupt；否则拒绝伪造业务暂停。
             raise TaskWorkerError("task_clarification_interrupt_missing")
-        return self._settle(lease, candidate, auth, run_id)
+        return self._settle(lease, candidate, auth, run_id, latest)
 
     @staticmethod
     def _require_user_interrupt(snapshot) -> None:
@@ -862,6 +865,7 @@ class TaskWorker:
         candidate: TaskResultCandidate,
         auth: AuthContext,
         run_id: str,
+        agent_snapshot: object,
     ) -> TaskWorkerResult:
         # citation 复核必须使用执行结束后的最新服务端身份，而非 invoke 前快照。
         auth = self._auth_contexts.resolve(
@@ -912,6 +916,11 @@ class TaskWorker:
             if candidate.status == "succeeded"
             else TaskStatus.REFUSED
         )
+        counts = self._terminal_counts(
+            tenant_id=auth.tenant_id,
+            task_id=lease.state.task_id,
+            agent_snapshot=agent_snapshot,
+        )
         try:
             finished = self._repository.finish_task(
                 lease,
@@ -920,6 +929,7 @@ class TaskWorker:
                 result_ref=result_ref,
                 result_hash=result_hash,
                 trace_id=run_id,
+                counts=counts,
             )
         except Exception:
             self._delete_unbound_task_result(result_ref, lease.state.task_id)
@@ -932,6 +942,31 @@ class TaskWorker:
                 error_code="task_deadline_expired",
             )
         return TaskWorkerResult(status="finished", task_id=finished.task_id)
+
+    def _terminal_counts(
+        self,
+        *,
+        tenant_id: str,
+        task_id: str,
+        agent_snapshot: object,
+    ) -> dict[str, int]:
+        values = getattr(agent_snapshot, "values", None)
+        messages = values.get("messages", ()) if isinstance(values, dict) else ()
+        model_calls = (
+            sum(isinstance(message, AIMessage) for message in messages)
+            if isinstance(messages, (list, tuple))
+            else 0
+        )
+        with self._database.sessions() as session:
+            tool_calls = session.scalar(
+                select(func.count())
+                .select_from(ToolCallRow)
+                .where(
+                    ToolCallRow.tenant_id == tenant_id,
+                    ToolCallRow.task_id == task_id,
+                )
+            )
+        return {"model_calls": model_calls, "tool_calls": int(tool_calls or 0)}
 
     def _verified_artifacts(
         self,
@@ -1002,13 +1037,13 @@ class TaskWorker:
             logger.error("任务结果绑定状态确认失败 task_id=%s", task_id)
             return True
 
-    def _fail_safely(self, lease: TaskLease, code: str) -> str | None:
+    def _fail_safely(self, lease: TaskLease, code: str, run_id: str) -> str | None:
         try:
             self._repository.finish_task(
                 lease,
                 status=TaskStatus.FAILED,
                 error_code=code[:100],
-                trace_id=code[:64],
+                trace_id=run_id,
             )
         except TaskRepositoryError as exc:
             if exc.code in _STALE_REPOSITORY_CODES:

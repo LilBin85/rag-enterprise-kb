@@ -1,7 +1,7 @@
 # 重构任务进度记录
 
 > 最后更新：2026-08-28
-> 当前阶段：M2 进行中——批次 0（0013 与协议事实）、批次 1（HITL 暂停与审批事实）、批次 2（双层恢复与副作用安全）、批次 3（公共 API 与正文生命周期）已完成并验证；批次 4（故障注入、严格真实 M2 E2E 与最终验收）未开始。M1 保持全部完成与验证，未回归。
+> 当前阶段：M1 与 M2 批次 0-4 均已完成并验证；最新正式验收覆盖严格真实 E2E、PostgreSQL 故障矩阵、双库全量回归、检索 benchmark 与清理门禁，`docs/acceptance/latest.json` verdict 为 `passed`。
 > 开发依据：`AGENT_REFACTOR_PLAN.md`、`M2_PLAN.md`（未跟踪实施设计）；当前交付状态以本文为准。
 
 ## 执行约束
@@ -27,7 +27,7 @@
 | M2 批次 1 | 已完成并验证 | 两个 WRITE 薄 adapter + HITL 精确暂停、interrupt 双分类严格分流、服务端最小 action binding（PlanRevision）、pending approval checkpoint 绑定幂等、发起人自批拒绝、FormatChecker；提交 `0f4474d`，详见 M2 批次 1 小节。 |
 | M2 批次 2 | 已完成并验证 | 幂等 decision + 服务端受控 resume（同 thread）、D7 稳定 action key、claim_approval_resume/claim_next 受控重领取、三类崩溃窗口（真实 PG + FencedPostgresSaver）、失效矩阵 adapter 0、storage_key 全面收口（artifact_id）、TaskResultCandidate.artifact_ids 与受控 settle、reject 审计三元组；详见 M2 批次 2 小节。 |
 | M2 批次 3 | 已完成并验证 | controlled_action 创建、审批 API、artifact content 与正文 TTL/purge 已交付；全量双库验证 `546 passed / 0 failed / 0 skipped`。 |
-| M2 批次 4 | 未开始 | 故障注入、严格真实 M2 E2E、acceptance artifacts 与最终验收尚未执行。 |
+| M2 批次 4 | 已完成并验证 | 31 任务严格真实 E2E、17 项 PostgreSQL 故障矩阵、M1/M2 当前源码绑定、双库全量 550 passed / 0 skipped、检索与清理门禁均通过。 |
 
 ## 已完成的 M1 基础能力
 
@@ -177,9 +177,9 @@
 
 ## 当前交付边界
 
-- M1 批次 0-4 全部完成并验证，M2 批次 0-3 完成并验证；M2 批次 4 尚未开始，M2 尚未完成。
-- 批次 3 已交付公开 controlled_action 创建、approval list/detail/decision、artifact content 路由与 retention；UNKNOWN 永不自动重放、客户端不能提交 graph resume payload。
-- controlled_action 若进入 `waiting_for_user`，可通过 `/v1/tasks/{task_id}/continue` 在同一 `task_id` 恢复；批次 4 的故障注入与严格 E2E 必须覆盖该边界。
+- M1 批次 0-4 与 M2 批次 0-4 全部完成并验证；M2 停止于两个固定 WRITE adapter，不进入多 Agent、MCP、长期记忆或外部写入。
+- controlled_action 公开创建、approval list/detail/decision、artifact content 路由与 retention 均已交付；UNKNOWN 永不自动重放、客户端不能提交 graph resume payload。
+- controlled_action 若进入 `waiting_for_user`，可通过 `/v1/tasks/{task_id}/continue` 在同一 `task_id` 恢复。
 - 0013 的真实发布仍必须遵守 stop-the-world 顺序；本进度记录不替代正式发布 runbook。
 
 ## M2 批次 3：公共 API 与正文生命周期（已完成并验证）
@@ -190,3 +190,12 @@
 - controlled 终态、取消、waiting 超时和 WRITE UNKNOWN 均写入正文保留窗口；artifact purge 保留 hash/status 审计，递归 orphan 扫描覆盖 `artifacts/` 且保持 grace、游标、重试和前缀公平性。
 - 验证：批次 3 六组 SQLite/HTTP 门禁全部通过；隔离 PostgreSQL retention、迁移 round-trip、真实 M2 approval/recovery/concurrency 路径通过；双库协议下全量 `546 passed in 308.91s`，`0 failed / 0 skipped`，`git diff --check` 通过。
 - 上述是批次 3 回归验证，不代表 M2 已完成；严格真实 M2 E2E、acceptance artifacts 与最终机器报告仍待批次 4。
+
+## M2 批次 4：故障注入、最终验收与文档同步（已完成并验证）
+
+- 新增独立 `scripts/smoke_m2_controlled_write_e2e.py`：创建并删除两个 PostgreSQL 临时库，执行 `0012 -> head -> 0012 -> head`，初始化 checkpointer，使用专属 Qdrant collection 与对象根目录；不触碰 `kb_chunks`、`kb_chunks_v2`、`test_dfaae526c675`。
+- 严格 M2 E2E 通过：31 个任务、21 个场景，验证四个 READ / 两个 WRITE 的工具暴露，HITL 的批准与拒绝，artifact hash 与访问隔离，重复 resume 无第二次副作用，澄清恢复，checkpoint msgpack 无 pickle，以及三个崩溃恢复窗口。所有临时数据库、collection、对象根目录和租户清理成功。
+- PostgreSQL 故障矩阵 `17 passed`；新鲜 M1 严格真实 E2E 通过，精确四个 READ 工具、两版本、strict msgpack、结果引用与 citations 均经服务端验证。
+- 修复 Windows Docling PDF 运行时：`Settings.prepare_runtime_env()` 同时设置 `TORCHDYNAMO_DISABLE=1`，阻止 Docling 对 `torch.compile` 的调用在 GBK 环境读取 PyTorch kernel 源时失败；真实 PDF parse、企业检索 benchmark 均通过。
+- 终态审计证据补齐：正式 M2 artifact 保留 31 条任务 ledger（stop reason、error code、trace ID、模型/工具次数），并验证主 WRITE 的 approval、tool call、artifact 与 TaskResult 终态关联；汇总器缺少任一字段即拒绝通过。
+- 最终双库全量回归 `550 passed / 0 failed / 0 skipped`；企业检索 benchmark 的 Recall@5、MRR、no-answer accuracy 均为 `1.0`，ACL leak rate 为 `0`，专属 tenant/collection/object root 清理成功；最终 acceptance verdict 为 `passed`。

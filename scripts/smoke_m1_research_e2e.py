@@ -214,11 +214,32 @@ def _check_serializer_is_strict() -> dict[str, object]:
     }
 
 
+def _source_binding() -> dict[str, str]:
+    """复用最终汇总器的源码身份计算，避免 M1 证据被历史运行替代。"""
+    try:
+        from scripts.build_project_acceptance_report import (
+            git_revision,
+            git_worktree_fingerprint,
+        )
+    except ModuleNotFoundError:
+        from build_project_acceptance_report import (  # type: ignore[no-redef]
+            git_revision,
+            git_worktree_fingerprint,
+        )
+
+    revision = git_revision()
+    fingerprint = git_worktree_fingerprint()
+    if revision is None or fingerprint is None:
+        raise SmokeError("source_binding_unavailable")
+    return {"git_revision": revision, "worktree_sha256": fingerprint}
+
+
 def run(args: argparse.Namespace) -> dict[str, object]:
     _require_isolated_inputs(args)
-    serializer_evidence = _check_serializer_is_strict()
     demo_token = secrets.token_urlsafe(24)
+    # 配置必须先于任何 rag_kb 导入，Settings 与 strict msgpack 均会缓存运行时环境。
     _configure_environment(args, demo_token)
+    serializer_evidence = _check_serializer_is_strict()
     _initialize()
 
     port = _pick_port(args.port)
@@ -384,6 +405,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             raise SmokeError("checkpoint_pickle_encoding_observed")
         return {
             "status": "passed",
+            "source_binding": _source_binding(),
             "execution_mode": "live_postgres_msgpack",
             "strict_msgpack": serializer_evidence,
             "checkpoint_encodings": sorted(encodings),

@@ -127,7 +127,7 @@ class Settings(BaseSettings):
         - HF_ENDPOINT 指向国内镜像(huggingface.co 直连超时,2026-08-07 实测);
         - HF_HUB_DISABLE_XET=1:镜像下 xet 协议会回跳官方 CAS 服务器报 401,
           禁用后回退普通 HTTP 下载,与镜像兼容(同日实测);
-        - TORCH_COMPILE_DISABLE=1:本机无 MSVC(cl.exe),Docling/FlagEmbedding
+        - TORCHDYNAMO_DISABLE=1:本机无 MSVC(cl.exe),Docling/FlagEmbedding
           部分模型默认启用 torch.compile,须显式禁用(同日实测 InvalidCxxCompiler);
         - HF_HUB_OFFLINE=1(仅当 bge-m3 已完整缓存):transformers 5.x 加载 tokenizer
           时会向 HF 发起 list_repo_templates 远程探测,即使模型已在本地——该探测在
@@ -141,6 +141,7 @@ class Settings(BaseSettings):
             os.environ.setdefault("HF_ENDPOINT", self.hf_endpoint)
             os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
         os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+        os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
         if self._bge_m3_fully_cached():
             os.environ.setdefault("HF_HUB_OFFLINE", "1")
 

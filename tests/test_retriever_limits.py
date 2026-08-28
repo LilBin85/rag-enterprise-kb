@@ -1,3 +1,4 @@
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -146,3 +147,13 @@ def test_empty_optional_retrieval_environment_values_use_defaults(monkeypatch) -
     assert settings.retrieval_candidate_k is None
     assert settings.retrieval_context_k is None
     assert settings.retrieval_score_threshold is None
+
+
+def test_runtime_environment_disables_torch_dynamo(monkeypatch) -> None:
+    monkeypatch.delenv("TORCH_COMPILE_DISABLE", raising=False)
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising=False)
+
+    Settings(_env_file=None).prepare_runtime_env()
+
+    assert os.environ["TORCH_COMPILE_DISABLE"] == "1"
+    assert os.environ["TORCHDYNAMO_DISABLE"] == "1"

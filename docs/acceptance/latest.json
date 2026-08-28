@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "generated_on": "2026-08-27T05:58:51.259105+00:00",
+  "generated_on": "2026-08-28T13:24:28.310948+00:00",
   "code": {
     "status": "passed",
     "values": {
-      "git_revision": "dca7cfe5b1523b4335723f67caf1194d09c33451",
-      "worktree_sha256": "7064bdd36014b454b6555187300cee82e525604d2477203b5b7a57f7905d34ab"
+      "git_revision": "496b8bb8e490c29d5624e5382434f72b34c2480b",
+      "worktree_sha256": "291fdf1e4b04bc50e5e4bea5d8e85a17ed0c7e8de9f97e058de814b0d98f880b"
     }
   },
   "dataset": {
@@ -13,12 +13,6 @@
     "values": {
       "sha256": "49f74654f356c5a97cd7377b24618dbdcfb0393913069a2f4ba667869add06c2",
       "path": "data\\benchmarks\\retrieval_acceptance_v2.yaml"
-    }
-  },
-  "config": {
-    "status": "passed",
-    "values": {
-      "path": "pyproject.toml"
     }
   },
   "samples": {
@@ -31,13 +25,13 @@
     "status": "passed",
     "values": {
       "pytest": {
-        "total": 441,
+        "total": 550,
         "failures": 0,
         "errors": 0,
         "skipped": 0,
-        "duration_seconds": 260.128,
+        "duration_seconds": 307.723,
         "skipped_details": [],
-        "passed": 441
+        "passed": 550
       },
       "retrieval": {
         "all_cases": {
@@ -55,7 +49,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 181.602,
+              "latency_ms": 189.305,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -100,7 +94,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 143.396,
+              "latency_ms": 193.988,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -145,7 +139,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 155.44,
+              "latency_ms": 199.838,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -170,7 +164,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 143.441,
+              "latency_ms": 183.065,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -210,7 +204,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 154.85,
+              "latency_ms": 198.769,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -255,7 +249,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 154.6,
+              "latency_ms": 153.218,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -295,7 +289,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": "evidence_quantitative_fact_missing",
-              "latency_ms": 153.938,
+              "latency_ms": 169.907,
               "no_answer_correct": true,
               "returned_document_versions": [],
               "split": "calibration",
@@ -309,7 +303,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 136.641,
+              "latency_ms": 156.68,
               "no_answer_correct": false,
               "returned_document_versions": [
                 {
@@ -334,7 +328,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 150.755,
+              "latency_ms": 150.816,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -379,7 +373,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 156.974,
+              "latency_ms": 169.346,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -424,7 +418,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 184.066,
+              "latency_ms": 168.065,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -469,7 +463,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 143.246,
+              "latency_ms": 149.049,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -514,7 +508,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 149.64,
+              "latency_ms": 157.178,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -559,7 +553,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 168.901,
+              "latency_ms": 146.655,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -579,7 +573,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 172.051,
+              "latency_ms": 165.696,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -599,7 +593,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 155.603,
+              "latency_ms": 152.608,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -639,7 +633,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": "evidence_quantitative_fact_missing",
-              "latency_ms": 170.422,
+              "latency_ms": 158.818,
               "no_answer_correct": true,
               "returned_document_versions": [],
               "split": "test",
@@ -653,7 +647,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": "evidence_anchor_missing",
-              "latency_ms": 151.051,
+              "latency_ms": 168.678,
               "no_answer_correct": true,
               "returned_document_versions": [],
               "split": "test",
@@ -676,7 +670,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 174.754,
+              "latency_ms": 172.571,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -725,7 +719,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 188.941,
+              "latency_ms": 170.963,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -770,7 +764,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 138.822,
+              "latency_ms": 168.208,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -815,7 +809,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 156.604,
+              "latency_ms": 158.711,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -878,7 +872,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 181.602,
+              "latency_ms": 189.305,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -923,7 +917,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 143.396,
+              "latency_ms": 193.988,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -968,7 +962,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 155.44,
+              "latency_ms": 199.838,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -993,7 +987,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 143.441,
+              "latency_ms": 183.065,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1033,7 +1027,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 154.85,
+              "latency_ms": 198.769,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1078,7 +1072,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 154.6,
+              "latency_ms": 153.218,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1118,7 +1112,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": "evidence_quantitative_fact_missing",
-              "latency_ms": 153.938,
+              "latency_ms": 169.907,
               "no_answer_correct": true,
               "returned_document_versions": [],
               "split": "calibration",
@@ -1132,7 +1126,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 136.641,
+              "latency_ms": 156.68,
               "no_answer_correct": false,
               "returned_document_versions": [
                 {
@@ -1165,7 +1159,7 @@
           "object_root": true,
           "tenant": true
         },
-        "completed_at": "2026-08-27T05:15:22.828969+00:00",
+        "completed_at": "2026-08-28T13:03:32.564114+00:00",
         "configuration": {
           "calibration_hybrid_candidates": [
             false,
@@ -1173,7 +1167,7 @@
           ],
           "candidate_k": 20,
           "chunk_max_chars": 800,
-          "collection": "enterprise_retrieval_stage3_596f100597fd4299a363f90942e1690b",
+          "collection": "m2b5_retrieval_7a6fa478c1e94e5c8ce94e8e11d17aa8",
           "context_k": 5,
           "database_source": "RAG_KB_DATABASE_URL",
           "dense_threshold_candidates": [
@@ -1203,205 +1197,205 @@
           "reason": "development split is excluded from calibration and holdout metrics",
           "status": "not_evaluated"
         },
-        "git_baseline_hash": "dca7cfe5b1523b4335723f67caf1194d09c33451",
+        "git_baseline_hash": "496b8bb8e490c29d5624e5382434f72b34c2480b",
         "ingestion": {
           "uploads": [
             {
               "document_id": "travel-reimbursement-policy",
-              "ingestion_job_id": "ec4ab73aa4fb4b338a4fd30bb5be6def",
+              "ingestion_job_id": "3f1ffce46e254121a531bdde8a39b4fe",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "3a280afe8c9e45789e458abba5231147"
+              "version_id": "8d52a8754ca74acc8226dde1bf6d528e"
             },
             {
               "document_id": "dev-release-process",
-              "ingestion_job_id": "835fd6309aae493598606e203ae9d1b3",
+              "ingestion_job_id": "76896e7f19b148999457e07806886264",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "e1125baaae454e68a759ace4d446332a"
+              "version_id": "d1c0d2e407ce408dad6d5f223f1c5e6a"
             },
             {
               "document_id": "hr-leave-policy",
-              "ingestion_job_id": "46cb59261fd249f6b637dfc6efc6f59c",
+              "ingestion_job_id": "b3b93861b92c444eb17375330f717cf9",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "41a8fd0d70fa4eda87ff0439d6b3650c"
+              "version_id": "83f7e285fe284891984e6548e87f1a26"
             },
             {
               "document_id": "hr-leave-policy",
-              "ingestion_job_id": "3e936fca20654f97874d09cfe273abf6",
+              "ingestion_job_id": "c82b4de8bb2140b59a34ec4aa66ec11b",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 2,
-              "version_id": "ca2d35daf84e4c4e95e8acc63601c8f9"
+              "version_id": "be40a09df915450bab1a5e463f6edafc"
             },
             {
               "document_id": "security-access-management",
-              "ingestion_job_id": "ba185fc446d540558f3eadc7d4be4163",
+              "ingestion_job_id": "e7fbe7880c114b65ac37ad81ac0c789b",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "23a590ccaf8b484eb3b20b1a4a0668dd"
+              "version_id": "26acad6b45e2440a9a06225485387569"
             },
             {
               "document_id": "procurement-approval-policy",
-              "ingestion_job_id": "d29b549caa9041d1bed721ae9bedca1d",
+              "ingestion_job_id": "06057efcd5d448deb3aa67b2eedd722c",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "0a5beba550cc419ebd79ce5fc6008687"
+              "version_id": "652947ed6f5240168ebf4febcd1660dd"
             },
             {
               "document_id": "procurement-approval-policy",
-              "ingestion_job_id": "4e62486b817f4bfc891ef4f56c70d246",
+              "ingestion_job_id": "cd5bc273ae454b6bb419009542330ae8",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 2,
-              "version_id": "f376fe9ab4304d23998b89a159e90b92"
+              "version_id": "d5dce0a489f2438f936aa577aa8c1818"
             },
             {
               "document_id": "incident-response-standard",
-              "ingestion_job_id": "8eba60ed010741529d81f00358de1c46",
+              "ingestion_job_id": "68c77770fc8d474c813a99bbe6c8a1ce",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "e903f14d60d84182bf0a4b1068f258c3"
+              "version_id": "7d142b1edbc34ae3a257cd4e4bef6714"
             },
             {
               "document_id": "employee-onboarding-process",
-              "ingestion_job_id": "1fa20cd981754d0f9da711ddc5b24eed",
+              "ingestion_job_id": "2d1b60a017824f8799677e8d018ac6a4",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "96d7686c0f714423a8a12439dcdff431"
+              "version_id": "90f7dfe2aa0e4fc8a89f4c6114497681"
             },
             {
               "document_id": "vendor-management-standard",
-              "ingestion_job_id": "4afe91c0b7364ccb9afd4891b0677f2d",
+              "ingestion_job_id": "21ad2e5ab4d548b5bf38611c409123ef",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "ce7048faeccf475b83e5d304d9737275"
+              "version_id": "04da07273f6c42b5a398cfdc56115df3"
             },
             {
               "document_id": "remote-work-policy",
-              "ingestion_job_id": "103a92ff230b4cc98439d5a84faec45b",
+              "ingestion_job_id": "c4d76bf62d5e4f0aa132b52f0fa4f041",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "deb08a319ed94f9dab776cf120cad022"
+              "version_id": "3ec5b780cd0340df9b76ee27b5a5e2e4"
             },
             {
               "document_id": "product-service-level-agreement",
-              "ingestion_job_id": "42d88dc368df4e0d9a8de7a9a8ebbff3",
+              "ingestion_job_id": "a526f9784b6e48408046761d6aa30ad7",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "9adf5ef021ca4f88b6ec785b8efd10b3"
+              "version_id": "46753654d27a4dc293f0f1f04374063b"
             },
             {
               "document_id": "data-classification-sharing",
-              "ingestion_job_id": "dc8d636504e4484a8d451011f73c87fd",
+              "ingestion_job_id": "bc6674d5265d49c7b5533ca7595fd72a",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "597dd1ebf0be4d87ad84539adbc9d006"
+              "version_id": "162a4710fdc1466ba425a7ad612e7078"
             },
             {
               "document_id": "malicious-prompt-injection-sample",
-              "ingestion_job_id": "000c6dba5e4f45c7aa4d7d567c9aaea4",
+              "ingestion_job_id": "5f224a245d2c499b9178e85fc79da854",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "7e8b5f5a15934c95929e49bb2a01b656"
+              "version_id": "c1b598d4c6244d319731dfb0a67842d4"
             }
           ],
           "worker_outcomes": [
             {
               "error_code": null,
-              "job_id": "ec4ab73aa4fb4b338a4fd30bb5be6def",
+              "job_id": "3f1ffce46e254121a531bdde8a39b4fe",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "835fd6309aae493598606e203ae9d1b3",
+              "job_id": "76896e7f19b148999457e07806886264",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "46cb59261fd249f6b637dfc6efc6f59c",
+              "job_id": "b3b93861b92c444eb17375330f717cf9",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "3e936fca20654f97874d09cfe273abf6",
+              "job_id": "c82b4de8bb2140b59a34ec4aa66ec11b",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "ba185fc446d540558f3eadc7d4be4163",
+              "job_id": "e7fbe7880c114b65ac37ad81ac0c789b",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "d29b549caa9041d1bed721ae9bedca1d",
+              "job_id": "06057efcd5d448deb3aa67b2eedd722c",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "4e62486b817f4bfc891ef4f56c70d246",
+              "job_id": "cd5bc273ae454b6bb419009542330ae8",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "8eba60ed010741529d81f00358de1c46",
+              "job_id": "68c77770fc8d474c813a99bbe6c8a1ce",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "1fa20cd981754d0f9da711ddc5b24eed",
+              "job_id": "2d1b60a017824f8799677e8d018ac6a4",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "4afe91c0b7364ccb9afd4891b0677f2d",
+              "job_id": "21ad2e5ab4d548b5bf38611c409123ef",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "103a92ff230b4cc98439d5a84faec45b",
+              "job_id": "c4d76bf62d5e4f0aa132b52f0fa4f041",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "42d88dc368df4e0d9a8de7a9a8ebbff3",
+              "job_id": "a526f9784b6e48408046761d6aa30ad7",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "dc8d636504e4484a8d451011f73c87fd",
+              "job_id": "bc6674d5265d49c7b5533ca7595fd72a",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "000c6dba5e4f45c7aa4d7d567c9aaea4",
+              "job_id": "5f224a245d2c499b9178e85fc79da854",
               "status": "succeeded"
             }
           ]
@@ -1430,7 +1424,7 @@
           "path": "data\\local\\benchmarks\\retrieval-acceptance-baseline-20260822.json",
           "sha256": "sha256:3ce12d658b272b598aeff879e316dca9e885de57376a3bc74844bd6dcb76758e"
         },
-        "started_at": "2026-08-27T05:13:38.230801+00:00",
+        "started_at": "2026-08-28T13:02:33.449758+00:00",
         "status": "completed",
         "test": {
           "cases": [
@@ -1447,7 +1441,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 150.755,
+              "latency_ms": 150.816,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1492,7 +1486,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 156.974,
+              "latency_ms": 169.346,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1537,7 +1531,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 184.066,
+              "latency_ms": 168.065,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1582,7 +1576,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 143.246,
+              "latency_ms": 149.049,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1627,7 +1621,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 149.64,
+              "latency_ms": 157.178,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1672,7 +1666,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 168.901,
+              "latency_ms": 146.655,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1692,7 +1686,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 172.051,
+              "latency_ms": 165.696,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1712,7 +1706,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 155.603,
+              "latency_ms": 152.608,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1752,7 +1746,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": "evidence_quantitative_fact_missing",
-              "latency_ms": 170.422,
+              "latency_ms": 158.818,
               "no_answer_correct": true,
               "returned_document_versions": [],
               "split": "test",
@@ -1766,7 +1760,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": "evidence_anchor_missing",
-              "latency_ms": 151.051,
+              "latency_ms": 168.678,
               "no_answer_correct": true,
               "returned_document_versions": [],
               "split": "test",
@@ -1789,7 +1783,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 174.754,
+              "latency_ms": 172.571,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1838,7 +1832,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 188.941,
+              "latency_ms": 170.963,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1883,7 +1877,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 138.822,
+              "latency_ms": 168.208,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1928,7 +1922,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 156.604,
+              "latency_ms": 158.711,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1996,7 +1990,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 181.602,
+                      "latency_ms": 189.305,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2041,7 +2035,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 143.396,
+                      "latency_ms": 193.988,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2086,7 +2080,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 155.44,
+                      "latency_ms": 199.838,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2111,7 +2105,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 143.441,
+                      "latency_ms": 183.065,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2151,7 +2145,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 154.85,
+                      "latency_ms": 198.769,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2196,7 +2190,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 154.6,
+                      "latency_ms": 153.218,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2236,7 +2230,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 153.938,
+                      "latency_ms": 169.907,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -2250,7 +2244,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 136.641,
+                      "latency_ms": 156.68,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -2294,7 +2288,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 161.239,
+                      "latency_ms": 167.693,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2339,7 +2333,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 163.883,
+                      "latency_ms": 176.144,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2384,7 +2378,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 174.704,
+                      "latency_ms": 198.78,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2409,7 +2403,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 135.204,
+                      "latency_ms": 156.155,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2449,7 +2443,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 176.446,
+                      "latency_ms": 175.135,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2494,7 +2488,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 153.33,
+                      "latency_ms": 163.126,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2534,7 +2528,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 152.683,
+                      "latency_ms": 155.666,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -2548,7 +2542,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 153.918,
+                      "latency_ms": 137.905,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -2592,7 +2586,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 166.518,
+                      "latency_ms": 159.212,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2637,7 +2631,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 165.131,
+                      "latency_ms": 173.159,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2682,7 +2676,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 154.46,
+                      "latency_ms": 224.015,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2707,7 +2701,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 152.812,
+                      "latency_ms": 129.149,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2747,7 +2741,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 175.684,
+                      "latency_ms": 166.445,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2792,7 +2786,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 153.406,
+                      "latency_ms": 167.748,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2832,7 +2826,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 143.455,
+                      "latency_ms": 155.901,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -2846,7 +2840,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 138.925,
+                      "latency_ms": 155.767,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -2890,7 +2884,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 155.068,
+                      "latency_ms": 154.647,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2935,7 +2929,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 140.741,
+                      "latency_ms": 167.463,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2980,7 +2974,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 166.322,
+                      "latency_ms": 171.674,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3005,7 +2999,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 146.17,
+                      "latency_ms": 157.725,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3045,7 +3039,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 228.28,
+                      "latency_ms": 170.916,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3090,7 +3084,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 152.512,
+                      "latency_ms": 146.09,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3130,7 +3124,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 157.02,
+                      "latency_ms": 165.679,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3144,7 +3138,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 151.162,
+                      "latency_ms": 171.502,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -3188,7 +3182,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 144.069,
+                      "latency_ms": 171.849,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3213,7 +3207,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 185.422,
+                      "latency_ms": 157.217,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3238,7 +3232,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 169.852,
+                      "latency_ms": 184.453,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3263,7 +3257,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 132.661,
+                      "latency_ms": 134.348,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3288,7 +3282,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 157.806,
+                      "latency_ms": 172.649,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3307,7 +3301,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 159.411,
+                      "latency_ms": 160.445,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3332,7 +3326,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 165.161,
+                      "latency_ms": 152.199,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3346,7 +3340,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 139.564,
+                      "latency_ms": 125.241,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3384,7 +3378,7 @@
                         }
                       ],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 151.915,
+                      "latency_ms": 139.25,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3403,7 +3397,7 @@
                         }
                       ],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 156.552,
+                      "latency_ms": 156.271,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3422,7 +3416,7 @@
                         }
                       ],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 172.551,
+                      "latency_ms": 170.107,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3441,7 +3435,7 @@
                         }
                       ],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 138.691,
+                      "latency_ms": 153.464,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3455,7 +3449,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 169.404,
+                      "latency_ms": 170.496,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3474,7 +3468,7 @@
                         }
                       ],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 138.067,
+                      "latency_ms": 155.375,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3488,7 +3482,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 171.404,
+                      "latency_ms": 138.303,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3502,7 +3496,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 123.135,
+                      "latency_ms": 143.328,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3545,7 +3539,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 180.541,
+                      "latency_ms": 182.991,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3590,7 +3584,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 160.68,
+                      "latency_ms": 171.042,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3635,7 +3629,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 171.719,
+                      "latency_ms": 185.08,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3660,7 +3654,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 154.547,
+                      "latency_ms": 137.842,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3700,7 +3694,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 172.503,
+                      "latency_ms": 190.453,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3745,7 +3739,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 146.395,
+                      "latency_ms": 176.48,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3754,13 +3748,13 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.64039433,
-                          "document_id": "security-access-management",
+                          "dense_score": 0.57099175,
+                          "document_id": "vendor-management-standard",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.57099175,
-                          "document_id": "vendor-management-standard",
+                          "dense_score": 0.64039433,
+                          "document_id": "security-access-management",
                           "version": 1
                         },
                         {
@@ -3785,7 +3779,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 146.935,
+                      "latency_ms": 186.957,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3799,7 +3793,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 159.167,
+                      "latency_ms": 171.007,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -3843,7 +3837,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 163.877,
+                      "latency_ms": 186.915,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3888,7 +3882,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 161.605,
+                      "latency_ms": 172.307,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3933,7 +3927,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 185.912,
+                      "latency_ms": 175.117,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3958,7 +3952,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 154.657,
+                      "latency_ms": 154.64,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3998,7 +3992,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 200.633,
+                      "latency_ms": 175.003,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4043,7 +4037,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 173.92,
+                      "latency_ms": 166.89,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4052,13 +4046,13 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.64039433,
-                          "document_id": "security-access-management",
+                          "dense_score": 0.57099175,
+                          "document_id": "vendor-management-standard",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.57099175,
-                          "document_id": "vendor-management-standard",
+                          "dense_score": 0.64039433,
+                          "document_id": "security-access-management",
                           "version": 1
                         },
                         {
@@ -4083,7 +4077,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 163.245,
+                      "latency_ms": 170.926,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -4097,7 +4091,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 160.708,
+                      "latency_ms": 158.942,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -4141,7 +4135,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 179.166,
+                      "latency_ms": 169.359,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4186,7 +4180,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 146.625,
+                      "latency_ms": 156.612,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4231,7 +4225,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 179.318,
+                      "latency_ms": 182.865,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4256,7 +4250,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 159.493,
+                      "latency_ms": 151.818,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4296,7 +4290,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 183.163,
+                      "latency_ms": 186.41,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4341,7 +4335,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 181.44,
+                      "latency_ms": 170.388,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4350,13 +4344,13 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.64039433,
-                          "document_id": "security-access-management",
+                          "dense_score": 0.57099175,
+                          "document_id": "vendor-management-standard",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.57099175,
-                          "document_id": "vendor-management-standard",
+                          "dense_score": 0.64039433,
+                          "document_id": "security-access-management",
                           "version": 1
                         },
                         {
@@ -4381,7 +4375,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 172.309,
+                      "latency_ms": 159.282,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -4395,7 +4389,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 163.222,
+                      "latency_ms": 167.857,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -4439,7 +4433,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 167.635,
+                      "latency_ms": 184.206,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4484,7 +4478,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 168.472,
+                      "latency_ms": 169.784,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4529,7 +4523,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 169.323,
+                      "latency_ms": 182.462,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4554,7 +4548,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 157.496,
+                      "latency_ms": 164.672,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4594,7 +4588,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 156.892,
+                      "latency_ms": 174.571,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4639,7 +4633,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 139.297,
+                      "latency_ms": 149.318,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4648,13 +4642,13 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.64039433,
-                          "document_id": "security-access-management",
+                          "dense_score": 0.57099175,
+                          "document_id": "vendor-management-standard",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.57099175,
-                          "document_id": "vendor-management-standard",
+                          "dense_score": 0.64039433,
+                          "document_id": "security-access-management",
                           "version": 1
                         },
                         {
@@ -4679,7 +4673,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 162.167,
+                      "latency_ms": 178.034,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -4693,7 +4687,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 168.904,
+                      "latency_ms": 212.472,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -4737,7 +4731,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 159.316,
+                      "latency_ms": 164.077,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4782,7 +4776,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 173.502,
+                      "latency_ms": 157.065,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4827,7 +4821,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 164.279,
+                      "latency_ms": 166.324,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4852,7 +4846,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 170.37,
+                      "latency_ms": 152.47,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4892,7 +4886,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 187.779,
+                      "latency_ms": 184.706,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4937,7 +4931,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 165.324,
+                      "latency_ms": 157.395,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4977,7 +4971,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 185.892,
+                      "latency_ms": 152.691,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -4991,7 +4985,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 172.565,
+                      "latency_ms": 167.977,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -5035,7 +5029,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 182.477,
+                      "latency_ms": 160.809,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -5080,7 +5074,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 191.761,
+                      "latency_ms": 142.871,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -5125,7 +5119,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 177.427,
+                      "latency_ms": 182.544,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -5150,7 +5144,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 144.93,
+                      "latency_ms": 171.385,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -5190,7 +5184,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 184.257,
+                      "latency_ms": 185.645,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -5235,7 +5229,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 166.307,
+                      "latency_ms": 179.182,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -5275,7 +5269,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 166.807,
+                      "latency_ms": 141.467,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -5289,7 +5283,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 149.372,
+                      "latency_ms": 173.79,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -5336,12 +5330,16 @@
           "msgpack",
           "null"
         ],
-        "citation_count": 3,
-        "document_id": "m1-e2e-46b33223a65648208f38864b16ccf049",
+        "citation_count": 5,
+        "document_id": "m1-e2e-4c54ed0c091a4525ad4dd7ac5ebbbdce",
         "document_version_endpoint": "/v1/documents/{document_id}/versions",
         "document_versions": 2,
         "execution_mode": "live_postgres_msgpack",
         "result_readable": true,
+        "source_binding": {
+          "git_revision": "496b8bb8e490c29d5624e5382434f72b34c2480b",
+          "worktree_sha256": "291fdf1e4b04bc50e5e4bea5d8e85a17ed0c7e8de9f97e058de814b0d98f880b"
+        },
         "status": "passed",
         "strict_msgpack": {
           "allowed_msgpack_modules": [
@@ -5352,13 +5350,414 @@
           "saver_package": "langgraph-checkpoint-postgres==3.1.2",
           "serializer": "JsonPlusSerializer"
         },
-        "task_id": "79af3c537d1849969adf0399ba24cb86",
+        "task_id": "daae1943669242c3b6630bf6743aaaf6",
         "tool_calls": 4,
         "tool_trace": [
           "list_document_versions",
           "compare_document_versions",
           "search_knowledge",
           "fetch_evidence"
+        ]
+      },
+      "m2_controlled_write_e2e": {
+        "access_checks": {
+          "cross_tenant_status": 404,
+          "nonowner_status": 404
+        },
+        "artifact": {
+          "artifact_id": "00000000000000000000000000000042",
+          "content_hash": "sha256:f0c94c2a291e9bfb092751c62f9528004640bfd35af940073e14a835ff37f7bf",
+          "content_readable": true,
+          "hash_verified": true,
+          "status": "ready"
+        },
+        "binding": {
+          "approval_id": "b291f6f7ff174d7c9cee4f50c6683800",
+          "artifact_hash": "sha256:f0c94c2a291e9bfb092751c62f9528004640bfd35af940073e14a835ff37f7bf",
+          "artifact_id": "00000000000000000000000000000042",
+          "checkpoint_id": "1f1a2e38-d126-6d7f-801a-43900cd35129",
+          "interrupt_id": "441b54e55c76bce65a001cf3adc76ade",
+          "result_artifact_id": "00000000000000000000000000000042",
+          "task_id": "ae6f2d2da336426c8cb42f626029b9b2",
+          "thread_id": "ae6f2d2da336426c8cb42f626029b9b2",
+          "tool_call_id": "0169f3c7915b452eb119f1fbfcacc76a"
+        },
+        "capability": "task-agent",
+        "checkpoint_encodings": [
+          "msgpack",
+          "null"
+        ],
+        "cleanup": {
+          "completed": true,
+          "object_root": true,
+          "postgres_migration": true,
+          "postgres_primary": true,
+          "protected_collections_unchanged": true,
+          "qdrant_collection": true,
+          "tenant": true
+        },
+        "coverage": {
+          "crash_recovery": {
+            "after_checkpoint_before_sync": true,
+            "after_execution_before_checkpoint": true,
+            "before_execution": true
+          },
+          "scenario_count": 21,
+          "task_count": 31
+        },
+        "execution_mode": "live_postgres_msgpack",
+        "hitl": {
+          "adapter_calls_after_approval": 1,
+          "adapter_calls_before_approval": 0
+        },
+        "privacy_scan": {
+          "content": 0,
+          "credentials": 0,
+          "prompt": 0,
+          "resume_payload": 0,
+          "storage_key": 0
+        },
+        "protocol": "m2-fenced-v1",
+        "side_effects": {
+          "duplicate": 0,
+          "unapproved": 0,
+          "unknown_replay": 0
+        },
+        "source_binding": {
+          "git_revision": "496b8bb8e490c29d5624e5382434f72b34c2480b",
+          "worktree_sha256": "291fdf1e4b04bc50e5e4bea5d8e85a17ed0c7e8de9f97e058de814b0d98f880b"
+        },
+        "status": "passed",
+        "strict_msgpack": {
+          "allowed_msgpack_modules": [
+            "rag_kb.agent.result.TaskResultCandidate"
+          ],
+          "pickle_fallback": false,
+          "runtime_flag": true,
+          "serializer": "JsonPlusSerializer"
+        },
+        "task_ledger": [
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "2e5c018ca42a4845ac280d8a9f51522b",
+            "tool_calls": 2,
+            "trace_id": "5b000a90089c42188656b2c3ec2c213f"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "9a98cfc4d082473e9e3f9946fb6f1de5",
+            "tool_calls": 2,
+            "trace_id": "b8a1d4fa18364f7fabbcbe684c74a057"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "bd0639111a9c472f8609c3323273c384",
+            "tool_calls": 2,
+            "trace_id": "9eca209582824ae3bd02ba747ad4c00a"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "ccc65f08480d44c58b096cf597093112",
+            "tool_calls": 2,
+            "trace_id": "a30f826a44a6463094b59b97de1c2bf1"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "aa516f2e204f476b84e5ca256d0ec5c7",
+            "tool_calls": 2,
+            "trace_id": "233ed1c3a790456c8d806371809b16e2"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "5187922817cf4cc79083853712be6a95",
+            "tool_calls": 2,
+            "trace_id": "3e3150d1bd4e4e37aa161a7bbde548e2"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "1a0b26c9bbb445278886ad58e695a9be",
+            "tool_calls": 2,
+            "trace_id": "7aacf9221c684088be8f4dee64a83abb"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "ffd71ecd88604d08bfdfe81956014269",
+            "tool_calls": 2,
+            "trace_id": "8db5f1586bc5460ba1e1a2a24d06d963"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "d71b499f881d401c84b64cb10cdd76c7",
+            "tool_calls": 2,
+            "trace_id": "4bd705642657416eb4e5ab53ccf45736"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "f6881bcea35040068a078e13d082d1b0",
+            "tool_calls": 2,
+            "trace_id": "483479ebbfdd4d128799b837bde00d17"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "f01afdcf75424e39b892af446f636740",
+            "tool_calls": 2,
+            "trace_id": "ed4047e9b8be4585a919d69265af5307"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "219387c5668143959ed21c5bb500ceb9",
+            "tool_calls": 2,
+            "trace_id": "e391397b07524aada67824ac4f549afb"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "d3dfe900181d4348a473d6c2bdc36263",
+            "tool_calls": 2,
+            "trace_id": "130337d04ad1462780502ea87671a914"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "f651fbf54bd84af1b8ee73736b98a45b",
+            "tool_calls": 2,
+            "trace_id": "4fdb0fae21ac47d48e6437229d3e37b6"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "287094fbdfa14c87a801fe32b05e41b0",
+            "tool_calls": 2,
+            "trace_id": "80545e44c7794fcf9b382905056df6e8"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "7ee70820a8cd4bc9a5fd73fd71d12145",
+            "tool_calls": 2,
+            "trace_id": "f6f2e9856ebc45b99805a737f7220dc4"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "b5f900c9803c4efbb691aa8bbef32e33",
+            "tool_calls": 2,
+            "trace_id": "bc5f78c6b3324f86ab8fb088ce921f29"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "653a78c5aae645f7912809a0e585eb43",
+            "tool_calls": 2,
+            "trace_id": "6e62d604ce81412c97d99beb8f5238a3"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "df46e036e0134f7ea2e238419653390a",
+            "tool_calls": 2,
+            "trace_id": "94e52f5568c846e9978be36ff7436b5b"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "298d14b9eea141c4aa624e02e4f251f7",
+            "tool_calls": 2,
+            "trace_id": "66f201fadfca4f37a535229888c3cb02"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "eab0832f24d94603826e20bf5e919b73",
+            "tool_calls": 2,
+            "trace_id": "d2a9400d64334e188f9614cf361d6dc4"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "5bb8dc743929491fbcabc15f6a321419",
+            "tool_calls": 2,
+            "trace_id": "5b9c60e60c5446af89a8471498120160"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "bf483295d90e4b1996e1e93cf293b3ba",
+            "tool_calls": 2,
+            "trace_id": "eecb594307a74650a800a005a07bdc9a"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "b0d3ae22e77d421bbafb723d9ccbc0e9",
+            "tool_calls": 2,
+            "trace_id": "8fd7c8f607f14dc29175dc56a58af006"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "b183cb056d1541869d6f2843a2073dbe",
+            "tool_calls": 2,
+            "trace_id": "889c0d6627454261b9df7fb343bfced9"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "89c8a3a241264435be4babbcea2977d6",
+            "tool_calls": 2,
+            "trace_id": "187a50aa6d584d9d921627425c3c103a"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "ffa2a052b48745558653ae3951e10d56",
+            "tool_calls": 2,
+            "trace_id": "b76e87ce802a4cc7aaa5c8d99c10c3b4"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "f8769b126d3f40869995b409faa4f8c3",
+            "tool_calls": 2,
+            "trace_id": "2479b6e0db1748ffa70e1ca13787fc21"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "refused",
+            "stop_reason": "approval_rejected",
+            "task_id": "21c45cd1f8de423cbaa7b862404b3946",
+            "tool_calls": 2,
+            "trace_id": "3ce5dde571954a18b16da5b5b1ec56a9"
+          },
+          {
+            "error_code": null,
+            "model_calls": 4,
+            "status": "succeeded",
+            "stop_reason": "completed",
+            "task_id": "ae6f2d2da336426c8cb42f626029b9b2",
+            "tool_calls": 3,
+            "trace_id": "9a3f10e29cae474c818c89d4658c44ee"
+          },
+          {
+            "error_code": null,
+            "model_calls": 2,
+            "status": "refused",
+            "stop_reason": "clarification_completed",
+            "task_id": "4a7abd17d9de42f0b56340c352bbb967",
+            "tool_calls": 0,
+            "trace_id": "b939be2bd1ac43b8ba78001ee95233a0"
+          }
+        ],
+        "terminal_binding": {
+          "approval": {
+            "approval_id": "b291f6f7ff174d7c9cee4f50c6683800",
+            "checkpoint_action_id": "ae6f2d2da336426c8cb42f626029b9b2-write",
+            "status": "executed"
+          },
+          "artifact": {
+            "artifact_id": "00000000000000000000000000000042",
+            "content_hash": "sha256:f0c94c2a291e9bfb092751c62f9528004640bfd35af940073e14a835ff37f7bf",
+            "status": "ready",
+            "tool_call_id": "0169f3c7915b452eb119f1fbfcacc76a"
+          },
+          "task_result": {
+            "artifact_id": "00000000000000000000000000000042",
+            "result_kind": "controlled_action",
+            "status": "succeeded",
+            "stop_reason": "completed",
+            "task_id": "ae6f2d2da336426c8cb42f626029b9b2"
+          },
+          "tool_call": {
+            "approval_id": "b291f6f7ff174d7c9cee4f50c6683800",
+            "status": "succeeded",
+            "tool_call_id": "0169f3c7915b452eb119f1fbfcacc76a"
+          }
+        },
+        "tool_exposure": {
+          "read": [
+            "list_document_versions",
+            "compare_document_versions",
+            "search_knowledge",
+            "fetch_evidence"
+          ],
+          "write": [
+            "create_report_artifact",
+            "create_work_item_draft"
+          ]
+        },
+        "tool_trace": [
+          "list_document_versions",
+          "compare_document_versions",
+          "create_report_artifact"
         ]
       }
     }
@@ -5367,7 +5766,7 @@
     "status": "passed",
     "values": {
       "execution_mode": "live_postgres_msgpack",
-      "citation_count": 3,
+      "citation_count": 5,
       "strict_msgpack": {
         "allowed_msgpack_modules": [
           "rag_kb.agent.result.TaskResultCandidate"
@@ -5376,6 +5775,10 @@
         "runtime_flag": true,
         "saver_package": "langgraph-checkpoint-postgres==3.1.2",
         "serializer": "JsonPlusSerializer"
+      },
+      "source_binding": {
+        "git_revision": "496b8bb8e490c29d5624e5382434f72b34c2480b",
+        "worktree_sha256": "291fdf1e4b04bc50e5e4bea5d8e85a17ed0c7e8de9f97e058de814b0d98f880b"
       }
     }
   },
@@ -5391,9 +5794,343 @@
       "tool_calls": 4
     }
   },
-  "latency": {
-    "status": "unverified",
-    "values": {}
+  "m2": {
+    "status": "passed",
+    "values": {
+      "capability": "task-agent",
+      "protocol": "m2-fenced-v1",
+      "tool_exposure": {
+        "read": [
+          "list_document_versions",
+          "compare_document_versions",
+          "search_knowledge",
+          "fetch_evidence"
+        ],
+        "write": [
+          "create_report_artifact",
+          "create_work_item_draft"
+        ]
+      },
+      "coverage": {
+        "crash_recovery": {
+          "after_checkpoint_before_sync": true,
+          "after_execution_before_checkpoint": true,
+          "before_execution": true
+        },
+        "scenario_count": 21,
+        "task_count": 31
+      },
+      "task_ledger": [
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "2e5c018ca42a4845ac280d8a9f51522b",
+          "tool_calls": 2,
+          "trace_id": "5b000a90089c42188656b2c3ec2c213f"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "9a98cfc4d082473e9e3f9946fb6f1de5",
+          "tool_calls": 2,
+          "trace_id": "b8a1d4fa18364f7fabbcbe684c74a057"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "bd0639111a9c472f8609c3323273c384",
+          "tool_calls": 2,
+          "trace_id": "9eca209582824ae3bd02ba747ad4c00a"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "ccc65f08480d44c58b096cf597093112",
+          "tool_calls": 2,
+          "trace_id": "a30f826a44a6463094b59b97de1c2bf1"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "aa516f2e204f476b84e5ca256d0ec5c7",
+          "tool_calls": 2,
+          "trace_id": "233ed1c3a790456c8d806371809b16e2"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "5187922817cf4cc79083853712be6a95",
+          "tool_calls": 2,
+          "trace_id": "3e3150d1bd4e4e37aa161a7bbde548e2"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "1a0b26c9bbb445278886ad58e695a9be",
+          "tool_calls": 2,
+          "trace_id": "7aacf9221c684088be8f4dee64a83abb"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "ffd71ecd88604d08bfdfe81956014269",
+          "tool_calls": 2,
+          "trace_id": "8db5f1586bc5460ba1e1a2a24d06d963"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "d71b499f881d401c84b64cb10cdd76c7",
+          "tool_calls": 2,
+          "trace_id": "4bd705642657416eb4e5ab53ccf45736"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "f6881bcea35040068a078e13d082d1b0",
+          "tool_calls": 2,
+          "trace_id": "483479ebbfdd4d128799b837bde00d17"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "f01afdcf75424e39b892af446f636740",
+          "tool_calls": 2,
+          "trace_id": "ed4047e9b8be4585a919d69265af5307"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "219387c5668143959ed21c5bb500ceb9",
+          "tool_calls": 2,
+          "trace_id": "e391397b07524aada67824ac4f549afb"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "d3dfe900181d4348a473d6c2bdc36263",
+          "tool_calls": 2,
+          "trace_id": "130337d04ad1462780502ea87671a914"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "f651fbf54bd84af1b8ee73736b98a45b",
+          "tool_calls": 2,
+          "trace_id": "4fdb0fae21ac47d48e6437229d3e37b6"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "287094fbdfa14c87a801fe32b05e41b0",
+          "tool_calls": 2,
+          "trace_id": "80545e44c7794fcf9b382905056df6e8"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "7ee70820a8cd4bc9a5fd73fd71d12145",
+          "tool_calls": 2,
+          "trace_id": "f6f2e9856ebc45b99805a737f7220dc4"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "b5f900c9803c4efbb691aa8bbef32e33",
+          "tool_calls": 2,
+          "trace_id": "bc5f78c6b3324f86ab8fb088ce921f29"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "653a78c5aae645f7912809a0e585eb43",
+          "tool_calls": 2,
+          "trace_id": "6e62d604ce81412c97d99beb8f5238a3"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "df46e036e0134f7ea2e238419653390a",
+          "tool_calls": 2,
+          "trace_id": "94e52f5568c846e9978be36ff7436b5b"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "298d14b9eea141c4aa624e02e4f251f7",
+          "tool_calls": 2,
+          "trace_id": "66f201fadfca4f37a535229888c3cb02"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "eab0832f24d94603826e20bf5e919b73",
+          "tool_calls": 2,
+          "trace_id": "d2a9400d64334e188f9614cf361d6dc4"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "5bb8dc743929491fbcabc15f6a321419",
+          "tool_calls": 2,
+          "trace_id": "5b9c60e60c5446af89a8471498120160"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "bf483295d90e4b1996e1e93cf293b3ba",
+          "tool_calls": 2,
+          "trace_id": "eecb594307a74650a800a005a07bdc9a"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "b0d3ae22e77d421bbafb723d9ccbc0e9",
+          "tool_calls": 2,
+          "trace_id": "8fd7c8f607f14dc29175dc56a58af006"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "b183cb056d1541869d6f2843a2073dbe",
+          "tool_calls": 2,
+          "trace_id": "889c0d6627454261b9df7fb343bfced9"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "89c8a3a241264435be4babbcea2977d6",
+          "tool_calls": 2,
+          "trace_id": "187a50aa6d584d9d921627425c3c103a"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "ffa2a052b48745558653ae3951e10d56",
+          "tool_calls": 2,
+          "trace_id": "b76e87ce802a4cc7aaa5c8d99c10c3b4"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "f8769b126d3f40869995b409faa4f8c3",
+          "tool_calls": 2,
+          "trace_id": "2479b6e0db1748ffa70e1ca13787fc21"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "refused",
+          "stop_reason": "approval_rejected",
+          "task_id": "21c45cd1f8de423cbaa7b862404b3946",
+          "tool_calls": 2,
+          "trace_id": "3ce5dde571954a18b16da5b5b1ec56a9"
+        },
+        {
+          "error_code": null,
+          "model_calls": 4,
+          "status": "succeeded",
+          "stop_reason": "completed",
+          "task_id": "ae6f2d2da336426c8cb42f626029b9b2",
+          "tool_calls": 3,
+          "trace_id": "9a3f10e29cae474c818c89d4658c44ee"
+        },
+        {
+          "error_code": null,
+          "model_calls": 2,
+          "status": "refused",
+          "stop_reason": "clarification_completed",
+          "task_id": "4a7abd17d9de42f0b56340c352bbb967",
+          "tool_calls": 0,
+          "trace_id": "b939be2bd1ac43b8ba78001ee95233a0"
+        }
+      ],
+      "terminal_binding": {
+        "approval": {
+          "approval_id": "b291f6f7ff174d7c9cee4f50c6683800",
+          "checkpoint_action_id": "ae6f2d2da336426c8cb42f626029b9b2-write",
+          "status": "executed"
+        },
+        "artifact": {
+          "artifact_id": "00000000000000000000000000000042",
+          "content_hash": "sha256:f0c94c2a291e9bfb092751c62f9528004640bfd35af940073e14a835ff37f7bf",
+          "status": "ready",
+          "tool_call_id": "0169f3c7915b452eb119f1fbfcacc76a"
+        },
+        "task_result": {
+          "artifact_id": "00000000000000000000000000000042",
+          "result_kind": "controlled_action",
+          "status": "succeeded",
+          "stop_reason": "completed",
+          "task_id": "ae6f2d2da336426c8cb42f626029b9b2"
+        },
+        "tool_call": {
+          "approval_id": "b291f6f7ff174d7c9cee4f50c6683800",
+          "status": "succeeded",
+          "tool_call_id": "0169f3c7915b452eb119f1fbfcacc76a"
+        }
+      },
+      "source_binding": {
+        "git_revision": "496b8bb8e490c29d5624e5382434f72b34c2480b",
+        "worktree_sha256": "291fdf1e4b04bc50e5e4bea5d8e85a17ed0c7e8de9f97e058de814b0d98f880b"
+      }
+    }
   },
   "security": {
     "status": "passed",
@@ -5409,30 +6146,40 @@
       "no_answer_accuracy": 1.0
     }
   },
-  "cost": {
-    "status": "unverified",
-    "values": {}
-  },
   "gates": [
+    {
+      "name": "code_binding",
+      "status": "passed",
+      "evidence": [
+        "496b8bb8e490c29d5624e5382434f72b34c2480b"
+      ]
+    },
+    {
+      "name": "dataset",
+      "status": "passed",
+      "evidence": [
+        "data\\benchmarks\\retrieval_acceptance_v2.yaml"
+      ]
+    },
     {
       "name": "pytest",
       "status": "passed",
       "evidence": [
-        "data\\local\\acceptance\\pytest-stage9.xml"
+        "data\\local\\m2b5-full-pytest.xml"
       ]
     },
     {
       "name": "retrieval_quality",
       "status": "passed",
       "evidence": [
-        "data\\local\\benchmarks\\enterprise-retrieval-stage9-sufficiency-aligned.json"
+        "data\\local\\m2b5-enterprise-retrieval.json"
       ]
     },
     {
       "name": "acl_leak_rate",
       "status": "passed",
       "evidence": [
-        "data\\local\\benchmarks\\enterprise-retrieval-stage9-sufficiency-aligned.json"
+        "data\\local\\m2b5-enterprise-retrieval.json"
       ]
     },
     {
@@ -5443,10 +6190,17 @@
       ]
     },
     {
-      "name": "legacy_task_contract",
-      "status": "unverified",
+      "name": "m2_controlled_write_e2e",
+      "status": "passed",
       "evidence": [
-        "missing"
+        "docs\\acceptance\\m2-controlled-write-e2e.json"
+      ]
+    },
+    {
+      "name": "config",
+      "status": "passed",
+      "evidence": [
+        "pyproject.toml"
       ]
     }
   ],
@@ -5454,14 +6208,14 @@
   "evidence_artifacts": [
     {
       "name": "pytest_junit",
-      "path": "data\\local\\acceptance\\pytest-stage9.xml",
-      "sha256": "bad2b014417726a89492e0ec77492a5da46205c08e88b9bb24e49e3a41bcb177",
+      "path": "data\\local\\m2b5-full-pytest.xml",
+      "sha256": "ba17bd663bb8e3df040d4a6f3fa7a12acf026ab4d4d44afee9a7155961ea23f8",
       "status": "available"
     },
     {
       "name": "retrieval_report",
-      "path": "data\\local\\benchmarks\\enterprise-retrieval-stage9-sufficiency-aligned.json",
-      "sha256": "5ec452a4f92367f896be2a5e13fdda95a7b918c480a7af619673bef6d4608ceb",
+      "path": "data\\local\\m2b5-enterprise-retrieval.json",
+      "sha256": "b258c4351511d775dd268d977b1583f0c55e3f58f3c63ef4d0db4f662ddc73c7",
       "status": "available"
     },
     {
@@ -5479,7 +6233,13 @@
     {
       "name": "m1_research_e2e",
       "path": "docs\\acceptance\\m1-research-e2e.json",
-      "sha256": "9ece305a1f1cc7867b955e32a0431aace08daa05a7647e1d88edf5ddb29de4c6",
+      "sha256": "2c1b907b38c42cc25afe954890a9d72f286439c552600727feb10435699a7e28",
+      "status": "available"
+    },
+    {
+      "name": "m2_controlled_write_e2e",
+      "path": "docs\\acceptance\\m2-controlled-write-e2e.json",
+      "sha256": "a4f4bfd5d065e1d3e6ac1fb8b0de7cc3c4667886e74faf12d1aefa6aa9c19ab6",
       "status": "available"
     },
     {
@@ -5495,9 +6255,15 @@
       "status": "available"
     }
   ],
-  "report_hash": "1220d128e2f0764d795cef09380a05f4c9b09f7149e43aeea7f44b7c539c136d",
+  "report_hash": "ddf1523258bc678da0282ec17b98363125ca24ff6a2b748c8408b65cbcb0f858",
   "verdict": {
     "status": "passed",
     "reason": "observed inputs only; missing metrics are not inferred"
+  },
+  "config": {
+    "status": "passed",
+    "values": {
+      "path": "pyproject.toml"
+    }
   }
 }

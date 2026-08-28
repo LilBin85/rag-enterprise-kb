@@ -4,7 +4,7 @@
   "title": "Project machine-readable acceptance report",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "generated_on", "code", "dataset", "config", "samples", "outcomes", "model", "tool", "latency", "security", "quality", "cost", "gates", "failures", "evidence_artifacts", "report_hash", "verdict"],
+  "required": ["schema_version", "generated_on", "code", "dataset", "samples", "outcomes", "model", "tool", "security", "quality", "gates", "failures", "evidence_artifacts", "report_hash", "verdict"],
   "properties": {
     "schema_version": {"const": 1},
     "generated_on": {"type": "string", "format": "date-time"},
@@ -15,6 +15,7 @@
     "outcomes": {"$ref": "#/$defs/status_object"},
     "model": {"$ref": "#/$defs/status_object"},
     "tool": {"$ref": "#/$defs/status_object"},
+    "m2": {"$ref": "#/$defs/status_object"},
     "latency": {"$ref": "#/$defs/status_object"},
     "security": {"$ref": "#/$defs/status_object"},
     "quality": {"$ref": "#/$defs/status_object"},

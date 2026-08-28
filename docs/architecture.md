@@ -49,4 +49,4 @@ worker 周期扫描“对象已写入、SQL 尚未推进”的上传预留，只
 
 每个 ToolMessage 只保留允许字段。任务成功前，服务端重新读取证据账本并验证 `TaskResult` 的 evidence_ids/citations，再原子绑定不可变结果 ref/hash；controlled_action 还逐项核验 artifact 的归属、ready 状态和正文 hash。缺失、越权或过期证据会使任务失败关闭。checkpointer 的 msgpack serializer 只 allowlist `TaskResultCandidate`，并显式禁用 pickle fallback。ExecutionGuard 仅统计四个 READ 业务工具：完整轨迹中连续失败达到阈值、或同参重复调用超限时提前停止；最近一次成功会重置连续计数，Todo、结构化结果和未知工具不参与计数。普通工具异常的稳定业务码原样进入 ToolMessage，`task_checkpoint_lease_stale` 等致命码直接抛出。
 
-上述是 M2 批次 3 的实现边界；严格真实 M2 E2E、故障注入与最终 acceptance 仍待批次 4。
+严格真实 M2 E2E 已在独立 PostgreSQL/Qdrant/对象根目录上验证 31 个任务、HITL、批准/拒绝、artifact 隔离、恢复窗口与 strict msgpack；故障矩阵、M1 回归、检索质量与最终 acceptance 也已通过。M2 停止于这两个固定 WRITE adapter，不进入多 Agent、MCP、长期记忆或外部写入。

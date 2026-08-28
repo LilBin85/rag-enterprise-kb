@@ -58,6 +58,7 @@ from rag_kb.infrastructure.database.models import (
     EvidenceRecordRow,
     IngestionJobRow,
     PlanRevisionRow,
+    TaskEventRow,
     ToolCallRow,
 )
 from rag_kb.infrastructure.database.task_execution import DatabaseTaskAuthContextPort
@@ -632,6 +633,17 @@ def test_full_approval_resume_executes_write_once_on_postgres(stage, caplog) -> 
     assert task.status == TaskStatus.SUCCEEDED.value
     assert task.result_kind == "controlled_action"
     assert task.artifact_refs == [artifacts[0].artifact_id]
+    with stage.database.sessions() as session:
+        terminal_event = session.scalar(
+            select(TaskEventRow)
+            .where(
+                TaskEventRow.task_id == stage.task_id,
+                TaskEventRow.status == TaskStatus.SUCCEEDED.value,
+            )
+            .order_by(TaskEventRow.sequence.desc())
+        )
+    assert terminal_event is not None
+    assert terminal_event.counts == {"model_calls": 2, "tool_calls": 1}
     # 敏感信息门禁：工具结果正文、任务结果正文与日志不出现 storage_key。
     tool_result_payload = LocalObjectStore(stage.object_root / "tool-results").read(
         tool_calls[0].result_ref

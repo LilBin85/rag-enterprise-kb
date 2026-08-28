@@ -136,3 +136,5 @@ def test_acceptance_schema_has_explicit_unverified_and_hash_contracts() -> None:
     assert {"passed", "failed", "skipped", "unverified"}.issubset(statuses)
     assert schema["properties"]["report_hash"]["pattern"] == "^[0-9a-f]{64}$"
     assert "evidence_artifacts" in schema["required"]
+    assert "m2" in schema["properties"]
+    assert "cost" not in schema["required"]
