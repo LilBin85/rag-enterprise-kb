@@ -14,3 +14,7 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["worker:9464"]
+  - job_name: rag-kb-collector
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["otel-collector:8888"]

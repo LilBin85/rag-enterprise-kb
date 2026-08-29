@@ -2,7 +2,7 @@
   "uid": "rag-kb-security",
   "title": "RAG KB / Security",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": {"from": "now-1h", "to": "now"},
   "panels": [
@@ -33,6 +33,23 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [{"expr": "sum by (kind, operation) (rate(rag_kb_lease_failures_total[5m]))", "legendFormat": "{{kind}} {{operation}}", "refId": "A"}],
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Approval rejection and expiry",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum by (decision, outcome) (rate(rag_kb_approvals_total{decision=~\"rejected|expired\"}[5m]))", "legendFormat": "{{decision}} {{outcome}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+    },
+    {
+      "type": "timeseries",
+      "title": "Object hash mismatch signals",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "sum(rate(rag_kb_security_boundary_violations_total{kind=\"content_hash\"}[5m]))", "legendFormat": "content hash violations/s", "refId": "A"},
+        {"expr": "sum(rate(rag_kb_recovery_actions_total{kind=\"upload_reservation\",outcome=\"mismatched\"}[5m]))", "legendFormat": "reservation mismatches/s", "refId": "B"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}
     }
   ]
 }

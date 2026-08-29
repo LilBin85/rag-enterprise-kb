@@ -18,7 +18,7 @@ groups:
             datasourceUid: prometheus
             model:
               editorMode: code
-              expr: sum(increase(rag_kb_security_boundary_violations_total[5m]))
+              expr: sum(increase(rag_kb_security_boundary_violations_total[5m])) or vector(0)
               instant: true
               intervalMs: 60000
               maxDataPoints: 43200
@@ -51,7 +51,7 @@ groups:
               maxDataPoints: 43200
               refId: B
               type: threshold
-        noDataState: NoData
+        noDataState: OK
         execErrState: Error
         for: 0s
         annotations:
@@ -70,7 +70,7 @@ groups:
             datasourceUid: prometheus
             model:
               editorMode: code
-              expr: sum(increase(rag_kb_tool_calls_total{mode="write",outcome="unknown"}[5m]))
+              expr: sum(increase(rag_kb_tool_calls_total{mode="write",outcome="unknown"}[5m])) or vector(0)
               instant: true
               intervalMs: 60000
               maxDataPoints: 43200
@@ -103,7 +103,7 @@ groups:
               maxDataPoints: 43200
               refId: B
               type: threshold
-        noDataState: NoData
+        noDataState: OK
         execErrState: Error
         for: 0s
         annotations:
@@ -122,7 +122,7 @@ groups:
             datasourceUid: prometheus
             model:
               editorMode: code
-              expr: sum(rag_kb_task_queue_depth{status=~"planning|running"}) * (1 - max(rag_kb_worker_capability_available{capability="task-agent",protocol="m2-fenced-v1"}))
+              expr: (sum(rag_kb_task_queue_depth{status=~"planning|running"}) > bool 0) * (1 - max(rag_kb_worker_capability_available{capability="task-agent",protocol="m2-fenced-v1"} or vector(0)))
               instant: true
               intervalMs: 60000
               maxDataPoints: 43200
@@ -155,13 +155,65 @@ groups:
               maxDataPoints: 43200
               refId: B
               type: threshold
-        noDataState: NoData
+        noDataState: OK
         execErrState: Error
         for: 1m
         annotations:
           summary: Tasks are queued without an active task-agent lease.
         labels:
           severity: critical
+      - uid: rag-kb-target-down
+        title: API, Worker, or Collector target is down
+        condition: B
+        data:
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: clamp_max((1 - (min(up{job="rag-kb-api"}) or vector(0))) + (1 - (min(up{job="rag-kb-worker"}) or vector(0))) + (1 - (min(up{job="rag-kb-collector"}) or vector(0))) + (sum(absent(up{job="rag-kb-api"})) or vector(0)) + (sum(absent(up{job="rag-kb-worker"})) or vector(0)) + (sum(absent(up{job="rag-kb-collector"})) or vector(0)), 1)
+              instant: true
+              intervalMs: 60000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        noDataState: Alerting
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: A required Prometheus target is down or absent.
+        labels:
+          severity: high
       - uid: rag-kb-lease-failures
         title: Lease renewal failures
         condition: B
@@ -174,7 +226,7 @@ groups:
             datasourceUid: prometheus
             model:
               editorMode: code
-              expr: sum(increase(rag_kb_lease_failures_total[5m]))
+              expr: sum(increase(rag_kb_lease_failures_total[1m])) or vector(0)
               instant: true
               intervalMs: 60000
               maxDataPoints: 43200
@@ -207,7 +259,7 @@ groups:
               maxDataPoints: 43200
               refId: B
               type: threshold
-        noDataState: NoData
+        noDataState: OK
         execErrState: Error
         for: 5m
         annotations:
@@ -215,7 +267,7 @@ groups:
         labels:
           severity: high
       - uid: rag-kb-projection-unconverged
-        title: Projection reconciliation is not converging
+        title: Projection unconverged retry/failure proxy
         condition: B
         data:
           - refId: A
@@ -226,7 +278,7 @@ groups:
             datasourceUid: prometheus
             model:
               editorMode: code
-              expr: sum(increase(rag_kb_projection_reconciliations_total{outcome=~"retry_scheduled|failure_recording_failed"}[10m]))
+              expr: rag_kb:projection_unconverged_proxy:10m
               instant: true
               intervalMs: 60000
               maxDataPoints: 43200
@@ -241,7 +293,7 @@ groups:
             model:
               conditions:
                 - evaluator:
-                    params: [1]
+                    params: [0]
                     type: gt
                   operator:
                     type: and
@@ -259,15 +311,15 @@ groups:
               maxDataPoints: 43200
               refId: B
               type: threshold
-        noDataState: NoData
+        noDataState: OK
         execErrState: Error
         for: 0s
         annotations:
-          summary: Projection retry or failure recording occurred twice in ten minutes.
+          summary: At least two retry/failure events and no success occurred in the ten-minute proxy window.
         labels:
           severity: high
-      - uid: rag-kb-api-or-dependency-errors
-        title: API or dependency error rate is elevated
+      - uid: rag-kb-dependency-errors
+        title: Dependency failure ratio is elevated
         condition: B
         data:
           - refId: A
@@ -278,7 +330,7 @@ groups:
             datasourceUid: prometheus
             model:
               editorMode: code
-              expr: sum(rate(rag_kb_http_requests_total{status_class="5xx"}[5m])) / clamp_min(sum(rate(rag_kb_http_requests_total[5m])), 0.001) + sum(rate(rag_kb_llm_calls_total{outcome="failure"}[5m]))
+              expr: clamp_max(((rag_kb:llm_failure_ratio:rate5m > bool 0.05) or vector(0)) + ((rag_kb:retrieval_dependency_failure_ratio:rate5m > bool 0.05) or vector(0)) + ((rag_kb:task_dependency_failure_ratio:rate5m > bool 0.05) or vector(0)) + ((rag_kb:ingestion_dependency_failure_ratio:rate5m > bool 0.05) or vector(0)), 1)
               instant: true
               intervalMs: 60000
               maxDataPoints: 43200
@@ -293,7 +345,7 @@ groups:
             model:
               conditions:
                 - evaluator:
-                    params: [0.05]
+                    params: [0]
                     type: gt
                   operator:
                     type: and
@@ -311,13 +363,65 @@ groups:
               maxDataPoints: 43200
               refId: B
               type: threshold
-        noDataState: NoData
+        noDataState: OK
         execErrState: Error
         for: 5m
         annotations:
-          summary: API 5xx or model dependency failures exceed the initial threshold.
+          summary: A dimensionless model, retrieval, task, or ingestion dependency failure ratio exceeds 5%.
         labels:
           severity: high
+      - uid: rag-kb-api-degradation
+        title: API 5xx ratio or P95 latency is elevated
+        condition: B
+        data:
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: clamp_max(((rag_kb:http_5xx_ratio:rate5m > bool 0.05) or vector(0)) + ((rag_kb:http_p95_seconds:5m > bool 2) or vector(0)), 1)
+              instant: true
+              intervalMs: 60000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: API 5xx exceeds 5% or HTTP P95 exceeds two seconds.
+        labels:
+          severity: medium
       - uid: rag-kb-queue-age
         title: Queue age exceeds the initial SLO
         condition: B
@@ -330,7 +434,7 @@ groups:
             datasourceUid: prometheus
             model:
               editorMode: code
-              expr: max(rag_kb_task_queue_oldest_age_seconds{status=~"planning|running"} or rag_kb_ingestion_queue_oldest_age_seconds{status="pending"})
+              expr: max(rag_kb_task_queue_oldest_age_seconds{status=~"planning|running"} or rag_kb_ingestion_queue_oldest_age_seconds{status="pending"}) or vector(0)
               instant: true
               intervalMs: 60000
               maxDataPoints: 43200
@@ -363,7 +467,7 @@ groups:
               maxDataPoints: 43200
               refId: B
               type: threshold
-        noDataState: NoData
+        noDataState: OK
         execErrState: Error
         for: 5m
         annotations:
@@ -382,7 +486,7 @@ groups:
             datasourceUid: prometheus
             model:
               editorMode: code
-              expr: sum(increase(rag_kb_tool_calls_total{error_category="timeout"}[15m])) + sum(increase(rag_kb_approvals_total{decision="expired"}[15m])) + sum(increase(rag_kb_recovery_actions_total{kind=~"tool_result_retention|task_content_retention|orphan_result",outcome="failure"}[15m]))
+              expr: clamp_max(((rag_kb:tool_timeout_ratio:rate15m > bool 0.1) or vector(0)) + ((rag_kb:approval_expiry_ratio:rate15m > bool 0.1) or vector(0)) + ((rag_kb:retention_cleanup_failure_ratio:rate15m > bool 0.1) or vector(0)), 1)
               instant: true
               intervalMs: 60000
               maxDataPoints: 43200
@@ -415,10 +519,10 @@ groups:
               maxDataPoints: 43200
               refId: B
               type: threshold
-        noDataState: NoData
+        noDataState: OK
         execErrState: Error
-        for: 0s
+        for: 5m
         annotations:
-          summary: A tool timeout, expired approval, or retention cleanup failure occurred.
+          summary: A tool timeout, approval expiry, or retention cleanup failure ratio exceeds 10%.
         labels:
           severity: medium

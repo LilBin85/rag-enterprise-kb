@@ -228,7 +228,10 @@ class TaskWorker:
                 close()
 
     def run_once(self) -> TaskWorkerResult:
+        telemetry = current_observability()
         if not self._accepting_tasks:
+            if telemetry is not None:
+                telemetry.record_task_claim(mode="none", result="idle")
             return TaskWorkerResult(status="idle")
         claim: dict[str, object] = {
             "worker_id": self._worker_id,
@@ -239,9 +242,25 @@ class TaskWorker:
                 capability_name=self._capability_name,
                 protocol_version=self._protocol_version,
             )
-        lease = self._repository.claim_next(**claim)
+        try:
+            lease = self._repository.claim_next(**claim)
+        except Exception as exc:
+            if telemetry is not None:
+                result = (
+                    "protocol_mismatch"
+                    if stable_error_code(exc) == "task_protocol_mismatch"
+                    else "failure"
+                )
+                telemetry.record_task_claim(mode="none", result=result)
+            raise
         if lease is None:
+            if telemetry is not None:
+                telemetry.record_task_claim(mode="none", result="idle")
             return TaskWorkerResult(status="idle")
+        if telemetry is not None:
+            telemetry.record_task_claim(
+                mode=lease.state.task_mode.value, result="claimed"
+            )
         return self._run_claimed(lease)
 
     def resume_for_user(

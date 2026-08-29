@@ -133,6 +133,10 @@ _RECOVERY_OUTCOMES = frozenset(
     {"succeeded", "recovered", "missing", "mismatched", "failure"}
 )
 _TASK_QUEUE_MODES = frozenset({"research", "controlled_action"})
+_TASK_CLAIM_MODES = frozenset({"none", "research", "controlled_action"})
+_TASK_CLAIM_RESULTS = frozenset(
+    {"claimed", "idle", "protocol_mismatch", "failure"}
+)
 _TASK_QUEUE_STATUSES = frozenset(
     {"planning", "running", "waiting_for_user", "waiting_for_approval"}
 )
@@ -646,6 +650,12 @@ class Observability:
             buckets=_LONG_DURATION_BUCKETS,
             registry=self.registry,
         )
+        self._task_claims = Counter(
+            "rag_kb_task_claims_total",
+            "Worker task claim results.",
+            ("mode", "result"),
+            registry=self.registry,
+        )
         self._lease_failures = Counter(
             "rag_kb_lease_failures_total",
             "Lease renewal failures.",
@@ -758,6 +768,15 @@ class Observability:
             ("capability", "protocol"),
             registry=self.registry,
         )
+        for kind in _SECURITY_BOUNDARY_KINDS:
+            self._security_boundary_violations.labels(kind=kind).inc(0)
+        for tool in ("create_report_artifact", "create_work_item_draft"):
+            self._tool_calls.labels(
+                tool=tool,
+                mode="write",
+                outcome="unknown",
+                error_category="unknown",
+            ).inc(0)
         self._service_name = service_name
         self._otlp_endpoint = otlp_endpoint
         self._trace_sample_ratio = trace_sample_ratio
@@ -996,6 +1015,14 @@ class Observability:
             mode=mode, outcome=outcome, error_category=_metric_error_category(error_category)
         ).inc()
         self._task_duration.labels(mode=mode, outcome=outcome).observe(duration_seconds)
+
+    def record_task_claim(self, *, mode: str, result: str) -> None:
+        if not self.metrics_enabled:
+            return
+        self._task_claims.labels(
+            mode=_bounded_metric_value(mode, _TASK_CLAIM_MODES, "none"),
+            result=_bounded_metric_value(result, _TASK_CLAIM_RESULTS, "failure"),
+        ).inc()
 
     def record_checkpoint_write(self, *, outcome: str) -> None:
         if self.metrics_enabled:

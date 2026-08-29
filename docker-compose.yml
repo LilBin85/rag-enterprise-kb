@@ -155,6 +155,7 @@ services:
       - ./ops/observability/otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro
     expose:
       - "4317"
+      - "8888"
     depends_on:
       jaeger:
         condition: service_started

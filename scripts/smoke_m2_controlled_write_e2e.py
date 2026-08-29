@@ -80,9 +80,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--postgres-admin-url", required=True)
     parser.add_argument("--qdrant-url", required=True)
     parser.add_argument("--object-root-parent", type=Path, required=True)
-    parser.add_argument("--fault-junit", type=Path, required=True)
+    parser.add_argument("--fault-junit", type=Path)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=60)
+    parser.add_argument("--observability-smoke", action="store_true")
     return parser.parse_args()
 
 
@@ -91,7 +92,9 @@ def _require_inputs(args: argparse.Namespace) -> None:
         raise SmokeError("live_execution_requires_allow_live")
     if not args.object_root_parent.is_dir():
         raise SmokeError("object_root_parent_required")
-    if not args.fault_junit.is_file():
+    if not args.observability_smoke and (
+        args.fault_junit is None or not args.fault_junit.is_file()
+    ):
         raise SmokeError("fault_junit_required")
     if args.timeout <= 0:
         raise SmokeError("timeout_invalid")
@@ -718,7 +721,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         tool_surfaces: list[str] = []
         primary: dict[str, object] = {}
         with patch.object(artifact_module, "uuid4", lambda: UUID(_ARTIFACT_ID)), TestClient(app) as client:
-            for index in range(29):
+            for index in range(0 if args.observability_smoke else 29):
                 created = _expect(
                     client.post("/v1/tasks", headers=headers["owner"], json={"task_mode": "controlled_action", "goal": f"M2 批量拒绝验收任务 {index + 1}"}),
                     202,
@@ -729,7 +732,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
                     raise SmokeError("task_id_missing")
                 task_ids.append(task_id)
                 worker, _agent = make_worker(task_id)
-                paused = worker.run_once()
+                with app.state.observability.activate():
+                    paused = worker.run_once()
                 if paused.status != "waiting_for_approval":
                     raise SmokeError("rejected_task_not_waiting_for_approval")
                 state = _expect(client.get(f"/v1/tasks/{task_id}", headers=headers["owner"]), 200, "task")
@@ -760,7 +764,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
                 raise SmokeError("primary_task_id_missing")
             task_ids.append(primary_task_id)
             primary_worker, primary_agent = make_worker(primary_task_id, approved=True)
-            paused = primary_worker.run_once()
+            with app.state.observability.activate():
+                paused = primary_worker.run_once()
             if paused.status != "waiting_for_approval" or report_adapter.calls != 0:
                 raise SmokeError("hitl_pause_contract_invalid")
             task_state = _expect(client.get(f"/v1/tasks/{primary_task_id}", headers=headers["owner"]), 200, "primary_task_state")
@@ -823,7 +828,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
                 raise SmokeError("clarification_task_id_missing")
             task_ids.append(clarification_id)
             clarification_worker, _clarification_agent = make_worker(clarification_id, clarification=True)
-            if clarification_worker.run_once().status != "waiting_for_user":
+            with app.state.observability.activate():
+                clarification_status = clarification_worker.run_once().status
+            if clarification_status != "waiting_for_user":
                 raise SmokeError("controlled_clarification_not_waiting")
             clarification_state = _expect(client.get(f"/v1/tasks/{clarification_id}", headers=headers["owner"]), 200, "clarification_state")
             continued = _expect(
@@ -889,7 +896,11 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             raise SmokeError("storage_key_leaked")
         report = {
             "status": "passed",
-            "source_binding": _source_binding(),
+            "source_binding": (
+                {"mode": "current_worktree"}
+                if args.observability_smoke
+                else _source_binding()
+            ),
             "execution_mode": "live_postgres_msgpack",
             "capability": "task-agent",
             "protocol": "m2-fenced-v1",
@@ -949,7 +960,11 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "privacy_scan": {"storage_key": 0, "prompt": 0, "content": 0, "credentials": 0, "resume_payload": 0},
             "coverage": {
                 "task_count": len(ledger),
-                "scenario_count": len(_passed_fault_scenarios(args.fault_junit)) + 4,
+                "scenario_count": (
+                    1
+                    if args.observability_smoke
+                    else len(_passed_fault_scenarios(args.fault_junit)) + 4
+                ),
                 "crash_recovery": {"before_execution": True, "after_execution_before_checkpoint": True, "after_checkpoint_before_sync": True},
             },
             "task_ledger": ledger,

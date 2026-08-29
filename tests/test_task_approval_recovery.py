@@ -51,7 +51,7 @@ from rag_kb.infrastructure.database.task_repository import (
 )
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
-from rag_kb.observability import Observability
+from rag_kb.observability import Observability, current_trace_headers
 
 _REPORT_ARGUMENTS: dict[str, object] = {
     "title": "差旅制度摘要报告",
@@ -1065,6 +1065,63 @@ def test_approval_transition_and_resume_are_safe_and_measured(stage) -> None:
     assert 'decision="rejected",outcome="succeeded"' in payload
     assert secret not in payload
     assert secret not in rendered_spans
+
+
+def test_initial_and_approval_resumed_runs_link_their_producers_as_new_roots(stage) -> None:
+    observability, exporter = _telemetry()
+    try:
+        with observability.activate():
+            with observability.span("task.create.request") as create_span:
+                traceparent, tracestate = current_trace_headers()
+                create_context = create_span.get_span_context()
+            initial_lease = TaskLease(
+                stage.lease.state,
+                stage.lease.worker_id,
+                stage.lease.lease_generation,
+                stage.lease.budgets,
+                traceparent,
+                tracestate,
+            )
+            first = _worker(
+                stage, ScriptedAgent((_empty_snapshot(), _hitl_snapshot()))
+            )._run_claimed(initial_lease)
+            approval_id = _approval_rows(stage)[0].approval_id
+            with stage.database.sessions() as session:
+                state_version = session.get(AgentTaskRow, "task-1").state_version
+
+            with observability.span("approval.request") as approval_span:
+                approval_context = approval_span.get_span_context()
+                second = _worker(
+                    stage,
+                    ScriptedAgent(
+                        (_hitl_snapshot(), _final_snapshot(_succeeded_candidate()))
+                    ),
+                ).resume_for_approval(
+                    auth=stage.approver,
+                    task_id="task-1",
+                    expected_state_version=state_version,
+                    approval_id=approval_id,
+                    decision="reject",
+                )
+        run_spans = [span for span in exporter.get_finished_spans() if span.name == "task.run"]
+        resume_span = next(
+            span for span in exporter.get_finished_spans() if span.name == "task.resume"
+        )
+    finally:
+        observability.shutdown()
+
+    assert first.status == "waiting_for_approval"
+    assert second.status == "finished"
+    assert len(run_spans) == 2
+    assert all(span.parent is None or not span.parent.is_valid for span in run_spans)
+    assert len(run_spans[0].links) == len(run_spans[1].links) == 1
+    assert run_spans[0].links[0].context.trace_id == create_context.trace_id
+    assert run_spans[0].links[0].context.span_id == create_context.span_id
+    assert resume_span.context.trace_id == approval_context.trace_id
+    assert resume_span.parent is not None
+    assert resume_span.parent.span_id == approval_context.span_id
+    assert run_spans[1].links[0].context.trace_id == approval_context.trace_id
+    assert run_spans[1].links[0].context.span_id == resume_span.context.span_id
 
 
 def test_resume_crash_before_toolnode_recovers_without_new_action_key(stage) -> None:

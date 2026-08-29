@@ -6,9 +6,35 @@ groups:
         expr: sum(rate(rag_kb_http_requests_total[5m]))
       - record: rag_kb:http_5xx_ratio:rate5m
         expr: sum(rate(rag_kb_http_requests_total{status_class="5xx"}[5m])) / clamp_min(sum(rate(rag_kb_http_requests_total[5m])), 0.001)
+      - record: rag_kb:http_p50_seconds:5m
+        expr: histogram_quantile(0.50, sum by (le) (rate(rag_kb_http_request_duration_seconds_bucket[5m])))
+      - record: rag_kb:http_p95_seconds:5m
+        expr: histogram_quantile(0.95, sum by (le) (rate(rag_kb_http_request_duration_seconds_bucket[5m])))
+      - record: rag_kb:http_p99_seconds:5m
+        expr: histogram_quantile(0.99, sum by (le) (rate(rag_kb_http_request_duration_seconds_bucket[5m])))
       - record: rag_kb:knowledge_query_p95_seconds:5m
         expr: histogram_quantile(0.95, sum by (le) (rate(rag_kb_knowledge_query_duration_seconds_bucket[5m])))
       - record: rag_kb:task_queue_claimable_depth
         expr: sum(rag_kb_task_queue_depth{status=~"planning|running"})
       - record: rag_kb:ingestion_queue_claimable_depth
         expr: sum(rag_kb_ingestion_queue_depth{status="pending"})
+      - record: rag_kb:llm_failure_ratio:rate5m
+        expr: sum(rate(rag_kb_llm_calls_total{outcome="failure"}[5m])) / clamp_min(sum(rate(rag_kb_llm_calls_total[5m])), 0.001)
+      - record: rag_kb:retrieval_dependency_failure_ratio:rate5m
+        expr: sum(rate(rag_kb_retrieval_stage_duration_seconds_count{stage=~"dense|sparse",outcome="failure"}[5m])) / clamp_min(sum(rate(rag_kb_retrieval_stage_duration_seconds_count{stage=~"dense|sparse"}[5m])), 0.001)
+      - record: rag_kb:task_dependency_failure_ratio:rate5m
+        expr: sum(rate(rag_kb_task_runs_total{error_category="dependency"}[5m])) / clamp_min(sum(rate(rag_kb_task_runs_total[5m])), 0.001)
+      - record: rag_kb:ingestion_dependency_failure_ratio:rate5m
+        expr: sum(rate(rag_kb_ingestion_jobs_total{error_category="dependency"}[5m])) / clamp_min(sum(rate(rag_kb_ingestion_jobs_total[5m])), 0.001)
+      - record: rag_kb:tool_timeout_ratio:rate15m
+        expr: sum(rate(rag_kb_tool_calls_total{error_category="timeout"}[15m])) / clamp_min(sum(rate(rag_kb_tool_calls_total[15m])), 0.001)
+      - record: rag_kb:approval_expiry_ratio:rate15m
+        expr: sum(rate(rag_kb_approvals_total{decision="expired"}[15m])) / clamp_min(sum(rate(rag_kb_approvals_total[15m])), 0.001)
+      - record: rag_kb:retention_cleanup_failure_ratio:rate15m
+        expr: sum(rate(rag_kb_recovery_actions_total{kind=~"tool_result_retention|task_content_retention|orphan_result",outcome="failure"}[15m])) / clamp_min(sum(rate(rag_kb_recovery_actions_total{kind=~"tool_result_retention|task_content_retention|orphan_result"}[15m])), 0.001)
+      - record: rag_kb:projection_unconverged_proxy:10m
+        expr: ((sum(increase(rag_kb_projection_reconciliations_total{outcome=~"retry_scheduled|failure_recording_failed"}[10m])) >= 2) and ((sum(increase(rag_kb_projection_reconciliations_total{outcome="succeeded"}[10m])) or vector(0)) == 0)) or vector(0)
+      - record: rag_kb:collector_exporter_queue_utilization
+        expr: sum(otelcol_exporter_queue_size) / clamp_min(sum(otelcol_exporter_queue_capacity), 1)
+      - record: rag_kb:collector_export_failures_per_second:rate5m
+        expr: sum(rate(otelcol_exporter_send_failed_spans[5m])) or vector(0)

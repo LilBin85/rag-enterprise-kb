@@ -2,7 +2,7 @@
   "uid": "rag-kb-system",
   "title": "RAG KB / System Overview",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": {"from": "now-1h", "to": "now"},
   "panels": [
@@ -21,6 +21,13 @@
       "gridPos": {"h": 8, "w": 6, "x": 6, "y": 0}
     },
     {
+      "type": "stat",
+      "title": "Collector up",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "up{job=\"rag-kb-collector\"}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0}
+    },
+    {
       "type": "timeseries",
       "title": "HTTP request rate and 5xx",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
@@ -28,14 +35,35 @@
         {"expr": "sum(rate(rag_kb_http_requests_total[5m]))", "legendFormat": "requests/s", "refId": "A"},
         {"expr": "sum(rate(rag_kb_http_requests_total{status_class=\"5xx\"}[5m]))", "legendFormat": "5xx/s", "refId": "B"}
       ],
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0}
     },
     {
       "type": "timeseries",
-      "title": "HTTP P95 duration",
+      "title": "HTTP duration quantiles",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(rag_kb_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p95", "refId": "A"}],
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(rag_kb_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(rag_kb_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p95", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(rag_kb_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p99", "refId": "C"}
+      ],
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Collector exporter queue",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "otelcol_exporter_queue_size", "legendFormat": "{{exporter}} size", "refId": "A"},
+        {"expr": "otelcol_exporter_queue_capacity", "legendFormat": "{{exporter}} capacity", "refId": "B"}
+      ],
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Collector exporter failures",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum by (exporter) (rate(otelcol_exporter_send_failed_spans[5m])) or vector(0)", "legendFormat": "{{exporter}} failures/s", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 8}
     }
   ]
 }

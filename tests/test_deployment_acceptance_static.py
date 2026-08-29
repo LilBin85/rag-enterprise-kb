@@ -110,8 +110,9 @@ def test_observability_profile_is_internal_and_provisioned() -> None:
     services = compose["services"]
     for name in ("otel-collector", "jaeger", "prometheus", "grafana"):
         assert services[name]["profiles"] == ["observability"]
-    assert services["otel-collector"]["expose"] == ["4317"]
+    assert services["otel-collector"]["expose"] == ["4317", "8888"]
     assert services["jaeger"]["ports"] == ["127.0.0.1:16686:16686"]
+    assert services["jaeger"]["expose"] == ["4317"]
     assert services["prometheus"]["ports"] == ["127.0.0.1:9090:9090"]
     assert services["grafana"]["ports"] == ["127.0.0.1:3000:3000"]
     assert services["grafana"]["volumes"] == [
@@ -126,22 +127,65 @@ def test_observability_profile_is_internal_and_provisioned() -> None:
     prometheus = yaml.safe_load(
         (ROOT / "ops/observability/prometheus/prometheus.yml").read_text(encoding="utf-8")
     )
-    targets = {
-        target
+    scrape_targets = {
+        scrape["job_name"]: {
+            target
+            for config in scrape["static_configs"]
+            for target in config["targets"]
+        }
         for scrape in prometheus["scrape_configs"]
-        for config in scrape["static_configs"]
-        for target in config["targets"]
     }
-    assert {"api:8000", "worker:9464"}.issubset(targets)
+    assert scrape_targets == {
+        "rag-kb-api": {"api:8000"},
+        "rag-kb-worker": {"worker:9464"},
+        "rag-kb-collector": {"otel-collector:8888"},
+    }
     recording = yaml.safe_load(
         (ROOT / "ops/observability/prometheus/rules/recording.yml").read_text(encoding="utf-8")
     )
-    assert all("record" in rule for rule in recording["groups"][0]["rules"])
+    recording_rules = {
+        rule["record"]: rule["expr"] for rule in recording["groups"][0]["rules"]
+    }
+    for quantile in ("0.50", "0.95", "0.99"):
+        assert f"histogram_quantile({quantile}" in "\n".join(recording_rules.values())
+    for name, metric in (
+        ("rag_kb:llm_failure_ratio:rate5m", "rag_kb_llm_calls_total"),
+        (
+            "rag_kb:retrieval_dependency_failure_ratio:rate5m",
+            "rag_kb_retrieval_stage_duration_seconds_count",
+        ),
+        ("rag_kb:task_dependency_failure_ratio:rate5m", "rag_kb_task_runs_total"),
+        ("rag_kb:ingestion_dependency_failure_ratio:rate5m", "rag_kb_ingestion_jobs_total"),
+        ("rag_kb:tool_timeout_ratio:rate15m", "rag_kb_tool_calls_total"),
+        ("rag_kb:approval_expiry_ratio:rate15m", "rag_kb_approvals_total"),
+        ("rag_kb:retention_cleanup_failure_ratio:rate15m", "rag_kb_recovery_actions_total"),
+    ):
+        expr = recording_rules[name]
+        assert "/" in expr and "clamp_min(" in expr
+        assert expr.count(metric) == 2
+    projection_proxy = recording_rules["rag_kb:projection_unconverged_proxy:10m"]
+    assert 'outcome=~"retry_scheduled|failure_recording_failed"' in projection_proxy
+    assert 'outcome="succeeded"' in projection_proxy
+    assert ">= 2" in projection_proxy and "or vector(0)" in projection_proxy
+    assert "otelcol_exporter_queue_size" in recording_rules[
+        "rag_kb:collector_exporter_queue_utilization"
+    ]
+    assert "otelcol_exporter_send_failed_spans" in recording_rules[
+        "rag_kb:collector_export_failures_per_second:rate5m"
+    ]
 
     collector = yaml.safe_load(
         (ROOT / "ops/observability/otel-collector.yml").read_text(encoding="utf-8")
     )
     assert collector["receivers"]["otlp"]["protocols"]["grpc"]["endpoint"] == "0.0.0.0:4317"
+    assert collector["service"]["telemetry"]["metrics"] == {
+        "address": "0.0.0.0:8888",
+        "level": "normal",
+    }
+    assert collector["exporters"]["otlp/jaeger"]["sending_queue"] == {
+        "enabled": True,
+        "queue_size": 1000,
+    }
     assert collector["service"]["pipelines"]["traces"]["exporters"] == ["otlp/jaeger"]
 
     datasource = yaml.safe_load(
@@ -159,27 +203,132 @@ def test_observability_profile_is_internal_and_provisioned() -> None:
         "ingestion-projection.json",
         "security.json",
     } == {path.name for path in dashboards.glob("*.json")}
-    dashboard_titles = {
-        json.loads(path.read_text(encoding="utf-8"))["title"] for path in dashboards.glob("*.json")
+    dashboard_configs = {
+        path.name: json.loads(path.read_text(encoding="utf-8"))
+        for path in dashboards.glob("*.json")
     }
-    assert len(dashboard_titles) == 5
-    alert_path = ROOT / "ops/observability/grafana/provisioning/alerting/rag-kb.yml"
-    alerts = alert_path.read_text(
-        encoding="utf-8"
-    )
-    alert_config = yaml.safe_load(alerts)
-    assert len(alert_config["groups"][0]["rules"]) == 8
-    for metric in (
-        "rag_kb_security_boundary_violations_total",
-        'rag_kb_tool_calls_total{mode="write",outcome="unknown"}',
-        "rag_kb_worker_capability_available",
-        "rag_kb_lease_failures_total",
-        "rag_kb_projection_reconciliations_total",
-        "rag_kb_http_requests_total",
-        "rag_kb_task_queue_oldest_age_seconds",
-        "rag_kb_approvals_total",
+    assert len({dashboard["title"] for dashboard in dashboard_configs.values()}) == 5
+    dashboard_exprs = {
+        name: [
+            target["expr"]
+            for panel in dashboard["panels"]
+            for target in panel.get("targets", [])
+        ]
+        for name, dashboard in dashboard_configs.items()
+    }
+    for exprs in dashboard_exprs.values():
+        assert all("histogram_quantile(" in expr for expr in exprs if "_bucket" in expr)
+    system_exprs = "\n".join(dashboard_exprs["system-overview.json"])
+    for contract in (
+        'up{job="rag-kb-api"}',
+        'up{job="rag-kb-worker"}',
+        'up{job="rag-kb-collector"}',
+        "histogram_quantile(0.50",
+        "histogram_quantile(0.95",
+        "histogram_quantile(0.99",
+        "otelcol_exporter_queue_size",
+        "otelcol_exporter_send_failed_spans",
     ):
-        assert metric in alerts
+        assert contract in system_exprs
+    rag_exprs = "\n".join(dashboard_exprs["rag.json"])
+    for contract in (
+        "sum by (outcome, reason)",
+        "rag_kb_retrieval_stage_duration_seconds_bucket",
+        "rag_kb_retrieval_candidates_bucket",
+        "rag_kb_retrieval_context_token_estimate_bucket",
+        "rag_kb_llm_calls_total",
+        "rag_kb_llm_tokens_total",
+        "rag_kb_llm_usage_missing_total",
+    ):
+        assert contract in rag_exprs
+    agent_exprs = "\n".join(dashboard_exprs["agent.json"])
+    for metric in (
+        "rag_kb_task_claims_total",
+        "rag_kb_task_runs_total",
+        "rag_kb_llm_calls_total",
+        "rag_kb_tool_calls_total",
+        "rag_kb_approvals_total",
+        "rag_kb_approval_wait_duration_seconds_bucket",
+        "rag_kb_checkpoint_writes_total",
+        "rag_kb_lease_failures_total",
+        "rag_kb_task_queue_depth",
+        "rag_kb_task_queue_oldest_age_seconds",
+    ):
+        assert metric in agent_exprs
+    ingestion_exprs = "\n".join(dashboard_exprs["ingestion-projection.json"])
+    for metric in (
+        "rag_kb_ingestion_queue_depth",
+        "rag_kb_ingestion_queue_oldest_age_seconds",
+        "rag_kb_ingestion_phase_duration_seconds_bucket",
+        "rag_kb_ingestion_jobs_total",
+        "rag_kb_projection_reconciliations_total",
+        "rag_kb_projection_reconcile_duration_seconds_bucket",
+        "rag_kb:projection_unconverged_proxy:10m",
+    ):
+        assert metric in ingestion_exprs
+    security_exprs = "\n".join(dashboard_exprs["security.json"])
+    for contract in (
+        "rag_kb_security_boundary_violations_total",
+        'mode="write",outcome="unknown"',
+        'decision=~"rejected|expired"',
+        'kind="content_hash"',
+        'outcome="mismatched"',
+    ):
+        assert contract in security_exprs
+
+    alert_path = ROOT / "ops/observability/grafana/provisioning/alerting/rag-kb.yml"
+    alert_rules = {
+        rule["uid"]: rule
+        for rule in yaml.safe_load(alert_path.read_text(encoding="utf-8"))["groups"][0]["rules"]
+    }
+    assert set(alert_rules) == {
+        "rag-kb-security-boundary",
+        "rag-kb-write-unknown",
+        "rag-kb-queue-without-capability",
+        "rag-kb-target-down",
+        "rag-kb-lease-failures",
+        "rag-kb-projection-unconverged",
+        "rag-kb-dependency-errors",
+        "rag-kb-api-degradation",
+        "rag-kb-queue-age",
+        "rag-kb-operation-reliability",
+    }
+    alert_exprs = {
+        uid: next(query for query in rule["data"] if query["refId"] == "A")["model"]["expr"]
+        for uid, rule in alert_rules.items()
+    }
+    for uid in ("rag-kb-security-boundary", "rag-kb-write-unknown", "rag-kb-lease-failures"):
+        assert "or vector(0)" in alert_exprs[uid]
+        assert alert_rules[uid]["noDataState"] == "OK"
+    target_down = alert_exprs["rag-kb-target-down"]
+    for job in ("rag-kb-api", "rag-kb-worker", "rag-kb-collector"):
+        assert f'up{{job="{job}"}}' in target_down
+        assert f'absent(up{{job="{job}"}})' in target_down
+    assert alert_rules["rag-kb-target-down"]["noDataState"] == "Alerting"
+    assert alert_rules["rag-kb-target-down"]["for"] == "2m"
+    assert all(
+        rule["noDataState"] == "OK"
+        for uid, rule in alert_rules.items()
+        if uid != "rag-kb-target-down"
+    )
+    assert "[1m]" in alert_exprs["rag-kb-lease-failures"]
+    assert alert_rules["rag-kb-lease-failures"]["for"] == "5m"
+    assert alert_exprs["rag-kb-projection-unconverged"] == (
+        "rag_kb:projection_unconverged_proxy:10m"
+    )
+    dependency_expr = alert_exprs["rag-kb-dependency-errors"]
+    assert "rag_kb:llm_failure_ratio:rate5m" in dependency_expr
+    assert "rag_kb:retrieval_dependency_failure_ratio:rate5m" in dependency_expr
+    assert "rag_kb:task_dependency_failure_ratio:rate5m" in dependency_expr
+    assert "rag_kb:ingestion_dependency_failure_ratio:rate5m" in dependency_expr
+    assert dependency_expr.count("> bool 0.05") == 4
+    api_expr = alert_exprs["rag-kb-api-degradation"]
+    assert "rag_kb:http_5xx_ratio:rate5m > bool 0.05" in api_expr
+    assert "rag_kb:http_p95_seconds:5m > bool 2" in api_expr
+    reliability_expr = alert_exprs["rag-kb-operation-reliability"]
+    for ratio in ("tool_timeout_ratio", "approval_expiry_ratio", "retention_cleanup_failure_ratio"):
+        assert ratio in reliability_expr
+    assert reliability_expr.count("> bool 0.1") == 3
 
 
 def test_example_agent_budget_configuration_matches_runtime_defaults() -> None:

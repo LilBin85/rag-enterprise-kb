@@ -12,7 +12,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from rag_kb.agent.result import AgentResultStore
-from rag_kb.application.task_worker import TaskWorker
+from rag_kb.application.task_worker import TaskWorker, TaskWorkerResult
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.tasks import TaskBudgets, TaskMode, TaskStatus
 from rag_kb.infrastructure.database import Base, build_database
@@ -204,6 +204,69 @@ def test_worker_run_links_producer_without_becoming_its_child(setup) -> None:
         line for line in payload.splitlines() if line.startswith("rag_kb_task_runs_total{")
     )
     assert all(label in task_run_metric for label in ('mode="research"', 'outcome="succeeded"', 'error_category="none"'))
+
+
+def test_run_once_records_bounded_claim_results_without_changing_errors(
+    setup, monkeypatch
+) -> None:
+    database, repository, auth, results = setup
+    leases = [
+        SimpleNamespace(state=SimpleNamespace(task_mode=TaskMode.RESEARCH)),
+        SimpleNamespace(state=SimpleNamespace(task_mode=TaskMode.CONTROLLED_ACTION)),
+        None,
+        TaskRepositoryError("task_protocol_mismatch"),
+        RuntimeError("private claim failure"),
+    ]
+
+    def claim_next(**_kwargs):
+        value = leases.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    monkeypatch.setattr(repository, "claim_next", claim_next)
+    worker = _worker(database, repository, auth, results, ScriptedAgent(()))
+    monkeypatch.setattr(
+        worker,
+        "_run_claimed",
+        lambda lease: TaskWorkerResult(status="finished", task_id=lease.state.task_mode.value),
+    )
+    observability, _exporter = _telemetry()
+    try:
+        with observability.activate():
+            assert worker.run_once().task_id == "research"
+            assert worker.run_once().task_id == "controlled_action"
+            assert worker.run_once().status == "idle"
+            with pytest.raises(TaskRepositoryError, match="task_protocol_mismatch"):
+                worker.run_once()
+            with pytest.raises(RuntimeError, match="private claim failure"):
+                worker.run_once()
+            observability.record_task_claim(mode="private-id", result="https://private")
+        payload = observability.metrics_payload().decode()
+    finally:
+        observability.shutdown()
+
+    assert 'mode="research",result="claimed"' in payload
+    assert 'mode="controlled_action",result="claimed"' in payload
+    assert 'mode="none",result="idle"' in payload
+    assert 'mode="none",result="protocol_mismatch"' in payload
+    assert 'mode="none",result="failure"' in payload
+    assert "private-id" not in payload
+    assert "https://private" not in payload
+
+
+def test_task_claim_metric_is_noop_when_metrics_are_disabled() -> None:
+    observability = Observability(
+        enabled=False,
+        metrics_enabled=False,
+        service_name="rag-kb-test",
+        otlp_endpoint="",
+        trace_sample_ratio=1.0,
+    )
+
+    observability.record_task_claim(mode="research", result="claimed")
+
+    assert "rag_kb_task_claims_total{" not in observability.metrics_payload().decode()
 
 
 def test_lease_failure_emits_one_safe_error_span_and_metric() -> None:

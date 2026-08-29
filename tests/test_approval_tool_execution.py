@@ -283,7 +283,9 @@ def test_tool_adapter_thread_keeps_execute_trace_and_excludes_arguments(stage5) 
     assert adapter_span.context.trace_id == execute_span.context.trace_id
     assert adapter_span.parent is not None and adapter_span.parent.span_id == execute_span.context.span_id
     tool_metric = next(
-        line for line in payload.splitlines() if line.startswith("rag_kb_tool_calls_total{")
+        line
+        for line in payload.splitlines()
+        if line.startswith("rag_kb_tool_calls_total{") and 'outcome="succeeded"' in line
     )
     assert all(
         label in tool_metric
@@ -423,25 +425,38 @@ def test_write_crash_is_unknown_and_never_success(stage5) -> None:
         assert row is not None and row.status == "unknown" and row.result_hash is None
 
 
-def test_unknown_write_records_fixed_security_boundary_metric(stage5) -> None:
+def test_unknown_write_records_safe_metric_trace_and_log(stage5, caplog) -> None:
     database, requester, approver, _, lease = stage5
-    service, binding = _approved(database, requester, approver)
+    secret = "Bearer synthetic-token private tool payload C:/private/object"
+    arguments = _arguments(secret)
+    service, binding = _approved(database, requester, approver, arguments)
     executor = _executor(
         database,
         ToolRegistry(adapters={"create_report_artifact": _CrashingAdapter()}),
         service,
     )
-    observability, _exporter = _telemetry()
+    observability, exporter = _telemetry()
     try:
+        caplog.set_level("INFO")
         with observability.activate():
-            result = executor.execute(_request(requester, binding.approval_id, lease))
+            result = executor.execute(
+                _request(requester, binding.approval_id, lease, arguments)
+            )
         payload = observability.metrics_payload().decode()
+        spans = exporter.get_finished_spans()
     finally:
         executor.close()
         observability.shutdown()
 
     assert result.status == "unknown"
+    assert 'mode="write",outcome="unknown"' in payload
     assert 'kind="write_unknown"' in payload
+    execute_span = next(span for span in spans if span.name == "tool.execute")
+    assert execute_span.attributes["outcome"] == "unknown"
+    assert execute_span.status.status_code.name == "ERROR"
+    assert secret not in payload
+    assert secret not in repr(spans)
+    assert secret not in caplog.text
 
 
 def test_unknown_isolated_from_artifact_and_task_after_object_write_failure(stage5) -> None:

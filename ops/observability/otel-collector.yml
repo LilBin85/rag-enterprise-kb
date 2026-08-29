@@ -25,10 +25,17 @@ processors:
 exporters:
   otlp/jaeger:
     endpoint: jaeger:4317
+    sending_queue:
+      enabled: true
+      queue_size: 1000
     tls:
       insecure: true
 
 service:
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8888
+      level: normal
   pipelines:
     traces:
       receivers: [otlp]

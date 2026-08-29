@@ -126,6 +126,61 @@ def test_observability_can_start_a_local_trace_without_an_exporter() -> None:
     observability.shutdown()
 
 
+def test_metric_label_contract_is_fixed_and_excludes_sensitive_or_high_cardinality_fields() -> None:
+    observability = Observability(
+        enabled=False,
+        metrics_enabled=True,
+        service_name="rag-kb-test",
+        otlp_endpoint="",
+        trace_sample_ratio=1.0,
+    )
+    allowed = {
+        "route",
+        "method",
+        "status_class",
+        "outcome",
+        "reason",
+        "stage",
+        "operation",
+        "provider",
+        "direction",
+        "mode",
+        "result",
+        "error_category",
+        "kind",
+        "tool",
+        "decision",
+        "phase",
+        "status",
+        "worker_kind",
+        "capability",
+        "protocol",
+    }
+    label_names = {
+        label
+        for collector in observability.registry._collector_to_names
+        for label in getattr(collector, "_labelnames", ())
+    }
+
+    assert label_names <= allowed
+    assert not {
+        "document_id",
+        "task_id",
+        "run_id",
+        "user_id",
+        "url",
+        "question",
+        "content",
+        "hash",
+    } & label_names
+    payload = observability.metrics_payload().decode()
+    assert 'rag_kb_security_boundary_violations_total{kind="write_unknown"} 0.0' in payload
+    assert (
+        'rag_kb_tool_calls_total{error_category="unknown",mode="write",outcome="unknown",tool="create_report_artifact"} 0.0'
+        in payload
+    )
+
+
 def test_exporter_initialization_failure_does_not_block_local_traces(monkeypatch) -> None:
     def unavailable_exporter(**_kwargs):
         raise OSError("endpoint unavailable")

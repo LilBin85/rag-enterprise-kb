@@ -1,5 +1,7 @@
 from fastapi.testclient import TestClient
+from opentelemetry.sdk.trace.export import SpanExporter
 
+from rag_kb import observability as observability_module
 from rag_kb.config import Settings
 from rag_kb.web.app import create_app
 from rag_kb.web.dependencies import ReadinessFailure, build_readiness_probe
@@ -66,3 +68,85 @@ def test_http_observability_returns_request_ids_and_uses_route_templates_for_met
     assert metrics.status_code == 200
     assert 'route="/v1/tasks/{task_id}"' in metrics.text
     assert "task-visible" not in metrics.text
+
+
+def test_metrics_disabled_keeps_business_routes_available() -> None:
+    app = create_app(
+        Settings(
+            _env_file=None,
+            observability_enabled=True,
+            metrics_enabled=False,
+            otel_exporter_otlp_endpoint="",
+        )
+    )
+
+    with TestClient(app) as client:
+        assert client.get("/health/live").status_code == 200
+        assert client.get("/metrics").status_code == 404
+
+
+def test_unavailable_otlp_exporter_does_not_fail_business_request(monkeypatch) -> None:
+    class FailingExporter(SpanExporter):
+        def export(self, _spans):
+            raise OSError("synthetic endpoint unavailable")
+
+        def shutdown(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        observability_module,
+        "OTLPSpanExporter",
+        lambda **_kwargs: FailingExporter(),
+    )
+    app = create_app(
+        Settings(
+            _env_file=None,
+            observability_enabled=True,
+            metrics_enabled=True,
+            otel_exporter_otlp_endpoint="http://127.0.0.1:1",
+        )
+    )
+
+    with TestClient(app) as client:
+        assert client.get("/health/live").status_code == 200
+
+
+def test_multiple_dynamic_ids_do_not_create_high_cardinality_metric_labels() -> None:
+    app = create_app(Settings(_env_file=None, metrics_enabled=True))
+    dynamic_markers = ("task-alpha", "task-beta", "document-alpha", "document-beta")
+
+    with TestClient(app) as client:
+        for marker in dynamic_markers[:2]:
+            assert client.get(f"/v1/tasks/{marker}").status_code == 403
+        for marker in dynamic_markers[2:]:
+            assert client.get(f"/v1/documents/{marker}").status_code == 403
+
+    forbidden_labels = {
+        "document_id",
+        "task_id",
+        "run_id",
+        "user_id",
+        "url",
+        "question",
+        "content",
+        "hash",
+    }
+    samples = [
+        sample
+        for metric in app.state.observability.registry.collect()
+        for sample in metric.samples
+    ]
+
+    assert samples
+    assert all(forbidden_labels.isdisjoint(sample.labels) for sample in samples)
+    assert all(
+        marker not in str(sample.labels)
+        for sample in samples
+        for marker in dynamic_markers
+    )
+    routes = {
+        sample.labels.get("route")
+        for sample in samples
+        if sample.name == "rag_kb_http_requests_total"
+    }
+    assert {"/v1/tasks/{task_id}", "/v1/documents/{document_id}"} <= routes

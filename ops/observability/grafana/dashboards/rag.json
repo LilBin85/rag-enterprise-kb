@@ -2,7 +2,7 @@
   "uid": "rag-kb-rag",
   "title": "RAG KB / RAG",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": {"from": "now-1h", "to": "now"},
   "panels": [
@@ -10,7 +10,7 @@
       "type": "timeseries",
       "title": "Knowledge query outcomes",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"expr": "sum by (outcome) (rate(rag_kb_knowledge_queries_total[5m]))", "legendFormat": "{{outcome}}", "refId": "A"}],
+      "targets": [{"expr": "sum by (outcome, reason) (rate(rag_kb_knowledge_queries_total[5m]))", "legendFormat": "{{outcome}} / {{reason}}", "refId": "A"}],
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
     },
     {
@@ -29,10 +29,27 @@
     },
     {
       "type": "timeseries",
-      "title": "LLM usage metadata missing",
+      "title": "Packed context token estimate P95",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"expr": "sum(rate(rag_kb_llm_usage_missing_total[5m]))", "legendFormat": "missing/s", "refId": "A"}],
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(rag_kb_retrieval_context_token_estimate_bucket[5m])))", "legendFormat": "p95 tokens", "refId": "A"}],
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "LLM calls and tokens",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "sum by (operation, outcome) (rate(rag_kb_llm_calls_total[5m]))", "legendFormat": "{{operation}} {{outcome}} calls/s", "refId": "A"},
+        {"expr": "sum by (operation, direction) (rate(rag_kb_llm_tokens_total[5m]))", "legendFormat": "{{operation}} {{direction}} tokens/s", "refId": "B"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+    },
+    {
+      "type": "timeseries",
+      "title": "LLM usage metadata missing ratio",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum(rate(rag_kb_llm_usage_missing_total[5m])) / clamp_min(sum(rate(rag_kb_llm_calls_total[5m])), 0.001)", "legendFormat": "missing ratio", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}
     }
   ]
 }
