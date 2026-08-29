@@ -27,6 +27,11 @@ x-app-runtime: &app_runtime
   TOOL_RESULT_TTL_SECONDS: ${TOOL_RESULT_TTL_SECONDS:-604800}
   TASK_RESULT_RETENTION_DAYS: ${TASK_RESULT_RETENTION_DAYS:-7}
   RESULT_OBJECT_ORPHAN_GRACE_SECONDS: ${RESULT_OBJECT_ORPHAN_GRACE_SECONDS:-3600}
+  OBSERVABILITY_ENABLED: ${OBSERVABILITY_ENABLED:-true}
+  METRICS_ENABLED: ${METRICS_ENABLED:-true}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+  OTEL_TRACE_SAMPLE_RATIO: ${OTEL_TRACE_SAMPLE_RATIO:-1.0}
+  WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9464}
   HF_HOME: /home/ragkb/.cache/huggingface
   # Docker 只读取宿主机已冻结的模型；运行期不得静默联网下载。
   HF_HUB_OFFLINE: "1"
@@ -120,6 +125,8 @@ services:
         source: ${HF_HOME:-D:/DevelopmentTools/hf-cache}
         target: /home/ragkb/.cache/huggingface
         read_only: true
+    expose:
+      - "9464"
     depends_on:
       postgres:
         condition: service_healthy
@@ -129,6 +136,51 @@ services:
         condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.65.0
+    profiles: ["observability"]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:16686:16686"
+    expose:
+      - "4317"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.118.0
+    profiles: ["observability"]
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./ops/observability/otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro
+    expose:
+      - "4317"
+    depends_on:
+      jaeger:
+        condition: service_started
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    profiles: ["observability"]
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./ops/observability/prometheus:/etc/prometheus:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    profiles: ["observability"]
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./ops/observability/grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
+      - ./ops/observability/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./ops/observability/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./ops/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_started
 
 volumes:
   postgres_data:

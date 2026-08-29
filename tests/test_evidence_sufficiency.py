@@ -94,6 +94,28 @@ def test_requirements_cannot_be_satisfied_across_documents() -> None:
     assert policy.insufficiency_code(query, candidates) is not None
 
 
+def test_exact_quantity_scopes_candidates_to_the_supporting_document() -> None:
+    policy = DeterministicEvidenceSufficiencyPolicy()
+    query = "二十万元采购在 V2 中还需要谁批准？"
+    procurement = candidate(
+        "二十万元及以上还须采购委员会批准。",
+        source_file_name="采购审批制度-v2.md",
+        document_id="procurement",
+    )
+    unrelated = candidate(
+        "员工每年可享受带薪年假十五天。",
+        source_file_name="员工休假制度-v2.pdf",
+        chunk_id="chunk-2",
+        document_id="leave",
+    )
+
+    scoped = policy.select_candidates(query, (unrelated, procurement))
+
+    assert scoped == (procurement,)
+    assert policy.insufficiency_code(query, scoped) is None
+    assert policy.insufficiency_code(query, (unrelated,)) == "evidence_quantitative_fact_missing"
+
+
 def test_semantic_mismatch_is_deferred_to_verdict_layer() -> None:
     """主谓语义不匹配不再由词面滑窗拦截，交由回答模型 verdict 判定。"""
 

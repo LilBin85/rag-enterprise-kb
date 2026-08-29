@@ -1,0 +1,38 @@
+{
+  "uid": "rag-kb-rag",
+  "title": "RAG KB / RAG",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Knowledge query outcomes",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum by (outcome) (rate(rag_kb_knowledge_queries_total[5m]))", "legendFormat": "{{outcome}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Retrieval P95 by stage",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, stage) (rate(rag_kb_retrieval_stage_duration_seconds_bucket[5m])))", "legendFormat": "{{stage}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Retrieval candidate P95",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, stage) (rate(rag_kb_retrieval_candidates_bucket[5m])))", "legendFormat": "{{stage}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "LLM usage metadata missing",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum(rate(rag_kb_llm_usage_missing_total[5m]))", "legendFormat": "missing/s", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+    }
+  ]
+}

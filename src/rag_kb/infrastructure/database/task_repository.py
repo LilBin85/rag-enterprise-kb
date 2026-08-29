@@ -83,6 +83,14 @@ class TaskLease:
     pending_tracestate: str | None = None
 
 
+@dataclass(frozen=True)
+class TaskQueueSnapshot:
+    task_mode: str
+    status: str
+    depth: int
+    oldest_age_seconds: float
+
+
 def _state_from_row(row: AgentTaskRow) -> TaskState:
     return TaskState(
         task_id=row.task_id,
@@ -440,6 +448,36 @@ class DatabaseTaskRepository:
     def _lease_clock_expression(self, session):
         return self._database_clock_expression(session)
 
+    def _claimable_task_conditions(
+        self,
+        session,
+        *,
+        capability_name: str,
+        protocol_version: str,
+        statuses: tuple[str, ...] = (
+            TaskStatus.PLANNING.value,
+            TaskStatus.RUNNING.value,
+        ),
+    ):
+        clock = self._lease_clock_expression(session)
+        return (
+            AgentTaskRow.status.in_(statuses),
+            # 协议门（required_capability/protocol 精确匹配）已隔离 M1/M2
+            # Worker；M2 Worker 因此同时领取 Research 与受控任务，
+            # 后者是 D6 崩溃窗口 3/5 的唯一重领取入口。
+            AgentTaskRow.task_mode.in_(
+                (TaskMode.RESEARCH.value, TaskMode.CONTROLLED_ACTION.value)
+            ),
+            AgentTaskRow.required_capability_name == capability_name,
+            AgentTaskRow.required_protocol_version == protocol_version,
+            AgentTaskRow.cancelled.is_(False),
+            AgentTaskRow.available_at <= clock,
+            or_(
+                AgentTaskRow.lease_owner.is_(None),
+                AgentTaskRow.lease_expires_at <= clock,
+            ),
+        )
+
     def current_time(self) -> datetime:
         """返回与任务生命周期判定一致的时间源。"""
         with self._database.sessions() as session:
@@ -487,27 +525,14 @@ class DatabaseTaskRepository:
                 for_update=True,
             ):
                 return None
-            clock = self._lease_clock_expression(work.session)
             row = work.session.scalar(
                 select(AgentTaskRow)
                 .where(
-                    AgentTaskRow.status.in_(
-                        (TaskStatus.PLANNING.value, TaskStatus.RUNNING.value)
-                    ),
-                    # 协议门（required_capability/protocol 精确匹配）已隔离 M1/M2
-                    # Worker；M2 Worker 因此同时领取 Research 与受控任务，
-                    # 后者是 D6 崩溃窗口 3/5 的唯一重领取入口。
-                    AgentTaskRow.task_mode.in_(
-                        (TaskMode.RESEARCH.value, TaskMode.CONTROLLED_ACTION.value)
-                    ),
-                    AgentTaskRow.required_capability_name == capability_name,
-                    AgentTaskRow.required_protocol_version == protocol_version,
-                    AgentTaskRow.cancelled.is_(False),
-                    AgentTaskRow.available_at <= clock,
-                    or_(
-                        AgentTaskRow.lease_owner.is_(None),
-                        AgentTaskRow.lease_expires_at <= clock,
-                    ),
+                    *self._claimable_task_conditions(
+                        work.session,
+                        capability_name=capability_name,
+                        protocol_version=protocol_version,
+                    )
                 )
                 .order_by(AgentTaskRow.available_at, AgentTaskRow.created_at)
                 .limit(1)
@@ -530,6 +555,76 @@ class DatabaseTaskRepository:
                 pending_traceparent=row.pending_traceparent,
                 pending_tracestate=row.pending_tracestate,
             )
+
+    def queue_snapshot(
+        self,
+        *,
+        capability_name: str | None = None,
+        protocol_version: str | None = None,
+        limit: int,
+    ) -> tuple[TaskQueueSnapshot, ...]:
+        """固定状态/模式的有界快照，复用普通领取的行条件。
+
+        capability lease 另以 gauge 上报；缺少 lease 时不能把已排队任务从积压视图中隐藏。
+        """
+        if limit <= 0:
+            raise ValueError("invalid_task_queue_snapshot_limit")
+        capability_name, protocol_version, _ = self._claim_protocol(
+            capability_name, protocol_version
+        )
+        snapshots: list[TaskQueueSnapshot] = []
+        with self._database.sessions() as session:
+            now = self._lease_now(session)
+            for task_mode in (TaskMode.RESEARCH.value, TaskMode.CONTROLLED_ACTION.value):
+                for status in (
+                    TaskStatus.PLANNING.value,
+                    TaskStatus.RUNNING.value,
+                    TaskStatus.WAITING_FOR_USER.value,
+                    TaskStatus.WAITING_FOR_APPROVAL.value,
+                ):
+                    if status in {TaskStatus.PLANNING.value, TaskStatus.RUNNING.value}:
+                        conditions = (
+                            AgentTaskRow.task_mode == task_mode,
+                            *self._claimable_task_conditions(
+                                session,
+                                capability_name=capability_name,
+                                protocol_version=protocol_version,
+                                statuses=(status,),
+                            ),
+                        )
+                    else:
+                        conditions = (
+                            AgentTaskRow.task_mode == task_mode,
+                            AgentTaskRow.status == status,
+                            AgentTaskRow.required_capability_name == capability_name,
+                            AgentTaskRow.required_protocol_version == protocol_version,
+                            AgentTaskRow.cancelled.is_(False),
+                        )
+                    # ponytail: cap the periodic read to avoid a full queue scan;
+                    # add a saturation metric if exact values above this limit are needed.
+                    available = tuple(
+                        session.scalars(
+                            select(AgentTaskRow.available_at)
+                            .where(*conditions)
+                            .order_by(AgentTaskRow.available_at, AgentTaskRow.created_at)
+                            .limit(limit)
+                        )
+                    )
+                    oldest = _aware(available[0]) if available else None
+                    age_seconds = (
+                        max(0.0, (now - oldest).total_seconds())
+                        if oldest is not None
+                        else 0.0
+                    )
+                    snapshots.append(
+                        TaskQueueSnapshot(
+                            task_mode=task_mode,
+                            status=status,
+                            depth=len(available),
+                            oldest_age_seconds=age_seconds,
+                        )
+                    )
+        return tuple(snapshots)
 
     def claim_user_resume(
         self,

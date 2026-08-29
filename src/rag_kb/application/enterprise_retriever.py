@@ -28,7 +28,9 @@ from rag_kb.observability import (
 
 
 class RetrievalSecurityError(RuntimeError):
-    pass
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
 
 
 class AuthorizationSnapshotPort(Protocol):
@@ -179,6 +181,15 @@ class EnterpriseRetriever:
             except Exception as exc:
                 outcome = "failure"
                 error_code = stable_error_code(exc)
+                if isinstance(exc, RetrievalSecurityError):
+                    kind = {
+                        "authorization_tenant_binding_invalid": "tenant",
+                        "vector_acl_filter_contract_violated": "acl",
+                        "vector_content_hash_contract_violated": "content_hash",
+                    }.get(error_code)
+                    telemetry = current_observability()
+                    if telemetry is not None and kind is not None:
+                        telemetry.record_security_boundary_violation(kind=kind)
                 raise
             finally:
                 duration_seconds = perf_counter() - started_at

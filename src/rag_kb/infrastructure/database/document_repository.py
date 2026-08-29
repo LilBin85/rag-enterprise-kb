@@ -80,6 +80,13 @@ class DocumentDeletionReservation:
     job_count: int
 
 
+@dataclass(frozen=True)
+class IngestionQueueSnapshot:
+    status: str
+    depth: int
+    oldest_age_seconds: float
+
+
 class DocumentRegistryRepository:
     def principal_exists(self, session: Session, *, tenant_id: str, user_id: str) -> bool:
         return session.scalar(
@@ -855,18 +862,13 @@ class DocumentRegistryRepository:
     ) -> IngestionJobRow | None:
         now = datetime.now(UTC)
         lease_expires_at = now + timedelta(seconds=lease_seconds)
-        claimable_attempt = or_(
-            IngestionJobRow.attempts < max_attempts,
-            IngestionJobRow.error_code == "ingestion_projection_cleanup_failed",
+        claimable_conditions = self._claimable_job_conditions(
+            now=now, max_attempts=max_attempts
         )
         if session.get_bind().dialect.name == "sqlite":
             candidate = (
                 select(IngestionJobRow.job_id)
-                .where(
-                    IngestionJobRow.status == "pending",
-                    IngestionJobRow.available_at <= now,
-                    claimable_attempt,
-                )
+                .where(*claimable_conditions)
                 .order_by(IngestionJobRow.created_at, IngestionJobRow.job_id)
                 .limit(1)
                 .scalar_subquery()
@@ -875,9 +877,7 @@ class DocumentRegistryRepository:
                 update(IngestionJobRow)
                 .where(
                     IngestionJobRow.job_id == candidate,
-                    IngestionJobRow.status == "pending",
-                    IngestionJobRow.available_at <= now,
-                    claimable_attempt,
+                    *claimable_conditions,
                 )
                 .values(
                     status="running",
@@ -897,11 +897,7 @@ class DocumentRegistryRepository:
             return job
         statement: Select[tuple[IngestionJobRow]] = (
             select(IngestionJobRow)
-            .where(
-                IngestionJobRow.status == "pending",
-                IngestionJobRow.available_at <= now,
-                claimable_attempt,
-            )
+            .where(*claimable_conditions)
             .order_by(IngestionJobRow.created_at, IngestionJobRow.job_id)
             .limit(1)
             .with_for_update(skip_locked=True)
@@ -917,6 +913,59 @@ class DocumentRegistryRepository:
         job.updated_at = now
         session.flush()
         return job
+
+    @staticmethod
+    def _claimable_job_conditions(*, now: datetime, max_attempts: int):
+        return (
+            IngestionJobRow.status == "pending",
+            IngestionJobRow.available_at <= now,
+            or_(
+                IngestionJobRow.attempts < max_attempts,
+                IngestionJobRow.error_code == "ingestion_projection_cleanup_failed",
+            ),
+        )
+
+    def queue_snapshot(
+        self,
+        session: Session,
+        *,
+        max_attempts: int,
+        now: datetime,
+        limit: int,
+    ) -> tuple[IngestionQueueSnapshot, ...]:
+        if max_attempts <= 0 or limit <= 0:
+            raise ValueError("invalid_ingestion_queue_snapshot_limits")
+        snapshots: list[IngestionQueueSnapshot] = []
+        for status in ("awaiting_object", "pending", "running"):
+            conditions = (
+                self._claimable_job_conditions(now=now, max_attempts=max_attempts)
+                if status == "pending"
+                else (IngestionJobRow.status == status,)
+            )
+            # ponytail: depth is capped to keep the periodic snapshot index-bounded;
+            # add a saturation metric if an exact value above this limit becomes necessary.
+            available = tuple(
+                session.scalars(
+                    select(IngestionJobRow.available_at)
+                    .where(*conditions)
+                    .order_by(IngestionJobRow.available_at, IngestionJobRow.job_id)
+                    .limit(limit)
+                )
+            )
+            oldest = available[0] if available else None
+            if oldest is not None and oldest.tzinfo is None:
+                oldest = oldest.replace(tzinfo=UTC)
+            age_seconds = (
+                max(0.0, (now - oldest).total_seconds()) if oldest is not None else 0.0
+            )
+            snapshots.append(
+                IngestionQueueSnapshot(
+                    status=status,
+                    depth=len(available),
+                    oldest_age_seconds=age_seconds,
+                )
+            )
+        return tuple(snapshots)
 
     def recover_expired_jobs(
         self,

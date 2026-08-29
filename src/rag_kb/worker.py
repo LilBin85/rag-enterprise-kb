@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import UTC, datetime, timedelta
+from http.server import ThreadingHTTPServer
 import logging
 import socket
 import threading
@@ -11,6 +12,7 @@ import time
 from typing import Any
 from uuid import uuid4
 
+from prometheus_client.exposition import MetricsHandler
 from qdrant_client import QdrantClient
 
 from rag_kb.agent.checkpointer import open_postgres_checkpointer
@@ -63,21 +65,89 @@ from rag_kb.observability import (
     MetadataOnlyLlmCallback,
     Observability,
     current_observability,
+    error_category_for,
+    finish_observed_span,
     log_event,
+    observe_span,
     stable_error_code,
 )
 
-
-logger = logging.getLogger(__name__)
 
 _RECOVERY_BATCH_SIZE = 25
 _RECOVERY_INTERVAL_SECONDS = 30.0
 _RECOVERY_TIME_BUDGET_SECONDS = 1.0
 _UPLOAD_RESERVATION_GRACE = timedelta(seconds=30)
+_QUEUE_SNAPSHOT_LIMIT = 1_000
 
 
 class TaskAgentConfigurationError(RuntimeError):
     pass
+
+
+class _WorkerMetricsServer:
+    """Worker 私有 registry 的最小内部 HTTP 服务。"""
+
+    def __init__(self, telemetry: Observability, *, port: int) -> None:
+        self._telemetry = telemetry
+        self._port = port
+        self._server: ThreadingHTTPServer | None = None
+        self._thread: threading.Thread | None = None
+        self._lock = threading.RLock()
+
+    @property
+    def port(self) -> int:
+        server = self._server
+        return int(server.server_address[1]) if server is not None else self._port
+
+    def start(self) -> bool:
+        with self._lock:
+            if self._server is not None:
+                return True
+            base_handler = MetricsHandler.factory(self._telemetry.registry)
+
+            class _MetricsHandler(base_handler):
+                def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract.
+                    if self.path != "/metrics":
+                        self.send_error(404)
+                        return
+                    super().do_GET()
+
+                def log_message(self, _format: str, *_args: object) -> None:
+                    return
+
+            try:
+                server = ThreadingHTTPServer(("0.0.0.0", self._port), _MetricsHandler)
+            except OSError:
+                log_event(
+                    "observability.metrics_server.unavailable",
+                    level=logging.WARNING,
+                    component="worker",
+                    operation="metrics.server",
+                    outcome="failure",
+                    error_code="worker_metrics_server_unavailable",
+                )
+                return False
+            server.daemon_threads = True
+            thread = threading.Thread(
+                target=server.serve_forever,
+                daemon=True,
+                name="rag-kb-worker-metrics",
+            )
+            self._server = server
+            self._thread = thread
+            thread.start()
+            return True
+
+    def close(self) -> None:
+        with self._lock:
+            server, thread = self._server, self._thread
+            self._server = None
+            self._thread = None
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join()
 
 
 class _CapabilityLeaseHeartbeat:
@@ -110,6 +180,12 @@ class _CapabilityLeaseHeartbeat:
             worker_id=self._worker_id,
             lease_seconds=self._lease_seconds,
         )
+        if self._telemetry is not None:
+            self._telemetry.set_worker_capability_available(
+                capability=self._capability_name,
+                protocol=self._protocol_version,
+                available=True,
+            )
         self._thread = threading.Thread(
             target=self._run,
             daemon=True,
@@ -126,9 +202,20 @@ class _CapabilityLeaseHeartbeat:
                     worker_id=self._worker_id,
                     lease_seconds=self._lease_seconds,
                 )
+                if self._telemetry is not None:
+                    self._telemetry.set_worker_capability_available(
+                        capability=self._capability_name,
+                        protocol=self._protocol_version,
+                        available=True,
+                    )
             except Exception as exc:
                 code = stable_error_code(exc)
                 if self._telemetry is not None:
+                    self._telemetry.set_worker_capability_available(
+                        capability=self._capability_name,
+                        protocol=self._protocol_version,
+                        available=False,
+                    )
                     self._telemetry.record_lease_failure(
                         kind="capability",
                         operation="capability.lease.renew",
@@ -158,7 +245,21 @@ class _CapabilityLeaseHeartbeat:
                 worker_id=self._worker_id,
             )
         except Exception:
-            logger.error("Research Agent capability 注销失败")
+            log_event(
+                "capability.lease.unregister.failed",
+                level=logging.ERROR,
+                component="worker",
+                operation="capability.lease.unregister",
+                outcome="failure",
+                error_code="capability_unregister_failed",
+            )
+        finally:
+            if self._telemetry is not None:
+                self._telemetry.set_worker_capability_available(
+                    capability=self._capability_name,
+                    protocol=self._protocol_version,
+                    available=False,
+                )
 
 
 def build_workers(
@@ -359,7 +460,14 @@ def build_task_worker(
             try:
                 worker.close()
             except Exception:
-                logger.error("Research Agent capability 启动清理失败")
+                log_event(
+                    "capability.lease.startup_cleanup.failed",
+                    level=logging.ERROR,
+                    component="worker",
+                    operation="capability.lease.startup",
+                    outcome="failure",
+                    error_code="capability_startup_cleanup_failed",
+                )
             raise
     return worker
 
@@ -388,11 +496,195 @@ def build_task_retention() -> TaskRetentionService:
         raise
 
 
+def _build_queue_snapshot_ports():
+    settings = get_settings()
+    database = build_database(settings.database_url)
+    return (
+        DatabaseTaskRepository(
+            database,
+            task_capability_name=settings.task_agent_capability_name,
+            task_capability_protocol_version=settings.task_agent_protocol_version,
+        ),
+        DocumentRegistryIngestionJobPort(database),
+    )
+
+
+def _run_recovery_window(
+    *,
+    task_worker,
+    task_retention,
+    upload_reconciler,
+    task_queue,
+    ingestion_queue,
+    telemetry: Observability | None,
+    capability_name: str,
+    protocol_version: str,
+    ingestion_max_attempts: int,
+) -> None:
+    """保持恢复、队列快照与日志在同一个低频业务边界内。"""
+    started_at = time.perf_counter()
+    error_code: str | None = None
+    with observe_span(
+        "worker.recovery",
+        attributes={"component": "worker", "operation": "worker.recovery"},
+    ) as span:
+        try:
+            if task_worker is not None and task_retention is not None:
+                actions = (
+                    (
+                        "stale_tool_call",
+                        lambda: task_worker.expire_stale_tool_calls(limit=_RECOVERY_BATCH_SIZE),
+                    ),
+                    (
+                        "stale_knowledge_query",
+                        lambda: task_worker.expire_stale_knowledge_queries(
+                            limit=_RECOVERY_BATCH_SIZE
+                        ),
+                    ),
+                    (
+                        "waiting_task",
+                        lambda: task_retention.expire_waiting_tasks(limit=_RECOVERY_BATCH_SIZE),
+                    ),
+                    (
+                        "tool_result_retention",
+                        lambda: task_retention.purge_expired_tool_results(
+                            limit=_RECOVERY_BATCH_SIZE
+                        ),
+                    ),
+                    (
+                        "task_content_retention",
+                        lambda: task_retention.purge_finished_task_content(
+                            limit=_RECOVERY_BATCH_SIZE
+                        ),
+                    ),
+                    (
+                        "orphan_result",
+                        lambda: task_retention.purge_orphaned_result_objects(
+                            limit=_RECOVERY_BATCH_SIZE
+                        ),
+                    ),
+                )
+                for kind, action in actions:
+                    try:
+                        count = action()
+                    except Exception:
+                        error_code = error_code or "runtime_sweep_failed"
+                        if telemetry is not None:
+                            telemetry.record_recovery_action(kind=kind, outcome="failure")
+                    else:
+                        if telemetry is not None:
+                            telemetry.record_recovery_action(
+                                kind=kind,
+                                outcome="succeeded",
+                                count=count,
+                            )
+
+            try:
+                upload_result = upload_reconciler.reconcile(
+                    older_than=datetime.now(UTC) - _UPLOAD_RESERVATION_GRACE,
+                    limit=_RECOVERY_BATCH_SIZE,
+                    time_budget_seconds=_RECOVERY_TIME_BUDGET_SECONDS,
+                )
+            except Exception:
+                error_code = error_code or "upload_reconciliation_failed"
+                if telemetry is not None:
+                    telemetry.record_recovery_action(
+                        kind="upload_reservation", outcome="failure"
+                    )
+            else:
+                if telemetry is not None:
+                    telemetry.record_recovery_action(
+                        kind="upload_reservation",
+                        outcome="recovered",
+                        count=upload_result.recovered,
+                    )
+                    telemetry.record_recovery_action(
+                        kind="upload_reservation",
+                        outcome="missing",
+                        count=upload_result.missing_objects,
+                    )
+                    telemetry.record_recovery_action(
+                        kind="upload_reservation",
+                        outcome="mismatched",
+                        count=upload_result.content_mismatches,
+                    )
+                    telemetry.record_recovery_action(
+                        kind="upload_reservation",
+                        outcome="failure",
+                        count=upload_result.failed,
+                    )
+                    for _ in range(upload_result.content_mismatches):
+                        telemetry.record_security_boundary_violation(kind="content_hash")
+                if upload_result.failed:
+                    error_code = error_code or "upload_reconciliation_failed"
+
+            if telemetry is not None and task_queue is not None and ingestion_queue is not None:
+                try:
+                    for snapshot in task_queue.queue_snapshot(
+                        capability_name=capability_name,
+                        protocol_version=protocol_version,
+                        limit=_QUEUE_SNAPSHOT_LIMIT,
+                    ):
+                        telemetry.set_task_queue_snapshot(
+                            mode=snapshot.task_mode,
+                            status=snapshot.status,
+                            depth=snapshot.depth,
+                            oldest_age_seconds=snapshot.oldest_age_seconds,
+                        )
+                    telemetry.set_worker_capability_available(
+                        capability=capability_name,
+                        protocol=protocol_version,
+                        available=task_queue.has_active_capability(
+                            capability_name=capability_name,
+                            protocol_version=protocol_version,
+                        ),
+                    )
+                    for snapshot in ingestion_queue.queue_snapshot(
+                        max_attempts=ingestion_max_attempts,
+                        limit=_QUEUE_SNAPSHOT_LIMIT,
+                    ):
+                        telemetry.set_ingestion_queue_snapshot(
+                            status=snapshot.status,
+                            depth=snapshot.depth,
+                            oldest_age_seconds=snapshot.oldest_age_seconds,
+                        )
+                except Exception:
+                    error_code = error_code or "runtime_sweep_failed"
+                    telemetry.record_recovery_action(kind="queue_snapshot", outcome="failure")
+        finally:
+            duration_seconds = time.perf_counter() - started_at
+            outcome = "failure" if error_code is not None else "succeeded"
+            category = error_category_for(error_code) if error_code is not None else "none"
+            finish_observed_span(
+                span,
+                outcome=outcome,
+                error_category=category,
+                error_code=error_code,
+                attributes={"duration_ms": duration_seconds * 1_000},
+            )
+            log_event(
+                "worker.recovery.completed",
+                level=logging.ERROR if error_code is not None else logging.INFO,
+                component="worker",
+                operation="worker.recovery",
+                outcome=outcome,
+                error_category=category,
+                error_code=error_code,
+                duration_ms=duration_seconds * 1_000,
+            )
+
+
 def run(*, watch: bool, poll_seconds: float, max_jobs: int, include_tasks: bool = False) -> int:
     if poll_seconds <= 0 or max_jobs <= 0:
         raise ValueError("invalid_worker_runtime_limits")
     worker, reconciler = build_workers()
     upload_reconciler = build_upload_reconciler()
+    telemetry = current_observability()
+    settings = get_settings()
+    task_queue = None
+    ingestion_queue = None
+    if telemetry is not None and telemetry.metrics_enabled:
+        task_queue, ingestion_queue = _build_queue_snapshot_ports()
     task_worker = None
     task_retention = None
     try:
@@ -411,70 +703,27 @@ def run(*, watch: bool, poll_seconds: float, max_jobs: int, include_tasks: bool 
         while True:
             now = time.monotonic()
             if now >= next_recovery_at:
-                if task_worker is not None:
-                    try:
-                        assert task_retention is not None
-                        expired_tools = task_worker.expire_stale_tool_calls(
-                            limit=_RECOVERY_BATCH_SIZE
-                        )
-                        expired_queries = task_worker.expire_stale_knowledge_queries(
-                            limit=_RECOVERY_BATCH_SIZE
-                        )
-                        expired_waiting = task_retention.expire_waiting_tasks(
-                            limit=_RECOVERY_BATCH_SIZE
-                        )
-                        purged_results = task_retention.purge_expired_tool_results(
-                            limit=_RECOVERY_BATCH_SIZE
-                        )
-                        purged_content = task_retention.purge_finished_task_content(
-                            limit=_RECOVERY_BATCH_SIZE
-                        )
-                        purged_orphans = task_retention.purge_orphaned_result_objects(
-                            limit=_RECOVERY_BATCH_SIZE
-                        )
-                        if (
-                            expired_tools
-                            or expired_queries
-                            or expired_waiting
-                            or purged_results
-                            or purged_content
-                            or purged_orphans
-                        ):
-                            logger.info(
-                                "过期运行恢复结束 tools=%s knowledge_queries=%s "
-                                "waiting_tasks=%s purged_tool_results=%s "
-                                "purged_task_content=%s purged_orphans=%s",
-                                expired_tools,
-                                expired_queries,
-                                expired_waiting,
-                                purged_results,
-                                purged_content,
-                                purged_orphans,
-                            )
-                    except Exception:
-                        logger.error("运行恢复失败 error_code=runtime_sweep_failed")
-                try:
-                    upload_result = upload_reconciler.reconcile(
-                        older_than=datetime.now(UTC) - _UPLOAD_RESERVATION_GRACE,
-                        limit=_RECOVERY_BATCH_SIZE,
-                        time_budget_seconds=_RECOVERY_TIME_BUDGET_SECONDS,
-                    )
-                    if upload_result.scanned:
-                        logger.info(
-                            "上传预留恢复结束 scanned=%s recovered=%s missing=%s mismatched=%s failed=%s",
-                            upload_result.scanned,
-                            upload_result.recovered,
-                            upload_result.missing_objects,
-                            upload_result.content_mismatches,
-                            upload_result.failed,
-                        )
-                except Exception:
-                    logger.error("上传预留恢复失败 error_code=upload_reconciliation_failed")
+                _run_recovery_window(
+                    task_worker=task_worker,
+                    task_retention=task_retention,
+                    upload_reconciler=upload_reconciler,
+                    task_queue=task_queue,
+                    ingestion_queue=ingestion_queue,
+                    telemetry=telemetry,
+                    capability_name=settings.task_agent_capability_name,
+                    protocol_version=settings.task_agent_protocol_version,
+                    ingestion_max_attempts=worker.max_attempts,
+                )
                 next_recovery_at = time.monotonic() + _RECOVERY_INTERVAL_SECONDS
 
             queue_name, current_worker = queues[queue_index]
             queue_index = (queue_index + 1) % len(queues)
             result = current_worker.run_once()
+            if telemetry is not None:
+                telemetry.set_worker_last_loop(
+                    worker_kind=queue_name,
+                    timestamp_seconds=time.time(),
+                )
             if result.status == "idle":
                 idle_queues += 1
                 if idle_queues < len(queues):
@@ -487,21 +736,6 @@ def run(*, watch: bool, poll_seconds: float, max_jobs: int, include_tasks: bool 
 
             idle_queues = 0
             processed += 1
-            if queue_name == "task":
-                logger.info(
-                    "通用任务结束 status=%s task_id=%s error_code=%s",
-                    result.status,
-                    result.task_id,
-                    result.error_code,
-                )
-            elif queue_name == "projection":
-                logger.info(
-                    "投影收敛结束 status=%s document_id=%s",
-                    result.status,
-                    result.document_id,
-                )
-            else:
-                logger.info("摄取任务结束 status=%s job_id=%s", result.status, result.job_id)
             if processed >= max_jobs and not watch:
                 return 0
     finally:
@@ -532,6 +766,13 @@ def main() -> int:
 
     configure_json_logging(service="rag-kb-worker", level=settings.log_level)
     telemetry.start()
+    metrics_server = (
+        _WorkerMetricsServer(telemetry, port=settings.worker_metrics_port)
+        if settings.metrics_enabled
+        else None
+    )
+    if metrics_server is not None:
+        metrics_server.start()
     try:
         with telemetry.activate():
             return run(
@@ -543,7 +784,11 @@ def main() -> int:
     except KeyboardInterrupt:
         return 0
     finally:
-        telemetry.shutdown()
+        try:
+            if metrics_server is not None:
+                metrics_server.close()
+        finally:
+            telemetry.shutdown()
 
 
 if __name__ == "__main__":

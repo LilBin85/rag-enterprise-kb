@@ -173,6 +173,26 @@ def test_vector_tenant_and_text_hash_contracts_fail_closed() -> None:
         )
 
 
+def test_security_boundary_metrics_use_only_fixed_kinds() -> None:
+    observability, _exporter = _telemetry()
+    try:
+        with observability.activate():
+            with pytest.raises(RetrievalSecurityError):
+                EnterpriseRetriever(
+                    Authorization(), Vectors(replace(chunk(), tenant_id="tenant-b"))
+                ).search("差旅", auth())
+            with pytest.raises(RetrievalSecurityError):
+                EnterpriseRetriever(
+                    Authorization(), Vectors(replace(chunk(), text="被篡改"))
+                ).search("差旅", auth())
+        payload = observability.metrics_payload().decode()
+    finally:
+        observability.shutdown()
+
+    assert 'kind="acl"' in payload
+    assert 'kind="content_hash"' in payload
+
+
 def test_reranker_cannot_change_binding_set_or_emit_nan() -> None:
     with pytest.raises(RetrievalSecurityError, match="binding_changed"):
         EnterpriseRetriever(

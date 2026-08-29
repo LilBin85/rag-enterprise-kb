@@ -1,0 +1,44 @@
+{
+  "uid": "rag-kb-agent",
+  "title": "RAG KB / Agent",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Task run outcomes",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum by (mode, outcome) (rate(rag_kb_task_runs_total[5m]))", "legendFormat": "{{mode}} {{outcome}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Tool outcomes and timeouts",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "sum by (mode, outcome) (rate(rag_kb_tool_calls_total[5m]))", "legendFormat": "{{mode}} {{outcome}}", "refId": "A"},
+        {"expr": "sum(rate(rag_kb_tool_calls_total{error_category=\"timeout\"}[5m]))", "legendFormat": "timeout/s", "refId": "B"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Approval wait P95 and lease failures",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(rag_kb_approval_wait_duration_seconds_bucket[5m])))", "legendFormat": "approval p95", "refId": "A"},
+        {"expr": "sum(rate(rag_kb_lease_failures_total[5m]))", "legendFormat": "lease failures/s", "refId": "B"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Task queue age",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "max by (mode, status) (rag_kb_task_queue_oldest_age_seconds)", "legendFormat": "{{mode}} {{status}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+    }
+  ]
+}

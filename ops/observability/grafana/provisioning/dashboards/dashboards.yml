@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: rag-kb
+    orgId: 1
+    folder: RAG KB
+    type: file
+    disableDeletion: true
+    editable: false
+    options:
+      path: /var/lib/grafana/dashboards

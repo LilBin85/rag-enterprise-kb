@@ -131,5 +131,6 @@ def test_checkpoint_failure_is_safe_telemetry_without_checkpoint_contents() -> N
     span = next(item for item in spans if item.name == "checkpoint.write")
     assert span.status.status_code.name == "ERROR"
     assert 'outcome="failure"' in payload
+    assert 'kind="fencing"' in payload
     assert secret not in payload
     assert secret not in rendered_spans

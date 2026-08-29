@@ -4,6 +4,9 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from threading import Event
 
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
 from rag_kb.application.ingestion_worker import (
     ClaimedIngestionJob,
     IngestionWorker,
@@ -15,6 +18,7 @@ from rag_kb.domain.indexing import (
     ParsedDocument,
     compute_chunk_manifest_digest,
 )
+from rag_kb.observability import Observability, current_trace_headers
 
 
 def claimed_job(*, attempts: int = 1) -> ClaimedIngestionJob:
@@ -68,6 +72,21 @@ def index_receipt(job: ClaimedIngestionJob, parsed: ParsedDocument) -> IndexRece
         manifest_digest=parsed.manifest_digest,
         verified_at=datetime.now(UTC),
     )
+
+
+def telemetry() -> tuple[Observability, InMemorySpanExporter]:
+    observability = Observability(
+        enabled=True,
+        metrics_enabled=True,
+        service_name="rag-kb-test",
+        otlp_endpoint="",
+        trace_sample_ratio=1.0,
+    )
+    observability.start()
+    exporter = InMemorySpanExporter()
+    assert observability.provider is not None
+    observability.provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return observability, exporter
 
 
 class FakeJobs:
@@ -466,3 +485,71 @@ def test_long_parse_renews_ingestion_lease_in_background() -> None:
 
     assert result.status == "succeeded"
     assert jobs.renewals >= 2
+
+
+def test_ingestion_telemetry_links_producer_and_excludes_document_content() -> None:
+    class RetiringIndexer(FakeIndexer):
+        def retire(self, _job, _receipt) -> None:
+            return None
+
+    observability, exporter = telemetry()
+    secret = "document body Bearer fake-token C:/private/object"
+    try:
+        with observability.activate():
+            with observability.span("producer.request") as producer:
+                traceparent, tracestate = current_trace_headers()
+                job = replace(
+                    claimed_job(),
+                    source_file_name=secret,
+                    pending_traceparent=traceparent,
+                    pending_tracestate=tracestate,
+                )
+                result = worker(FakeJobs([job]), FakeParser(), RetiringIndexer()).run_once()
+                producer_context = producer.get_span_context()
+        payload = observability.metrics_payload().decode()
+        spans = exporter.get_finished_spans()
+        rendered_spans = repr(spans)
+    finally:
+        observability.shutdown()
+
+    run_span = next(span for span in spans if span.name == "ingestion.run")
+    assert result.status == "succeeded"
+    assert {
+        "ingestion.run",
+        "ingestion.parse",
+        "projection.index",
+        "projection.publish",
+        "projection.bind",
+        "projection.retire",
+    } <= {span.name for span in spans}
+    assert run_span.parent is None or not run_span.parent.is_valid
+    assert len(run_span.links) == 1
+    assert run_span.links[0].context.trace_id == producer_context.trace_id
+    assert 'phase="ingest"' in payload
+    assert 'phase="parse"' in payload
+    assert "rag_kb_ingestion_jobs_total" in payload
+    assert "rag_kb_ingestion_phase_duration_seconds" in payload
+    assert secret not in payload
+    assert secret not in rendered_spans
+
+
+def test_ingestion_lease_failure_emits_once_while_successful_renewals_stay_quiet() -> None:
+    class FailingLeaseJobs(FakeJobs):
+        def renew_lease(self, _job, *, lease_seconds) -> None:
+            assert lease_seconds > 0
+            raise RuntimeError("lease secret Bearer fake-token")
+
+    observability, exporter = telemetry()
+    try:
+        with observability.activate():
+            result = worker(FailingLeaseJobs([claimed_job()]), FakeParser(), FakeIndexer()).run_once()
+        payload = observability.metrics_payload().decode()
+        spans = exporter.get_finished_spans()
+    finally:
+        observability.shutdown()
+
+    assert result.status == "retry_scheduled"
+    assert len([span for span in spans if span.name == "lease.renew"]) == 1
+    assert 'kind="ingestion"' in payload
+    assert "fake-token" not in payload
+    assert "fake-token" not in repr(spans)

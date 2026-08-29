@@ -423,6 +423,27 @@ def test_write_crash_is_unknown_and_never_success(stage5) -> None:
         assert row is not None and row.status == "unknown" and row.result_hash is None
 
 
+def test_unknown_write_records_fixed_security_boundary_metric(stage5) -> None:
+    database, requester, approver, _, lease = stage5
+    service, binding = _approved(database, requester, approver)
+    executor = _executor(
+        database,
+        ToolRegistry(adapters={"create_report_artifact": _CrashingAdapter()}),
+        service,
+    )
+    observability, _exporter = _telemetry()
+    try:
+        with observability.activate():
+            result = executor.execute(_request(requester, binding.approval_id, lease))
+        payload = observability.metrics_payload().decode()
+    finally:
+        executor.close()
+        observability.shutdown()
+
+    assert result.status == "unknown"
+    assert 'kind="write_unknown"' in payload
+
+
 def test_unknown_isolated_from_artifact_and_task_after_object_write_failure(stage5) -> None:
     database, requester, approver, _, lease = stage5
     service, binding = _approved(database, requester, approver)

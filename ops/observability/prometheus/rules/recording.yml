@@ -1,0 +1,14 @@
+groups:
+  - name: rag-kb-recording
+    interval: 30s
+    rules:
+      - record: rag_kb:http_requests_per_second:rate5m
+        expr: sum(rate(rag_kb_http_requests_total[5m]))
+      - record: rag_kb:http_5xx_ratio:rate5m
+        expr: sum(rate(rag_kb_http_requests_total{status_class="5xx"}[5m])) / clamp_min(sum(rate(rag_kb_http_requests_total[5m])), 0.001)
+      - record: rag_kb:knowledge_query_p95_seconds:5m
+        expr: histogram_quantile(0.95, sum by (le) (rate(rag_kb_knowledge_query_duration_seconds_bucket[5m])))
+      - record: rag_kb:task_queue_claimable_depth
+        expr: sum(rag_kb_task_queue_depth{status=~"planning|running"})
+      - record: rag_kb:ingestion_queue_claimable_depth
+        expr: sum(rag_kb_ingestion_queue_depth{status="pending"})

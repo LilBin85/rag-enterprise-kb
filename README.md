@@ -30,6 +30,16 @@ Research Agent 只暴露 `search_knowledge`、`fetch_evidence`、`list_document_
 docker compose up --build -d
 ```
 
+本地演示完整观测链路时，改用以下命令。Grafana、Jaeger 和 Prometheus 仅绑定到
+`127.0.0.1`；Worker 的 `:9464/metrics` 只在 Compose 网络内供 Prometheus 抓取。
+
+```powershell
+docker compose --profile observability up --build -d
+```
+
+入口：Grafana `http://127.0.0.1:3000`、Jaeger `http://127.0.0.1:16686`、Prometheus
+`http://127.0.0.1:9090`。观测配置不采集请求、正文、Prompt、模型输出或工具 payload。
+
 本机未安装 Docker 时可使用下面的 Windows/Conda 方式：
 
 ```powershell

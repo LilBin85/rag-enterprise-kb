@@ -1,0 +1,38 @@
+{
+  "uid": "rag-kb-security",
+  "title": "RAG KB / Security",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Security boundary violations",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum by (kind) (rate(rag_kb_security_boundary_violations_total[5m]))", "legendFormat": "{{kind}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "WRITE unknown results",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum(rate(rag_kb_tool_calls_total{mode=\"write\",outcome=\"unknown\"}[5m]))", "legendFormat": "unknown/s", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Approval decisions",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum by (decision, outcome) (rate(rag_kb_approvals_total[5m]))", "legendFormat": "{{decision}} {{outcome}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Fencing lease failures",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum by (kind, operation) (rate(rag_kb_lease_failures_total[5m]))", "legendFormat": "{{kind}} {{operation}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+    }
+  ]
+}

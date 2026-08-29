@@ -34,6 +34,10 @@ _UNITS = (
     "%",
     "元",
 )
+_EXACT_QUANTITY = re.compile(
+    rf"(?<!哪)({_NUMBER})\s*({'|'.join(re.escape(unit) for unit in _UNITS)})",
+    re.IGNORECASE,
+)
 
 
 class DeterministicEvidenceSufficiencyPolicy:
@@ -125,8 +129,17 @@ def _requested_units(query: str) -> tuple[str, ...]:
     )
 
 
+def _exact_quantities(query: str) -> tuple[tuple[str, str], ...]:
+    return tuple(dict.fromkeys(_EXACT_QUANTITY.findall(query)))
+
+
 def _has_explicit_requirements(query: str) -> bool:
-    return bool(_requested_units(query) or "多久" in query or _ASCII_ANCHOR.search(query))
+    return bool(
+        _requested_units(query)
+        or _exact_quantities(query)
+        or "多久" in query
+        or _ASCII_ANCHOR.search(query)
+    )
 
 
 def _group_insufficiency_code(
@@ -135,6 +148,13 @@ def _group_insufficiency_code(
 ) -> str | None:
     evidence = "\n".join(candidate.text for candidate in candidates)
     bound_metadata = "\n".join(candidate.source_file_name for candidate in candidates)
+    for number, unit in _exact_quantities(query):
+        if re.search(
+            rf"{re.escape(number)}\s*{re.escape(unit)}",
+            evidence,
+            re.IGNORECASE,
+        ) is None:
+            return "evidence_quantitative_fact_missing"
     for unit in _requested_units(query):
         if re.search(rf"{_NUMBER}\s*{re.escape(unit)}", evidence, re.IGNORECASE) is None:
             return "evidence_quantitative_fact_missing"

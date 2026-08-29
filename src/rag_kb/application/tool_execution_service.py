@@ -211,6 +211,8 @@ class ToolExecutionService:
                         error_category=category,
                         duration_seconds=duration_seconds,
                     )
+                    if definition.mode is ToolMode.WRITE and outcome == "unknown":
+                        telemetry.record_security_boundary_violation(kind="write_unknown")
                 log_event(
                     "tool.execution.completed",
                     level=logging.ERROR if category != "none" else logging.INFO,

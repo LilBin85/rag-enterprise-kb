@@ -27,7 +27,14 @@ from opentelemetry.sdk.trace.export import (
 from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 from opentelemetry.trace import Link, NoOpTracerProvider, SpanKind, Status, StatusCode, use_span
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Histogram, generate_latest
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+)
 
 try:  # 保持 HTTP-only 运行环境无需为了遥测导入 LangChain。
     from langchain_core.callbacks import BaseCallbackHandler
@@ -99,6 +106,40 @@ _KNOWLEDGE_REASONS = frozenset(
 )
 _RETRIEVAL_STAGES = frozenset(
     {"authorization", "dense", "sparse", "fuse", "rerank", "revalidate", "pack"}
+)
+_INGESTION_JOB_PHASES = frozenset({"ingest", "publish", "cleanup"})
+_INGESTION_PHASES = frozenset({"parse", "index", "publish", "bind", "retire"})
+_INGESTION_OUTCOMES = frozenset(
+    {"succeeded", "retry_scheduled", "failed", "failure_recording_failed"}
+)
+_PROJECTION_PHASES = frozenset({"audit", "reconcile"})
+_PROJECTION_OUTCOMES = frozenset(
+    {"succeeded", "retry_scheduled", "failure_recording_failed"}
+)
+_PHASE_OUTCOMES = frozenset({"succeeded", "failure"})
+_RECOVERY_KINDS = frozenset(
+    {
+        "stale_tool_call",
+        "stale_knowledge_query",
+        "waiting_task",
+        "tool_result_retention",
+        "task_content_retention",
+        "orphan_result",
+        "upload_reservation",
+        "queue_snapshot",
+    }
+)
+_RECOVERY_OUTCOMES = frozenset(
+    {"succeeded", "recovered", "missing", "mismatched", "failure"}
+)
+_TASK_QUEUE_MODES = frozenset({"research", "controlled_action"})
+_TASK_QUEUE_STATUSES = frozenset(
+    {"planning", "running", "waiting_for_user", "waiting_for_approval"}
+)
+_INGESTION_QUEUE_STATUSES = frozenset({"awaiting_object", "pending", "running"})
+_WORKER_KINDS = frozenset({"task", "ingestion", "projection"})
+_SECURITY_BOUNDARY_KINDS = frozenset(
+    {"acl", "tenant", "content_hash", "fencing", "write_unknown"}
 )
 _SAFE_SPAN_FIELDS = _SAFE_LOG_FIELDS
 
@@ -180,6 +221,10 @@ def error_category_for(code: str | None) -> str:
 
 def _metric_error_category(value: str) -> str:
     return value if value in _ERROR_CATEGORIES else "unknown"
+
+
+def _bounded_metric_value(value: str, allowed: frozenset[str], fallback: str) -> str:
+    return value if value in allowed else fallback
 
 
 @contextmanager
@@ -639,6 +684,80 @@ class Observability:
             buckets=_LONG_DURATION_BUCKETS,
             registry=self.registry,
         )
+        self._ingestion_jobs = Counter(
+            "rag_kb_ingestion_jobs_total",
+            "Ingestion job outcomes.",
+            ("phase", "outcome", "error_category"),
+            registry=self.registry,
+        )
+        self._ingestion_phase_duration = Histogram(
+            "rag_kb_ingestion_phase_duration_seconds",
+            "Ingestion phase duration in seconds.",
+            ("phase", "outcome"),
+            buckets=_LONG_DURATION_BUCKETS,
+            registry=self.registry,
+        )
+        self._projection_reconciliations = Counter(
+            "rag_kb_projection_reconciliations_total",
+            "Projection reconciliation outcomes.",
+            ("phase", "outcome"),
+            registry=self.registry,
+        )
+        self._projection_reconcile_duration = Histogram(
+            "rag_kb_projection_reconcile_duration_seconds",
+            "Projection reconciliation duration in seconds.",
+            ("phase", "outcome"),
+            buckets=_LONG_DURATION_BUCKETS,
+            registry=self.registry,
+        )
+        self._recovery_actions = Counter(
+            "rag_kb_recovery_actions_total",
+            "Worker recovery actions.",
+            ("kind", "outcome"),
+            registry=self.registry,
+        )
+        self._security_boundary_violations = Counter(
+            "rag_kb_security_boundary_violations_total",
+            "Security boundary violations.",
+            ("kind",),
+            registry=self.registry,
+        )
+        self._task_queue_depth = Gauge(
+            "rag_kb_task_queue_depth",
+            "Task queue depth by fixed mode and status.",
+            ("mode", "status"),
+            registry=self.registry,
+        )
+        self._task_queue_oldest_age = Gauge(
+            "rag_kb_task_queue_oldest_age_seconds",
+            "Age of the oldest task queue item by fixed mode and status.",
+            ("mode", "status"),
+            registry=self.registry,
+        )
+        self._ingestion_queue_depth = Gauge(
+            "rag_kb_ingestion_queue_depth",
+            "Ingestion queue depth by fixed status.",
+            ("status",),
+            registry=self.registry,
+        )
+        self._ingestion_queue_oldest_age = Gauge(
+            "rag_kb_ingestion_queue_oldest_age_seconds",
+            "Age of the oldest ingestion queue item by fixed status.",
+            ("status",),
+            registry=self.registry,
+        )
+        self._worker_last_loop = Gauge(
+            "rag_kb_worker_last_loop_timestamp_seconds",
+            "Unix timestamp of the last completed worker loop.",
+            ("worker_kind",),
+            registry=self.registry,
+        )
+        self._worker_capability_available = Gauge(
+            "rag_kb_worker_capability_available",
+            "Whether the fixed task worker capability has an active lease.",
+            ("capability", "protocol"),
+            registry=self.registry,
+        )
         self._service_name = service_name
         self._otlp_endpoint = otlp_endpoint
         self._trace_sample_ratio = trace_sample_ratio
@@ -755,6 +874,31 @@ class Observability:
         with self.activate():
             with self.span(
                 "task.run",
+                attributes=attributes,
+                context=Context(),
+                links=links,
+                kind=SpanKind.CONSUMER,
+            ) as span:
+                yield span
+
+    @contextmanager
+    def ingestion_run_span(
+        self,
+        *,
+        traceparent: str | None,
+        tracestate: str | None,
+        attributes: Mapping[str, object],
+    ) -> Iterator[object]:
+        """摄取领取建立新 root，仅以 Link 关联上传请求。"""
+        producer = extract_trace_context(traceparent, tracestate)
+        links: list[Link] = []
+        if producer is not None:
+            producer_span = trace.get_current_span(producer).get_span_context()
+            if producer_span.is_valid:
+                links.append(Link(producer_span))
+        with self.activate():
+            with self.span(
+                "ingestion.run",
                 attributes=attributes,
                 context=Context(),
                 links=links,
@@ -887,6 +1031,99 @@ class Observability:
         if wait_seconds is not None:
             self._approval_wait.labels(decision=decision).observe(max(0, wait_seconds))
 
+    def record_ingestion_job(
+        self,
+        *,
+        phase: str,
+        outcome: str,
+        error_category: str,
+    ) -> None:
+        if not self.metrics_enabled:
+            return
+        self._ingestion_jobs.labels(
+            phase=_bounded_metric_value(phase, _INGESTION_JOB_PHASES, "ingest"),
+            outcome=_bounded_metric_value(outcome, _INGESTION_OUTCOMES, "failed"),
+            error_category=_metric_error_category(error_category),
+        ).inc()
+
+    def record_ingestion_phase(
+        self, *, phase: str, outcome: str, duration_seconds: float
+    ) -> None:
+        if not self.metrics_enabled:
+            return
+        self._ingestion_phase_duration.labels(
+            phase=_bounded_metric_value(phase, _INGESTION_PHASES, "parse"),
+            outcome=_bounded_metric_value(outcome, _PHASE_OUTCOMES, "failure"),
+        ).observe(max(0, duration_seconds))
+
+    def record_projection_reconciliation(
+        self, *, phase: str, outcome: str, duration_seconds: float
+    ) -> None:
+        if not self.metrics_enabled:
+            return
+        bounded_phase = _bounded_metric_value(phase, _PROJECTION_PHASES, "reconcile")
+        bounded_outcome = _bounded_metric_value(
+            outcome, _PROJECTION_OUTCOMES, "failure_recording_failed"
+        )
+        self._projection_reconciliations.labels(
+            phase=bounded_phase, outcome=bounded_outcome
+        ).inc()
+        self._projection_reconcile_duration.labels(
+            phase=bounded_phase, outcome=bounded_outcome
+        ).observe(max(0, duration_seconds))
+
+    def record_recovery_action(self, *, kind: str, outcome: str, count: int = 1) -> None:
+        if not self.metrics_enabled or count <= 0:
+            return
+        bounded_kind = _bounded_metric_value(kind, _RECOVERY_KINDS, "queue_snapshot")
+        bounded_outcome = _bounded_metric_value(outcome, _RECOVERY_OUTCOMES, "failure")
+        self._recovery_actions.labels(kind=bounded_kind, outcome=bounded_outcome).inc(count)
+
+    def record_security_boundary_violation(self, *, kind: str) -> None:
+        if self.metrics_enabled and kind in _SECURITY_BOUNDARY_KINDS:
+            self._security_boundary_violations.labels(kind=kind).inc()
+
+    def set_task_queue_snapshot(
+        self, *, mode: str, status: str, depth: int, oldest_age_seconds: float
+    ) -> None:
+        if not self.metrics_enabled:
+            return
+        bounded_mode = _bounded_metric_value(mode, _TASK_QUEUE_MODES, "research")
+        bounded_status = _bounded_metric_value(status, _TASK_QUEUE_STATUSES, "planning")
+        self._task_queue_depth.labels(mode=bounded_mode, status=bounded_status).set(max(0, depth))
+        self._task_queue_oldest_age.labels(
+            mode=bounded_mode, status=bounded_status
+        ).set(max(0, oldest_age_seconds))
+
+    def set_ingestion_queue_snapshot(
+        self, *, status: str, depth: int, oldest_age_seconds: float
+    ) -> None:
+        if not self.metrics_enabled:
+            return
+        bounded_status = _bounded_metric_value(status, _INGESTION_QUEUE_STATUSES, "pending")
+        self._ingestion_queue_depth.labels(status=bounded_status).set(max(0, depth))
+        self._ingestion_queue_oldest_age.labels(status=bounded_status).set(
+            max(0, oldest_age_seconds)
+        )
+
+    def set_worker_last_loop(self, *, worker_kind: str, timestamp_seconds: float) -> None:
+        if self.metrics_enabled and worker_kind in _WORKER_KINDS:
+            self._worker_last_loop.labels(worker_kind=worker_kind).set(
+                max(0, timestamp_seconds)
+            )
+
+    def set_worker_capability_available(
+        self, *, capability: str, protocol: str, available: bool
+    ) -> None:
+        if (
+            self.metrics_enabled
+            and capability == "task-agent"
+            and protocol == "m2-fenced-v1"
+        ):
+            self._worker_capability_available.labels(
+                capability=capability, protocol=protocol
+            ).set(1 if available else 0)
+
     def record_lease_failure(
         self,
         *,
@@ -910,6 +1147,8 @@ class Observability:
                 )
                 if self.metrics_enabled:
                     self._lease_failures.labels(kind=kind, operation=operation).inc()
+                if "stale" in error_code or "fenc" in error_code:
+                    self.record_security_boundary_violation(kind="fencing")
                 log_event(
                     "lease.renew.failed",
                     level=logging.ERROR,

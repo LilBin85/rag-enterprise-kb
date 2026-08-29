@@ -1,0 +1,424 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: rag-kb
+    folder: RAG KB
+    interval: 1m
+    rules:
+      - uid: rag-kb-security-boundary
+        title: Security boundary violation
+        condition: B
+        data:
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: sum(increase(rag_kb_security_boundary_violations_total[5m]))
+              instant: true
+              intervalMs: 60000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        noDataState: NoData
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: A security boundary metric increased.
+        labels:
+          severity: critical
+      - uid: rag-kb-write-unknown
+        title: WRITE result unknown
+        condition: B
+        data:
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: sum(increase(rag_kb_tool_calls_total{mode="write",outcome="unknown"}[5m]))
+              instant: true
+              intervalMs: 60000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        noDataState: NoData
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: A WRITE tool result is unknown.
+        labels:
+          severity: critical
+      - uid: rag-kb-queue-without-capability
+        title: Task queue has no capability lease
+        condition: B
+        data:
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: sum(rag_kb_task_queue_depth{status=~"planning|running"}) * (1 - max(rag_kb_worker_capability_available{capability="task-agent",protocol="m2-fenced-v1"}))
+              instant: true
+              intervalMs: 60000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        noDataState: NoData
+        execErrState: Error
+        for: 1m
+        annotations:
+          summary: Tasks are queued without an active task-agent lease.
+        labels:
+          severity: critical
+      - uid: rag-kb-lease-failures
+        title: Lease renewal failures
+        condition: B
+        data:
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: sum(increase(rag_kb_lease_failures_total[5m]))
+              instant: true
+              intervalMs: 60000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Lease failures have persisted for five minutes.
+        labels:
+          severity: high
+      - uid: rag-kb-projection-unconverged
+        title: Projection reconciliation is not converging
+        condition: B
+        data:
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: sum(increase(rag_kb_projection_reconciliations_total{outcome=~"retry_scheduled|failure_recording_failed"}[10m]))
+              instant: true
+              intervalMs: 60000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [1]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        noDataState: NoData
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: Projection retry or failure recording occurred twice in ten minutes.
+        labels:
+          severity: high
+      - uid: rag-kb-api-or-dependency-errors
+        title: API or dependency error rate is elevated
+        condition: B
+        data:
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: sum(rate(rag_kb_http_requests_total{status_class="5xx"}[5m])) / clamp_min(sum(rate(rag_kb_http_requests_total[5m])), 0.001) + sum(rate(rag_kb_llm_calls_total{outcome="failure"}[5m]))
+              instant: true
+              intervalMs: 60000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0.05]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: API 5xx or model dependency failures exceed the initial threshold.
+        labels:
+          severity: high
+      - uid: rag-kb-queue-age
+        title: Queue age exceeds the initial SLO
+        condition: B
+        data:
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: max(rag_kb_task_queue_oldest_age_seconds{status=~"planning|running"} or rag_kb_ingestion_queue_oldest_age_seconds{status="pending"})
+              instant: true
+              intervalMs: 60000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [900]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: The oldest runnable task or ingestion job is older than 15 minutes.
+        labels:
+          severity: medium
+      - uid: rag-kb-operation-reliability
+        title: Tool timeout, approval expiry, or cleanup failure
+        condition: B
+        data:
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: sum(increase(rag_kb_tool_calls_total{error_category="timeout"}[15m])) + sum(increase(rag_kb_approvals_total{decision="expired"}[15m])) + sum(increase(rag_kb_recovery_actions_total{kind=~"tool_result_retention|task_content_retention|orphan_result",outcome="failure"}[15m]))
+              instant: true
+              intervalMs: 60000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+        noDataState: NoData
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: A tool timeout, expired approval, or retention cleanup failure occurred.
+        labels:
+          severity: medium

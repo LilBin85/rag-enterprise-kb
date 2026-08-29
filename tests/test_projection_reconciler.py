@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
 from rag_kb.application.ingestion_worker import ClaimedIngestionJob
 from rag_kb.application.projection_reconciler import (
     ClaimedProjectionRepair,
@@ -14,6 +17,7 @@ from rag_kb.domain.indexing import (
     ParsedDocument,
     compute_chunk_manifest_digest,
 )
+from rag_kb.observability import Observability
 
 
 def claim() -> ClaimedProjectionRepair:
@@ -144,6 +148,21 @@ class Index:
 
     def discard_unbound(self, job):
         self.discarded_unbound.append(job.projection_generation)
+
+
+def telemetry() -> tuple[Observability, InMemorySpanExporter]:
+    observability = Observability(
+        enabled=True,
+        metrics_enabled=True,
+        service_name="rag-kb-test",
+        otlp_endpoint="",
+        trace_sample_ratio=1.0,
+    )
+    observability.start()
+    exporter = InMemorySpanExporter()
+    assert observability.provider is not None
+    observability.provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return observability, exporter
 
 
 def test_projection_reconciler_rebuilds_and_checkpoints_exact_generation() -> None:
@@ -306,3 +325,51 @@ def test_audit_rebuilds_only_after_projection_mismatch() -> None:
     assert index.indexed == [8]
     assert index.published == [(8, 8, "active")]
     assert index.retired == [8]
+
+
+def test_projection_telemetry_records_verify_and_reconcile_without_document_content() -> None:
+    base = claim()
+    document = parsed(base.job)
+    audit = replace(
+        base,
+        job=replace(
+            base.job,
+            phase="audit",
+            index_receipt=IndexReceipt(
+                tenant_id=base.job.tenant_id,
+                job_id=base.job.job_id,
+                version_id=base.job.version_id,
+                source_content_hash=base.job.content_hash,
+                index_version=base.job.index_version,
+                projection_generation=base.job.projection_generation,
+                chunk_count=len(document.chunks),
+                manifest_digest=document.manifest_digest,
+                verified_at=datetime.now(UTC),
+            ),
+        ),
+    )
+    observability, exporter = telemetry()
+    secret = "当前有效正文"
+    try:
+        with observability.activate():
+            result = ProjectionReconciler(
+                Repairs(audit),
+                Parser(),
+                Index(),
+                worker_id="reconciler-a",
+            ).run_once()
+        payload = observability.metrics_payload().decode()
+        spans = exporter.get_finished_spans()
+        rendered_spans = repr(spans)
+    finally:
+        observability.shutdown()
+
+    assert result.status == "succeeded"
+    assert {"projection.reconcile", "projection.verify"} <= {
+        span.name for span in spans
+    }
+    assert "rag_kb_projection_reconciliations_total" in payload
+    assert "rag_kb_projection_reconcile_duration_seconds" in payload
+    assert 'phase="audit"' in payload
+    assert secret not in payload
+    assert secret not in rendered_spans

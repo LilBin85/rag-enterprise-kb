@@ -1,0 +1,36 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  tail_sampling:
+    decision_wait: 5s
+    num_traces: 1000
+    expected_new_traces_per_sec: 10
+    policies:
+      - name: local-demo
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 100
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, tail_sampling, batch]
+      exporters: [otlp/jaeger]

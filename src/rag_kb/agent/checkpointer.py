@@ -213,6 +213,10 @@ class FencedPostgresSaver(BaseCheckpointSaver):
                 telemetry = current_observability()
                 if telemetry is not None:
                     telemetry.record_checkpoint_write(outcome="failure")
+                    if isinstance(exc, TaskCheckpointError) and (
+                        "lease_stale" in error_code or "fenc" in error_code
+                    ):
+                        telemetry.record_security_boundary_violation(kind="fencing")
                 log_event(
                     "checkpoint.write.failed",
                     level=40,

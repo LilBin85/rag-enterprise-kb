@@ -70,6 +70,11 @@ def test_compose_contains_migration_api_worker_and_health_dependencies() -> None
         "TOOL_RESULT_TTL_SECONDS": "${TOOL_RESULT_TTL_SECONDS:-604800}",
         "TASK_RESULT_RETENTION_DAYS": "${TASK_RESULT_RETENTION_DAYS:-7}",
         "RESULT_OBJECT_ORPHAN_GRACE_SECONDS": "${RESULT_OBJECT_ORPHAN_GRACE_SECONDS:-3600}",
+        "OBSERVABILITY_ENABLED": "${OBSERVABILITY_ENABLED:-true}",
+        "METRICS_ENABLED": "${METRICS_ENABLED:-true}",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}",
+        "OTEL_TRACE_SAMPLE_RATIO": "${OTEL_TRACE_SAMPLE_RATIO:-1.0}",
+        "WORKER_METRICS_PORT": "${WORKER_METRICS_PORT:-9464}",
     }
     for service in ("api", "worker"):
         assert {
@@ -98,6 +103,83 @@ def test_compose_contains_migration_api_worker_and_health_dependencies() -> None
             "target": "/home/ragkb/.cache/huggingface",
             "read_only": True,
         }
+
+
+def test_observability_profile_is_internal_and_provisioned() -> None:
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    for name in ("otel-collector", "jaeger", "prometheus", "grafana"):
+        assert services[name]["profiles"] == ["observability"]
+    assert services["otel-collector"]["expose"] == ["4317"]
+    assert services["jaeger"]["ports"] == ["127.0.0.1:16686:16686"]
+    assert services["prometheus"]["ports"] == ["127.0.0.1:9090:9090"]
+    assert services["grafana"]["ports"] == ["127.0.0.1:3000:3000"]
+    assert services["grafana"]["volumes"] == [
+        "./ops/observability/grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro",
+        "./ops/observability/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro",
+        "./ops/observability/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro",
+        "./ops/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro",
+    ]
+    assert "ports" not in services["worker"]
+    assert services["worker"]["expose"] == ["9464"]
+
+    prometheus = yaml.safe_load(
+        (ROOT / "ops/observability/prometheus/prometheus.yml").read_text(encoding="utf-8")
+    )
+    targets = {
+        target
+        for scrape in prometheus["scrape_configs"]
+        for config in scrape["static_configs"]
+        for target in config["targets"]
+    }
+    assert {"api:8000", "worker:9464"}.issubset(targets)
+    recording = yaml.safe_load(
+        (ROOT / "ops/observability/prometheus/rules/recording.yml").read_text(encoding="utf-8")
+    )
+    assert all("record" in rule for rule in recording["groups"][0]["rules"])
+
+    collector = yaml.safe_load(
+        (ROOT / "ops/observability/otel-collector.yml").read_text(encoding="utf-8")
+    )
+    assert collector["receivers"]["otlp"]["protocols"]["grpc"]["endpoint"] == "0.0.0.0:4317"
+    assert collector["service"]["pipelines"]["traces"]["exporters"] == ["otlp/jaeger"]
+
+    datasource = yaml.safe_load(
+        (ROOT / "ops/observability/grafana/provisioning/datasources/prometheus.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert datasource["datasources"][0]["url"] == "http://prometheus:9090"
+
+    dashboards = ROOT / "ops/observability/grafana/dashboards"
+    assert {
+        "system-overview.json",
+        "rag.json",
+        "agent.json",
+        "ingestion-projection.json",
+        "security.json",
+    } == {path.name for path in dashboards.glob("*.json")}
+    dashboard_titles = {
+        json.loads(path.read_text(encoding="utf-8"))["title"] for path in dashboards.glob("*.json")
+    }
+    assert len(dashboard_titles) == 5
+    alert_path = ROOT / "ops/observability/grafana/provisioning/alerting/rag-kb.yml"
+    alerts = alert_path.read_text(
+        encoding="utf-8"
+    )
+    alert_config = yaml.safe_load(alerts)
+    assert len(alert_config["groups"][0]["rules"]) == 8
+    for metric in (
+        "rag_kb_security_boundary_violations_total",
+        'rag_kb_tool_calls_total{mode="write",outcome="unknown"}',
+        "rag_kb_worker_capability_available",
+        "rag_kb_lease_failures_total",
+        "rag_kb_projection_reconciliations_total",
+        "rag_kb_http_requests_total",
+        "rag_kb_task_queue_oldest_age_seconds",
+        "rag_kb_approvals_total",
+    ):
+        assert metric in alerts
 
 
 def test_example_agent_budget_configuration_matches_runtime_defaults() -> None:

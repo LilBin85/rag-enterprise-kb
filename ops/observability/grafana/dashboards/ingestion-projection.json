@@ -1,0 +1,38 @@
+{
+  "uid": "rag-kb-ingestion-projection",
+  "title": "RAG KB / Ingestion and Projection",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Ingestion queue depth",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "rag_kb_ingestion_queue_depth", "legendFormat": "{{status}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Ingestion phase P95",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, phase) (rate(rag_kb_ingestion_phase_duration_seconds_bucket[5m])))", "legendFormat": "{{phase}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Projection reconciliation outcomes",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum by (phase, outcome) (rate(rag_kb_projection_reconciliations_total[5m]))", "legendFormat": "{{phase}} {{outcome}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Recovery action outcomes",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum by (kind, outcome) (rate(rag_kb_recovery_actions_total[5m]))", "legendFormat": "{{kind}} {{outcome}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+    }
+  ]
+}
