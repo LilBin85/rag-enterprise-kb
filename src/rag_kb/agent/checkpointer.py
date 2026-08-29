@@ -4,9 +4,18 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
 from threading import RLock
-from typing import Any, Iterator, Sequence
+from time import perf_counter
+from typing import Any, Callable, Iterator, Sequence
 
 from rag_kb.config import get_settings
+from rag_kb.observability import (
+    current_observability,
+    error_category_for,
+    finish_observed_span,
+    log_event,
+    observe_span,
+    stable_error_code,
+)
 
 # LangGraph 在导入 _msgpack 时冻结严格模式开关。
 get_settings().prepare_runtime_env()
@@ -160,10 +169,13 @@ class FencedPostgresSaver(BaseCheckpointSaver):
         return {**config, **saved, "configurable": configurable}
 
     def put(self, config, checkpoint, metadata, new_versions):
-        with self._lock, self._connection.transaction():
-            fields = self._verify_lease_in_transaction(config)
-            saved = self._saver.put(config, checkpoint, metadata, new_versions)
-        return self._merge_next_config(config, saved, fields)
+        def write():
+            with self._lock, self._connection.transaction():
+                fields = self._verify_lease_in_transaction(config)
+                saved = self._saver.put(config, checkpoint, metadata, new_versions)
+            return self._merge_next_config(config, saved, fields)
+
+        return self._observe_write("checkpoint.put", write)
 
     def put_writes(
         self,
@@ -172,9 +184,56 @@ class FencedPostgresSaver(BaseCheckpointSaver):
         task_id: str,
         task_path: str = "",
     ) -> None:
-        with self._lock, self._connection.transaction():
-            self._verify_lease_in_transaction(config)
-            self._saver.put_writes(config, writes, task_id, task_path)
+        def write() -> None:
+            with self._lock, self._connection.transaction():
+                self._verify_lease_in_transaction(config)
+                self._saver.put_writes(config, writes, task_id, task_path)
+
+        self._observe_write("checkpoint.put_writes", write)
+
+    @staticmethod
+    def _observe_write(operation: str, write: Callable[[], Any]) -> Any:
+        started_at = perf_counter()
+        error_code: str | None = None
+        with observe_span(
+            "checkpoint.write",
+            attributes={"component": "checkpointer", "operation": operation},
+        ) as span:
+            try:
+                result = write()
+            except Exception as exc:
+                error_code = stable_error_code(exc)
+                category = error_category_for(error_code)
+                finish_observed_span(
+                    span,
+                    outcome="failure",
+                    error_category=category,
+                    error_code=error_code,
+                )
+                telemetry = current_observability()
+                if telemetry is not None:
+                    telemetry.record_checkpoint_write(outcome="failure")
+                log_event(
+                    "checkpoint.write.failed",
+                    level=40,
+                    component="checkpointer",
+                    operation=operation,
+                    outcome="failure",
+                    error_category=category,
+                    error_code=error_code,
+                    duration_ms=(perf_counter() - started_at) * 1_000,
+                )
+                raise
+            duration_seconds = perf_counter() - started_at
+            finish_observed_span(
+                span,
+                outcome="succeeded",
+                attributes={"duration_ms": duration_seconds * 1_000},
+            )
+            telemetry = current_observability()
+            if telemetry is not None:
+                telemetry.record_checkpoint_write(outcome="succeeded")
+            return result
 
     def setup(self) -> None:
         self._saver.setup()

@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
+from opentelemetry import context as otel_context
 from sqlalchemy import func, select
 
 from rag_kb.agent.context import AgentRunContext
@@ -47,6 +48,17 @@ from rag_kb.infrastructure.database.task_repository import (
     TaskRepositoryError,
 )
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
+from rag_kb.observability import (
+    bind_run_id,
+    clear_run_id,
+    current_observability,
+    current_request_id,
+    error_category_for,
+    finish_observed_span,
+    log_event,
+    observe_span,
+    stable_error_code,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +90,15 @@ class TaskWorkerError(RuntimeError):
 class _TaskLeaseHeartbeat:
     """仅在同步 Agent 调用期间保持同一代租约有效。"""
 
-    def __init__(self, renew: Callable[[], TaskLease], lease_seconds: int) -> None:
+    def __init__(
+        self,
+        renew: Callable[[], TaskLease],
+        lease_seconds: int,
+        *,
+        on_failure: Callable[[Exception], None] | None = None,
+    ) -> None:
         self._renew = renew
+        self._on_failure = on_failure
         self._interval = max(0.1, lease_seconds / 3)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -103,7 +122,7 @@ class _TaskLeaseHeartbeat:
             try:
                 self._renew()
             except Exception as exc:
-                self._error = exc
+                self._set_error(exc)
                 self._stop.set()
 
     def check(self) -> None:
@@ -112,7 +131,11 @@ class _TaskLeaseHeartbeat:
 
     def renew_now(self) -> None:
         self.check()
-        self._renew()
+        try:
+            self._renew()
+        except Exception as exc:
+            self._set_error(exc)
+            raise
 
     def stop(self) -> None:
         self._stop.set()
@@ -120,6 +143,13 @@ class _TaskLeaseHeartbeat:
             self._thread.join()
             self._thread = None
         self.check()
+
+    def _set_error(self, exc: Exception) -> None:
+        if self._error is not None:
+            return
+        self._error = exc
+        if self._on_failure is not None:
+            self._on_failure(exc)
 
 
 class TaskAuthContextPort(Protocol):
@@ -252,6 +282,47 @@ class TaskWorker:
         decision: str,
         reason: str | None = None,
     ) -> TaskWorkerResult:
+        error_code: str | None = None
+        with observe_span(
+            "task.resume",
+            attributes={
+                "component": "task_worker",
+                "operation": "task.resume",
+                "task_id": task_id,
+                "decision": decision,
+            },
+        ) as span:
+            try:
+                result = self._resume_for_approval(
+                    auth=auth,
+                    task_id=task_id,
+                    expected_state_version=expected_state_version,
+                    approval_id=approval_id,
+                    decision=decision,
+                    reason=reason,
+                )
+                finish_observed_span(span, outcome=result.status)
+                return result
+            except Exception as exc:
+                error_code = stable_error_code(exc)
+                finish_observed_span(
+                    span,
+                    outcome="failure",
+                    error_category=error_category_for(error_code),
+                    error_code=error_code,
+                )
+                raise
+
+    def _resume_for_approval(
+        self,
+        *,
+        auth: AuthContext,
+        task_id: str,
+        expected_state_version: int,
+        approval_id: str,
+        decision: str,
+        reason: str | None = None,
+    ) -> TaskWorkerResult:
         """审批 decision → 受控 resume：decision 先落库，服务端驱动同 thread 恢复。
 
         客户端只提交业务 decision；Command(resume=...) 由服务端从保存的
@@ -313,68 +384,157 @@ class TaskWorker:
         resume_approval_id: str | None = None,
     ) -> TaskWorkerResult:
         run_id = uuid4().hex
-        try:
-            return self._advance(
-                lease,
-                run_id=run_id,
-                resume_answer=resume_answer,
-                resume_decision=resume_decision,
-                resume_approval_id=resume_approval_id,
+        started_at = datetime.now(UTC)
+        telemetry = current_observability()
+        if telemetry is not None:
+            scope = telemetry.task_run_span(
+                traceparent=lease.pending_traceparent,
+                tracestate=lease.pending_tracestate,
+                attributes={
+                    "component": "task_worker",
+                    "operation": "task.run",
+                    "task_id": lease.state.task_id,
+                    "run_id": run_id,
+                    "worker_id": self._worker_id,
+                    "task_mode": lease.state.task_mode.value,
+                },
             )
-        except TaskRepositoryError as exc:
-            if exc.code not in _STALE_REPOSITORY_CODES:
-                logger.error(
-                    "Research Agent 仓储执行失败 task_id=%s error_code=%s",
-                    lease.state.task_id,
-                    exc.code,
-                    exc_info=True,
-                )
-                stale_code = self._fail_safely(lease, exc.code, run_id)
-                if stale_code is not None:
-                    return TaskWorkerResult(
-                        status="stale",
-                        task_id=lease.state.task_id,
-                        error_code=stale_code,
+        else:
+            scope = observe_span(
+                "task.run",
+                attributes={
+                    "component": "task_worker",
+                    "operation": "task.run",
+                    "task_id": lease.state.task_id,
+                    "run_id": run_id,
+                    "worker_id": self._worker_id,
+                    "task_mode": lease.state.task_mode.value,
+                },
+            )
+        with scope as span:
+            run_token = bind_run_id(run_id)
+            result = TaskWorkerResult(status="failed", task_id=lease.state.task_id)
+            try:
+                try:
+                    result = self._advance(
+                        lease,
+                        run_id=run_id,
+                        resume_answer=resume_answer,
+                        resume_decision=resume_decision,
+                        resume_approval_id=resume_approval_id,
                     )
-                return TaskWorkerResult(
-                    status="failed", task_id=lease.state.task_id, error_code=exc.code
+                except TaskRepositoryError as exc:
+                    if exc.code not in _STALE_REPOSITORY_CODES:
+                        stale_code = self._fail_safely(lease, exc.code, run_id)
+                        result = TaskWorkerResult(
+                            status="stale" if stale_code is not None else "failed",
+                            task_id=lease.state.task_id,
+                            error_code=stale_code or exc.code,
+                        )
+                    else:
+                        result = TaskWorkerResult(
+                            status="stale", task_id=lease.state.task_id, error_code=exc.code
+                        )
+                except Exception as exc:
+                    code = getattr(exc, "code", None) or "task_agent_failed"
+                    if (
+                        code == _STALE_CHECKPOINT_CODE
+                        or isinstance(exc, ToolExecutionError) and exc.code in _STALE_TOOL_CODES
+                    ):
+                        # 失租 Worker 禁止更新业务状态：未完成调用由新 Worker 恢复重执行。
+                        result = TaskWorkerResult(
+                            status="stale", task_id=lease.state.task_id, error_code=code
+                        )
+                    else:
+                        stale_code = self._fail_safely(lease, code, run_id)
+                        result = TaskWorkerResult(
+                            status="stale" if stale_code is not None else "failed",
+                            task_id=lease.state.task_id,
+                            error_code=stale_code or code,
+                        )
+                return result
+            finally:
+                duration_seconds = (datetime.now(UTC) - started_at).total_seconds()
+                outcome = {"finished": "succeeded", "failed": "failure"}.get(
+                    result.status, result.status
                 )
-            return TaskWorkerResult(
-                status="stale", task_id=lease.state.task_id, error_code=exc.code
-            )
-        except Exception as exc:
-            code = getattr(exc, "code", None) or "task_agent_failed"
-            if (
-                code == _STALE_CHECKPOINT_CODE
-                or isinstance(exc, ToolExecutionError) and exc.code in _STALE_TOOL_CODES
-            ):
-                # 失租 Worker 禁止更新业务状态：未完成调用由新 Worker 恢复重执行。
-                logger.error(
-                    "Research Agent 遭遇失租错误 task_id=%s error_code=%s",
-                    lease.state.task_id,
-                    code,
+                category = (
+                    error_category_for(result.error_code)
+                    if result.error_code is not None
+                    else "none"
                 )
-                return TaskWorkerResult(
-                    status="stale", task_id=lease.state.task_id, error_code=code
+                finish_observed_span(
+                    span,
+                    outcome=outcome,
+                    error_category=category if outcome in {"failure", "stale"} else "none",
+                    error_code=result.error_code,
+                    attributes={"duration_ms": duration_seconds * 1_000},
                 )
-            logger.error(
-                "Research Agent 执行失败 task_id=%s error_code=%s",
-                lease.state.task_id,
-                code,
-                exc_info=True,
-            )
-            stale_code = self._fail_safely(lease, code, run_id)
-            if stale_code is not None:
-                return TaskWorkerResult(
-                    status="stale",
+                if telemetry is not None:
+                    telemetry.record_task_run(
+                        mode=lease.state.task_mode.value,
+                        outcome=outcome,
+                        error_category=category if outcome in {"failure", "stale"} else "none",
+                        duration_seconds=duration_seconds,
+                    )
+                log_event(
+                    "agent.run.completed",
+                    level=logging.ERROR if outcome in {"failure", "stale"} else logging.INFO,
+                    component="task_worker",
+                    operation="task.run",
+                    outcome=outcome,
+                    error_category=category if outcome in {"failure", "stale"} else "none",
+                    error_code=result.error_code,
+                    duration_ms=duration_seconds * 1_000,
                     task_id=lease.state.task_id,
-                    error_code=stale_code,
+                    worker_id=self._worker_id,
                 )
-            return TaskWorkerResult(
-                status="failed", task_id=lease.state.task_id, error_code=code
-            )
+                clear_run_id(run_token)
 
     def _advance(
+        self,
+        lease: TaskLease,
+        *,
+        run_id: str | None = None,
+        resume_answer: str | None = None,
+        resume_decision: str | None = None,
+        resume_approval_id: str | None = None,
+    ) -> TaskWorkerResult:
+        error_code: str | None = None
+        with observe_span(
+            "agent.advance",
+            attributes={
+                "component": "task_worker",
+                "operation": "agent.advance",
+                "task_id": lease.state.task_id,
+                "task_mode": lease.state.task_mode.value,
+            },
+        ) as span:
+            try:
+                result = self._advance_inner(
+                    lease,
+                    run_id=run_id,
+                    resume_answer=resume_answer,
+                    resume_decision=resume_decision,
+                    resume_approval_id=resume_approval_id,
+                )
+                finish_observed_span(
+                    span,
+                    outcome="failure" if result.status in {"failed", "stale"} else result.status,
+                    error_category="lease" if result.status == "stale" else "none",
+                )
+                return result
+            except Exception as exc:
+                error_code = stable_error_code(exc)
+                finish_observed_span(
+                    span,
+                    outcome="failure",
+                    error_category=error_category_for(error_code),
+                    error_code=error_code,
+                )
+                raise
+
+    def _advance_inner(
         self,
         lease: TaskLease,
         *,
@@ -405,10 +565,11 @@ class TaskWorker:
             raise TaskWorkerError("task_deadline_expired")
 
         run_id = run_id or uuid4().hex
+        execution_request_id = current_request_id() or uuid4().hex
         auth = self._auth_contexts.resolve(
             task_id=state.task_id,
             auth_context_ref=state.auth_context_ref,
-            request_id=run_id,
+            request_id=execution_request_id,
         )
         context = AgentRunContext(
             task_id=state.task_id,
@@ -458,7 +619,7 @@ class TaskWorker:
             )
             invoke_input = Command(resume=_approval_resume_payload(resume_decision))
         elif snapshot.interrupts:
-            return self._route_interrupt(lease, snapshot, run_id)
+            return self._route_interrupt(lease, snapshot, run_id, auth)
         elif not snapshot.values:
             invoke_input = {"messages": [HumanMessage(content=state.goal)]}
         elif snapshot.next:
@@ -485,13 +646,35 @@ class TaskWorker:
                     context = self._approval_run_context(
                         lease, auth, run_id, replay_facts
                     )
-            with _TaskLeaseHeartbeat(
-                lambda: self._repository.refresh_lease(
-                    lease, lease_seconds=self._lease_seconds
-                ),
-                self._lease_seconds,
+            with observe_span(
+                "agent.invoke",
+                attributes={
+                    "component": "task_worker",
+                    "operation": "agent.invoke",
+                    "task_id": state.task_id,
+                    "task_mode": state.task_mode.value,
+                },
             ):
-                result = agent.invoke(invoke_input, config, context=context)
+                telemetry = current_observability()
+                invoke_context = otel_context.get_current()
+
+                def record_lease_failure(exc: Exception) -> None:
+                    if telemetry is not None:
+                        telemetry.record_lease_failure(
+                            kind="task",
+                            operation="task.lease.renew",
+                            error_code=stable_error_code(exc),
+                            parent_context=invoke_context,
+                        )
+
+                with _TaskLeaseHeartbeat(
+                    lambda: self._repository.refresh_lease(
+                        lease, lease_seconds=self._lease_seconds
+                    ),
+                    self._lease_seconds,
+                    on_failure=record_lease_failure,
+                ):
+                    result = agent.invoke(invoke_input, config, context=context)
             lease = self._repository.refresh_lease(
                 lease, lease_seconds=self._lease_seconds
             )
@@ -505,7 +688,7 @@ class TaskWorker:
 
         latest = agent.get_state(config)
         if latest.interrupts:
-            return self._route_interrupt(lease, latest, run_id)
+            return self._route_interrupt(lease, latest, run_id, auth)
         candidate = self._extract_candidate(result) or self._extract_candidate(latest.values)
         if candidate is None:
             raise TaskWorkerError("task_agent_no_result")
@@ -680,12 +863,12 @@ class TaskWorker:
         if not isinstance(question, str) or not question.strip():
             raise TaskWorkerError("task_interrupt_payload_invalid")
         paused = self._repository.pause_for_user(
-            lease, question=question, trace_id=run_id
+            lease, question=question, run_id=run_id
         )
         return TaskWorkerResult(status="waiting_for_user", task_id=paused.task_id)
 
     def _route_interrupt(
-        self, lease: TaskLease, snapshot, run_id: str
+        self, lease: TaskLease, snapshot, run_id: str, auth: AuthContext
     ) -> TaskWorkerResult:
         """按保存的 interrupt 形状严格分流：clarification 与 approval 互斥。
 
@@ -702,11 +885,11 @@ class TaskWorker:
             isinstance(payload, dict)
             and set(payload) == {"action_requests", "review_configs"}
         ):
-            return self._pause_for_approval(lease, snapshot, run_id)
+            return self._pause_for_approval(lease, snapshot, run_id, auth)
         raise TaskWorkerError("task_interrupt_kind_invalid")
 
     def _pause_for_approval(
-        self, lease: TaskLease, snapshot, run_id: str
+        self, lease: TaskLease, snapshot, run_id: str, auth: AuthContext
     ) -> TaskWorkerResult:
         if lease.state.task_mode is not TaskMode.CONTROLLED_ACTION:
             # HITL 审批形状只允许出现在受控任务上；Research 线程出现即 fail-closed。
@@ -766,11 +949,6 @@ class TaskWorker:
             interrupt_id=interrupt_id,
             tool_call_id=tool_call_id,
         )
-        auth = self._auth_contexts.resolve(
-            task_id=lease.state.task_id,
-            auth_context_ref=lease.state.auth_context_ref,
-            request_id=run_id,
-        )
         action_binding = self._approvals.ensure_action_binding(
             auth=auth,
             task_id=lease.state.task_id,
@@ -799,7 +977,7 @@ class TaskWorker:
             lease,
             interrupt_ref=approval.approval_id,
             summary=self._render_approval_summary(tool_name, arguments),
-            trace_id=run_id,
+            run_id=run_id,
         )
         return TaskWorkerResult(status="waiting_for_approval", task_id=paused.task_id)
 
@@ -871,7 +1049,7 @@ class TaskWorker:
         auth = self._auth_contexts.resolve(
             task_id=lease.state.task_id,
             auth_context_ref=lease.state.auth_context_ref,
-            request_id=run_id,
+            request_id=auth.request_id,
         )
         citations = ()
         if candidate.status == "succeeded":
@@ -928,7 +1106,8 @@ class TaskWorker:
                 result_kind=result.result_kind,
                 result_ref=result_ref,
                 result_hash=result_hash,
-                trace_id=run_id,
+                run_id=run_id,
+                auth_request_id=auth.request_id,
                 counts=counts,
             )
         except Exception:
@@ -1043,7 +1222,7 @@ class TaskWorker:
                 lease,
                 status=TaskStatus.FAILED,
                 error_code=code[:100],
-                trace_id=run_id,
+                run_id=run_id,
             )
         except TaskRepositoryError as exc:
             if exc.code in _STALE_REPOSITORY_CODES:

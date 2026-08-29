@@ -47,6 +47,8 @@ class ClaimedIngestionJob:
     phase: str = "ingest"
     lifecycle_status: str = "indexing"
     index_receipt: IndexReceipt | None = None
+    pending_traceparent: str | None = None
+    pending_tracestate: str | None = None
 
 
 @dataclass(frozen=True)
@@ -287,6 +289,8 @@ class DocumentRegistryIngestionJobPort:
                 previous_projection_version_id=applied_version_id,
                 phase=phase,
                 lifecycle_status=version.lifecycle_status,
+                pending_traceparent=row.pending_traceparent,
+                pending_tracestate=row.pending_tracestate,
             )
 
     def allocate_projection(self, job: ClaimedIngestionJob) -> ClaimedIngestionJob:

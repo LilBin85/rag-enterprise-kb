@@ -48,6 +48,7 @@ def test_v1_query_uses_server_owned_identity_without_body_role() -> None:
     assert service.calls[0][1].tenant_id == "tenant-a"
     assert service.calls[0][1].user_id == "user-a"
     assert service.calls[0][1].request_id == "request-1"
+    assert response.headers["X-Request-ID"] == "request-1"
 
 
 def test_v1_query_rejects_body_role_and_unknown_token() -> None:
@@ -78,9 +79,11 @@ def test_v1_query_rejects_body_role_and_unknown_token() -> None:
 
     assert body_role.status_code == 422
     assert no_identity.status_code == 403
+    assert body_role.headers["X-Request-ID"]
+    assert no_identity.headers["X-Request-ID"]
 
 
-def test_v1_query_rejects_invalid_request_id_as_4xx() -> None:
+def test_v1_query_normalizes_invalid_request_id_and_preserves_64_char_boundary() -> None:
     app = create_app()
     service = CapturingQueryService()
     app.dependency_overrides[build_identity_provider] = lambda: DemoTokenIdentityProvider(
@@ -94,11 +97,22 @@ def test_v1_query_rejects_invalid_request_id_as_4xx() -> None:
     )
     app.dependency_overrides[build_knowledge_query_service] = lambda: service
 
-    response = TestClient(app).post(
+    client = TestClient(app)
+    valid_boundary = client.post(
         "/v1/knowledge/query",
         json={"question": "问题"},
-        headers={"Authorization": "Bearer valid", "X-Request-ID": "x" * 201},
+        headers={"Authorization": "Bearer valid", "X-Request-ID": "x" * 64},
+    )
+    invalid = client.post(
+        "/v1/knowledge/query",
+        json={"question": "问题"},
+        headers={"Authorization": "Bearer valid", "X-Request-ID": "x" * 65},
     )
 
-    assert 400 <= response.status_code < 500
-    assert service.calls == []
+    assert valid_boundary.status_code == 200
+    assert valid_boundary.headers["X-Request-ID"] == "x" * 64
+    assert invalid.status_code == 200
+    assert invalid.headers["X-Request-ID"] != "x" * 65
+    assert len(invalid.headers["X-Request-ID"]) == 32
+    assert service.calls[0][1].request_id == "x" * 64
+    assert service.calls[1][1].request_id == invalid.headers["X-Request-ID"]

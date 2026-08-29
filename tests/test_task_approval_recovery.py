@@ -14,6 +14,8 @@ from uuid import uuid4
 
 import pytest
 from langchain_core.messages import AIMessage
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from sqlalchemy import select, text
 
 from rag_kb.agent.result import AgentResultStore, TaskResultCandidate
@@ -49,6 +51,7 @@ from rag_kb.infrastructure.database.task_repository import (
 )
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
+from rag_kb.observability import Observability
 
 _REPORT_ARGUMENTS: dict[str, object] = {
     "title": "差旅制度摘要报告",
@@ -423,6 +426,21 @@ def _worker(stage: SimpleNamespace, agent: ScriptedAgent) -> TaskWorker:
         approvals=stage.approvals,
         objects=LocalObjectStore(stage.tmp_path / "objects"),
     )
+
+
+def _telemetry() -> tuple[Observability, InMemorySpanExporter]:
+    observability = Observability(
+        enabled=True,
+        metrics_enabled=True,
+        service_name="rag-kb-test",
+        otlp_endpoint="",
+        trace_sample_ratio=1.0,
+    )
+    observability.start()
+    exporter = InMemorySpanExporter()
+    assert observability.provider is not None
+    observability.provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return observability, exporter
 
 
 def _approval_rows(stage: SimpleNamespace) -> list[ApprovalRow]:
@@ -1015,6 +1033,38 @@ def test_reject_decision_resumes_thread_with_fixed_payload_and_zero_execution(
         assert approval.rejection_reason
     assert stage.report_adapter.calls == 0
     assert stage.draft_adapter.calls == 0
+
+
+def test_approval_transition_and_resume_are_safe_and_measured(stage) -> None:
+    observability, exporter = _telemetry()
+    secret = "Bearer fake-token approval reason tool payload C:/private/object"
+    try:
+        with observability.activate():
+            approval_id, state_version = _paused_stage(stage)
+            result = _worker(
+                stage,
+                ScriptedAgent((_hitl_snapshot(), _final_snapshot(_succeeded_candidate()))),
+            ).resume_for_approval(
+                auth=stage.approver,
+                task_id="task-1",
+                expected_state_version=state_version,
+                approval_id=approval_id,
+                decision="reject",
+                reason=secret,
+            )
+        payload = observability.metrics_payload().decode()
+        spans = exporter.get_finished_spans()
+        rendered_spans = repr(spans)
+    finally:
+        observability.shutdown()
+
+    assert result.status == "finished"
+    assert any(span.name == "approval.transition" for span in spans)
+    assert any(span.name == "task.resume" for span in spans)
+    assert 'decision="requested",outcome="succeeded"' in payload
+    assert 'decision="rejected",outcome="succeeded"' in payload
+    assert secret not in payload
+    assert secret not in rendered_spans
 
 
 def test_resume_crash_before_toolnode_recovers_without_new_action_key(stage) -> None:

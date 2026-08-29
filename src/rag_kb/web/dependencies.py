@@ -2,9 +2,8 @@
 
 from functools import lru_cache
 from typing import Annotated, Generator, Protocol
-from uuid import uuid4
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 from qdrant_client import QdrantClient
 from sqlalchemy import text
 
@@ -28,9 +27,10 @@ from rag_kb.infrastructure.vectorstore.qdrant_collection import (
     validate_document_collection,
 )
 from rag_kb.infrastructure.vectorstore.qdrant_document_index import QdrantDocumentDeletion
+from rag_kb.observability import normalize_request_id
 
 
-EXPECTED_DATABASE_REVISION = "20260827_0013"
+EXPECTED_DATABASE_REVISION = "20260829_0014"
 
 
 class ReadinessFailure(RuntimeError):
@@ -227,12 +227,9 @@ def build_approval_service() -> ApprovalService:
 
 
 def resolve_auth_context(
+    request: Request,
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
     demo_token: Annotated[str | None, Header(alias="X-Demo-Role-Token")] = None,
-    request_id: Annotated[
-        str | None,
-        Header(alias="X-Request-ID", min_length=1, max_length=200, pattern=r".*\S.*"),
-    ] = None,
     provider: Annotated[IdentityProvider, Depends(build_identity_provider)] = None,
 ) -> AuthContext:
     """从服务端身份提供器解析统一上下文；错误响应不泄露令牌或角色存在性。"""
@@ -246,9 +243,13 @@ def resolve_auth_context(
         raise HTTPException(status_code=403, detail="身份验证失败")
     if provider is None:
         raise HTTPException(status_code=503, detail="身份服务不可用")
+    request_id = getattr(request.state, "request_id", None)
+    if not isinstance(request_id, str):
+        request_id = normalize_request_id(request.headers.get("X-Request-ID"))
+        request.state.request_id = request_id
     context = provider.authenticate(
         token,
-        request_id=request_id or uuid4().hex,
+        request_id=request_id,
     )
     if context is None:
         raise HTTPException(status_code=403, detail="身份验证失败")

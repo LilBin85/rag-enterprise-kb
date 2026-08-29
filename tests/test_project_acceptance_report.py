@@ -52,7 +52,7 @@ def _m2_e2e(binding: dict[str, str]) -> dict[str, object]:
             "status": "succeeded",
             "stop_reason": "completed",
             "error_code": None,
-            "trace_id": f"trace-{index}",
+            "correlation_id": f"correlation-{index}",
             "model_calls": 2,
             "tool_calls": 1,
         }

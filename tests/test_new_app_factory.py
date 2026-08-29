@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from rag_kb.config import Settings
 from rag_kb.web.app import create_app
 from rag_kb.web.dependencies import ReadinessFailure, build_readiness_probe
 
@@ -49,3 +50,19 @@ def test_factory_only_exposes_versioned_contracts() -> None:
     assert "/v1/knowledge/query" in paths
     assert "/questions" not in paths
     assert "/documents" not in paths
+
+
+def test_http_observability_returns_request_ids_and_uses_route_templates_for_metrics() -> None:
+    app = create_app(Settings(_env_file=None, metrics_enabled=True))
+    with TestClient(app) as client:
+        live = client.get("/health/live", headers={"X-Request-ID": "invalid request id"})
+        dynamic = client.get("/v1/tasks/task-visible")
+        metrics = client.get("/metrics")
+
+    assert live.status_code == 200
+    assert len(live.headers["X-Request-ID"]) == 32
+    assert dynamic.status_code == 403
+    assert dynamic.headers["X-Request-ID"]
+    assert metrics.status_code == 200
+    assert 'route="/v1/tasks/{task_id}"' in metrics.text
+    assert "task-visible" not in metrics.text

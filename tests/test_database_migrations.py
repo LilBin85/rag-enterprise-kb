@@ -648,7 +648,7 @@ def test_m2_protocol_and_artifact_lifecycle_round_trip_preserves_history(tmp_pat
     }
 
     command.upgrade(config, "head")
-    assert EXPECTED_DATABASE_REVISION == "20260827_0013"
+    assert EXPECTED_DATABASE_REVISION == "20260829_0014"
     inspector = inspect(database.engine)
     assert "required_protocol_version" in {
         item["name"] for item in inspector.get_columns("agent_tasks")
@@ -1104,6 +1104,66 @@ def test_alembic_upgrade_and_downgrade_on_sqlite_adapter(tmp_path: Path) -> None
     assert inspect(database.engine).get_table_names() == ["alembic_version"]
 
 
+def test_observability_m0_migration_preserves_legacy_correlation_id(tmp_path: Path) -> None:
+    database_path = tmp_path / "observability-m0.sqlite3"
+    config = Config(str(ROOT_DIR / "alembic.ini"))
+    config.attributes["database_url"] = sqlite_url(database_path)
+    command.upgrade(config, "20260827_0013")
+    database = build_database(sqlite_url(database_path))
+
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys = ON")
+        insert_principal(connection, "tenant-observe", "user-observe")
+        connection.execute(
+            text(
+                "INSERT INTO agent_tasks ("
+                "task_id, tenant_id, user_id, task_mode, status, goal, auth_context_ref, budgets, "
+                "cancelled, required_capability_name, required_protocol_version, state_version, "
+                "created_at, updated_at"
+                ") VALUES ("
+                "'task-observe', 'tenant-observe', 'user-observe', 'controlled_action', 'failed', "
+                "'goal', 'auth-ref', '{}', 0, 'task-agent', 'm2-fenced-v1', 1, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO task_events ("
+                "event_id, task_id, tenant_id, sequence, event_type, trace_id, run_id, stage, "
+                "status, counts, created_at"
+                ") VALUES ("
+                "'event-observe', 'task-observe', 'tenant-observe', 0, 'task_created', "
+                "'legacy-request-id', 'legacy-run-id', 'planning', 'planning', '{}', CURRENT_TIMESTAMP)"
+            )
+        )
+
+    command.upgrade(config, "head")
+
+    inspector = inspect(database.engine)
+    event_columns = {item["name"]: item for item in inspector.get_columns("task_events")}
+    assert {"correlation_id", "otel_trace_id", "otel_span_id"} <= set(event_columns)
+    assert event_columns["run_id"]["nullable"] is True
+    assert {"pending_traceparent", "pending_tracestate"} <= {
+        item["name"] for item in inspector.get_columns("agent_tasks")
+    }
+    assert {"pending_traceparent", "pending_tracestate"} <= {
+        item["name"] for item in inspector.get_columns("ingestion_jobs")
+    }
+    with database.engine.connect() as connection:
+        assert connection.execute(
+            text(
+                "SELECT correlation_id, run_id, otel_trace_id, otel_span_id "
+                "FROM task_events WHERE event_id = 'event-observe'"
+            )
+        ).one() == ("legacy-request-id", "legacy-run-id", None, None)
+
+    command.downgrade(config, "20260827_0013")
+    with database.engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT trace_id, run_id FROM task_events WHERE event_id = 'event-observe'")
+        ).one() == ("legacy-request-id", "legacy-run-id")
+
+
 def test_m1_migration_closes_legacy_runtime_records(tmp_path: Path) -> None:
     database_path = tmp_path / "legacy-runtime.sqlite3"
     config = Config(str(ROOT_DIR / "alembic.ini"))
@@ -1249,7 +1309,7 @@ def test_sqlite_constraints_reject_cross_tenant_and_duplicate_state(tmp_path: Pa
         connection.execute(
             text(
                 "INSERT INTO task_events ("
-                "event_id, task_id, tenant_id, sequence, event_type, trace_id, run_id, stage, status, counts, created_at"
+                "event_id, task_id, tenant_id, sequence, event_type, correlation_id, run_id, stage, status, counts, created_at"
                 ") VALUES ('event-a1', 'task-a', 'tenant-a', 1, 'event', 'trace', 'run', 'stage', 'ok', '{}', CURRENT_TIMESTAMP)"
             )
         )
@@ -1257,7 +1317,7 @@ def test_sqlite_constraints_reject_cross_tenant_and_duplicate_state(tmp_path: Pa
             connection.execute(
                 text(
                     "INSERT INTO task_events ("
-                    "event_id, task_id, tenant_id, sequence, event_type, trace_id, run_id, stage, status, counts, created_at"
+                    "event_id, task_id, tenant_id, sequence, event_type, correlation_id, run_id, stage, status, counts, created_at"
                     ") VALUES ('event-cross-tenant', 'task-a', 'tenant-b', 2, 'event', 'trace', 'run', 'stage', 'ok', '{}', CURRENT_TIMESTAMP)"
                 )
             )
@@ -1268,7 +1328,7 @@ def test_sqlite_constraints_reject_cross_tenant_and_duplicate_state(tmp_path: Pa
         connection.execute(
             text(
                 "INSERT INTO task_events ("
-                "event_id, task_id, tenant_id, sequence, event_type, trace_id, run_id, stage, status, counts, created_at"
+                "event_id, task_id, tenant_id, sequence, event_type, correlation_id, run_id, stage, status, counts, created_at"
                 ") VALUES ('event-a1', 'task-a', 'tenant-a', 1, 'event', 'trace', 'run', 'stage', 'ok', '{}', CURRENT_TIMESTAMP)"
             )
         )
@@ -1276,7 +1336,7 @@ def test_sqlite_constraints_reject_cross_tenant_and_duplicate_state(tmp_path: Pa
             connection.execute(
                 text(
                     "INSERT INTO task_events ("
-                    "event_id, task_id, tenant_id, sequence, event_type, trace_id, run_id, stage, status, counts, created_at"
+                    "event_id, task_id, tenant_id, sequence, event_type, correlation_id, run_id, stage, status, counts, created_at"
                     ") VALUES ('event-a2', 'task-a', 'tenant-a', 1, 'event', 'trace', 'run', 'stage', 'ok', '{}', CURRENT_TIMESTAMP)"
                 )
             )

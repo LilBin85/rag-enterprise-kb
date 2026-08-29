@@ -199,7 +199,7 @@ def test_controlled_terminal_sets_artifact_window_and_purge_retries(runtime, mon
         lease,
         status=TaskStatus.FAILED,
         error_code="task_agent_failed",
-        trace_id="trace-a",
+        run_id="trace-a",
     )
     with database.sessions.begin() as session:
         task = session.get(AgentTaskRow, "controlled-expiry")
@@ -328,7 +328,7 @@ def test_finished_task_gc_marks_no_result_once_without_changing_status(runtime) 
         lease,
         status=TaskStatus.FAILED,
         error_code="task_agent_failed",
-        trace_id="trace-a",
+        run_id="trace-a",
     )
     with database.sessions.begin() as session:
         row = session.get(AgentTaskRow, "failed-task")
@@ -367,7 +367,7 @@ def test_finished_task_gc_retains_result_ref_after_real_delete_failure(runtime, 
         result_kind="research",
         result_ref=result_ref,
         result_hash=result_hash,
-        trace_id="trace-a",
+        run_id="trace-a",
     )
     with database.sessions.begin() as session:
         row = session.get(AgentTaskRow, "refused-task")
@@ -429,7 +429,7 @@ def test_orphan_scanner_respects_grace_references_and_running_deadlines(runtime)
         result_kind="research",
         result_ref=referenced_ref,
         result_hash=referenced_hash,
-        trace_id="trace-a",
+        run_id="trace-a",
     )
     _set_mtime(objects, referenced_ref, clock.value - timedelta(seconds=61))
 

@@ -132,8 +132,8 @@ def m2_terminal_audit_valid(
             or not entry["stop_reason"]
             or entry.get("error_code") is not None
             and (not isinstance(entry["error_code"], str) or not entry["error_code"])
-            or not isinstance(entry.get("trace_id"), str)
-            or not entry["trace_id"]
+            or not isinstance(entry.get("correlation_id"), str)
+            or not entry["correlation_id"]
             or type(entry.get("model_calls")) is not int
             or entry["model_calls"] < 0
             or type(entry.get("tool_calls")) is not int

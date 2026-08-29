@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 from datetime import UTC, datetime, timedelta
+from time import perf_counter
 from typing import Literal, Protocol
 from uuid import uuid4
 
@@ -18,9 +18,15 @@ from rag_kb.infrastructure.database.models import AgentTaskRow
 from rag_kb.infrastructure.database.session import Database
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
 from rag_kb.models import Citation, Refusal
+from rag_kb.observability import (
+    current_observability,
+    error_category_for,
+    finish_observed_span,
+    log_event,
+    observe_span,
+    stable_error_code,
+)
 
-
-logger = logging.getLogger(__name__)
 
 _REFUSALS = {
     "no_authorized_evidence": "当前知识库中没有可用于回答的已授权资料",
@@ -34,6 +40,13 @@ _REFUSALS = {
 _SYNC_LEASE_OWNER = "api-sync-knowledge-query"
 _SYNC_LEASE_SECONDS = 120
 _SYNC_LEASE_GENERATION = 1
+
+
+class _QueryFailure(RuntimeError):
+    def __init__(self, code: str, refusal_kind: str = "retrieval_failure") -> None:
+        super().__init__(code)
+        self.code = code
+        self.refusal_kind = refusal_kind
 
 
 class RetrieverPort(Protocol):
@@ -82,15 +95,64 @@ class KnowledgeQueryService:
         self._evidence = evidence or EvidenceLedgerRepository()
 
     def query(self, question: str, auth: AuthContext) -> KnowledgeQueryResult:
+        started_at = perf_counter()
+        outcome = "failure"
+        reason = "retrieval_failure"
+        error_code: str | None = None
+        with observe_span(
+            "knowledge.query",
+            attributes={"component": "knowledge", "operation": "knowledge.query"},
+        ) as span:
+            try:
+                response = self._query(question, auth)
+                if response.verdict == "answer":
+                    outcome, reason = "answer", "none"
+                elif response.refusal is not None and response.refusal.kind == "retrieval_failure":
+                    outcome, reason = "failure", "retrieval_failure"
+                    error_code = "retrieval_failure"
+                else:
+                    outcome = "refusal"
+                    reason = response.refusal.kind if response.refusal is not None else "conflicting_evidence"
+                return response
+            except _QueryFailure as exc:
+                error_code = exc.code
+                return self._refusal(exc.refusal_kind)
+            except Exception as exc:
+                error_code = stable_error_code(exc)
+                return self._refusal("retrieval_failure")
+            finally:
+                duration_seconds = perf_counter() - started_at
+                category = error_category_for(error_code) if error_code is not None else "none"
+                finish_observed_span(
+                    span,
+                    outcome=outcome,
+                    error_category=category,
+                    error_code=error_code,
+                    attributes={"duration_ms": duration_seconds * 1_000},
+                )
+                telemetry = current_observability()
+                if telemetry is not None:
+                    telemetry.record_knowledge_query(
+                        outcome=outcome,
+                        reason=reason,
+                        duration_seconds=duration_seconds,
+                    )
+                log_event(
+                    "knowledge.query.completed",
+                    level=40 if outcome == "failure" else 20,
+                    component="knowledge",
+                    operation="knowledge.query",
+                    outcome=outcome,
+                    error_category=category,
+                    error_code=error_code,
+                    duration_ms=duration_seconds * 1_000,
+                )
+
+    def _query(self, question: str, auth: AuthContext) -> KnowledgeQueryResult:
         try:
             result = self._retriever.search(question, auth)
         except Exception:
-            logger.exception(
-                "企业知识检索失败 tenant=%s request_id=%s",
-                auth.tenant_id,
-                auth.request_id,
-            )
-            return self._refusal("retrieval_failure")
+            raise _QueryFailure("retrieval_failure") from None
         if not result.candidates:
             kind = (
                 "no_authorized_evidence"
@@ -108,23 +170,13 @@ class KnowledgeQueryService:
                 candidates=result.candidates,
             )
         except Exception:
-            logger.exception(
-                "证据入账失败 tenant=%s request_id=%s",
-                auth.tenant_id,
-                auth.request_id,
-            )
-            return self._refusal("retrieval_failure")
+            raise _QueryFailure("evidence_record_failed") from None
 
         try:
             verdict = self._model.answer(question, list(result.candidates))
         except Exception:
-            logger.exception(
-                "知识回答模型失败 tenant=%s task_id=%s",
-                auth.tenant_id,
-                task_id,
-            )
             self._finish_task(task_id, auth, status="failed", error_code="answer_model_failed")
-            return self._refusal("retrieval_failure")
+            raise _QueryFailure("answer_model_failed") from None
         if verdict.verdict != "answer":
             kind = (
                 "conflicting_evidence"
@@ -168,13 +220,10 @@ class KnowledgeQueryService:
                 ):
                     raise RuntimeError("query_task_binding_lost")
         except Exception:
-            logger.exception(
-                "账本引用复核失败 tenant=%s task_id=%s",
-                auth.tenant_id,
-                task_id,
-            )
             self._finish_task(task_id, auth, status="failed", error_code="citation_revalidation_failed")
-            return self._refusal("conflicting_evidence")
+            raise _QueryFailure(
+                "citation_revalidation_failed", refusal_kind="conflicting_evidence"
+            ) from None
         return KnowledgeQueryResult(
             verdict="answer",
             answer=verdict.answer.strip(),
@@ -237,10 +286,15 @@ class KnowledgeQueryService:
                     error_code=error_code,
                 )
         except Exception:
-            logger.exception(
-                "知识问答任务终态写入失败 tenant=%s task_id=%s",
-                auth.tenant_id,
-                task_id,
+            log_event(
+                "knowledge.query.task_finish_failed",
+                level=40,
+                component="knowledge",
+                operation="knowledge.query",
+                outcome="failure",
+                error_category="storage",
+                error_code="query_task_finish_failed",
+                task_id=task_id,
             )
 
     @staticmethod

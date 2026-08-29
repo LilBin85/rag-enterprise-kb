@@ -8,15 +8,35 @@ from pathlib import Path
 import pytest
 
 from langgraph.checkpoint.serde._msgpack import STRICT_MSGPACK_ENABLED
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from rag_kb.agent.checkpointer import (
+    FencedPostgresSaver,
+    TaskCheckpointError,
     _TASK_CHECKPOINT_MSGPACK_TYPES,
     task_checkpoint_serializer,
 )
 from rag_kb.agent.result import TaskResultCandidate
+from rag_kb.observability import Observability
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+
+
+def _telemetry() -> tuple[Observability, InMemorySpanExporter]:
+    observability = Observability(
+        enabled=True,
+        metrics_enabled=True,
+        service_name="rag-kb-test",
+        otlp_endpoint="",
+        trace_sample_ratio=1.0,
+    )
+    observability.start()
+    exporter = InMemorySpanExporter()
+    assert observability.provider is not None
+    observability.provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return observability, exporter
 
 
 def _run_clean_process(code: str) -> subprocess.CompletedProcess[str]:
@@ -90,3 +110,26 @@ def test_pickle_payload_is_rejected_without_fallback() -> None:
 
     with pytest.raises(Exception):
         task_checkpoint_serializer().loads_typed(("pickle", pickle.dumps({"x": 1})))
+
+
+def test_checkpoint_failure_is_safe_telemetry_without_checkpoint_contents() -> None:
+    observability, exporter = _telemetry()
+    secret = "checkpoint prompt Bearer fake-token C:/private/object"
+
+    def fail() -> None:
+        raise TaskCheckpointError("task_checkpoint_lease_stale")
+
+    try:
+        with observability.activate(), pytest.raises(TaskCheckpointError):
+            FencedPostgresSaver._observe_write("checkpoint.put", fail)
+        payload = observability.metrics_payload().decode()
+        spans = exporter.get_finished_spans()
+        rendered_spans = repr(spans)
+    finally:
+        observability.shutdown()
+
+    span = next(item for item in spans if item.name == "checkpoint.write")
+    assert span.status.status_code.name == "ERROR"
+    assert 'outcome="failure"' in payload
+    assert secret not in payload
+    assert secret not in rendered_spans

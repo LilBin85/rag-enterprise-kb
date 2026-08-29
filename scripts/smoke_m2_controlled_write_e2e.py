@@ -467,7 +467,7 @@ def _task_ledger(database, objects, task_ids: list[str]) -> list[dict[str, objec
             raise SmokeError("task_ledger_terminal_state_missing")
         result = results.read_task_result(row.result_ref, row.result_hash)
         event = terminal_events.get(task_id)
-        if event is None or not event.trace_id:
+        if event is None or not event.correlation_id:
             raise SmokeError("task_terminal_event_missing")
         counts = event.counts
         if (
@@ -487,7 +487,7 @@ def _task_ledger(database, objects, task_ids: list[str]) -> list[dict[str, objec
                 "status": row.status,
                 "stop_reason": result.stop_reason,
                 "error_code": row.last_error_code,
-                "trace_id": event.trace_id,
+                "correlation_id": event.correlation_id,
                 "model_calls": counts["model_calls"],
                 "tool_calls": counts["tool_calls"],
             }

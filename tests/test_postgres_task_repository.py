@@ -243,7 +243,7 @@ def test_postgres_finish_task_uses_database_clock_for_deadline_terminal_check() 
             result_kind="research",
             result_ref=f"task-results/{task_id}/result.json",
             result_hash="sha256:" + "a" * 64,
-            trace_id="trace",
+            run_id="trace",
         )
 
         assert finished.status is TaskStatus.FAILED

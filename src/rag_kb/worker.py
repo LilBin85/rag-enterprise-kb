@@ -59,6 +59,13 @@ from rag_kb.infrastructure.object_store import LocalObjectStore
 from rag_kb.infrastructure.vectorstore.qdrant_document_index import QdrantDocumentIndex
 from rag_kb.infrastructure.vectorstore.qdrant_authorized_search import QdrantAuthorizedSearch
 from rag_kb.infrastructure.tools.factory import build_tool_registry
+from rag_kb.observability import (
+    MetadataOnlyLlmCallback,
+    Observability,
+    current_observability,
+    log_event,
+    stable_error_code,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -84,12 +91,14 @@ class _CapabilityLeaseHeartbeat:
         capability_name: str,
         protocol_version: str,
         lease_seconds: int,
+        telemetry: Observability | None = None,
     ) -> None:
         self._repository = repository
         self._worker_id = worker_id
         self._capability_name = capability_name
         self._protocol_version = protocol_version
         self._lease_seconds = lease_seconds
+        self._telemetry = telemetry
         self._interval = lease_seconds / 3
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -117,8 +126,24 @@ class _CapabilityLeaseHeartbeat:
                     worker_id=self._worker_id,
                     lease_seconds=self._lease_seconds,
                 )
-            except Exception:
-                logger.error("Research Agent capability 心跳失败")
+            except Exception as exc:
+                code = stable_error_code(exc)
+                if self._telemetry is not None:
+                    self._telemetry.record_lease_failure(
+                        kind="capability",
+                        operation="capability.lease.renew",
+                        error_code=code,
+                    )
+                else:
+                    log_event(
+                        "lease.renew.failed",
+                        level=logging.ERROR,
+                        component="worker",
+                        operation="capability.lease.renew",
+                        outcome="failure",
+                        error_category="lease",
+                        error_code=code,
+                    )
                 self._stop.set()
 
     def close(self) -> None:
@@ -191,6 +216,13 @@ def _build_research_model(settings):
         timeout=settings.agent_timeout_seconds,
         max_retries=1,
         extra_body={"thinking": {"type": "disabled"}},
+        callbacks=[
+            MetadataOnlyLlmCallback(
+                provider="deepseek",
+                model_name=settings.deepseek_model,
+                operation="agent.generate",
+            )
+        ],
     )
 
 
@@ -199,6 +231,7 @@ def build_task_worker(
 ) -> TaskWorker:
     """构造 M2 protocol Research Agent worker 和 PostgreSQL checkpointer。"""
     settings = get_settings()
+    telemetry = current_observability()
     database = build_database(settings.database_url)
     objects = LocalObjectStore(settings.object_store_root)
     embedder = BgeM3Embedder()
@@ -316,6 +349,7 @@ def build_task_worker(
                 capability_name=settings.task_agent_capability_name,
                 protocol_version=settings.task_agent_protocol_version,
                 lease_seconds=settings.agent_capability_lease_seconds,
+                telemetry=telemetry,
             )
             capability.start()
         except Exception as exc:
@@ -486,16 +520,30 @@ def main() -> int:
     parser.add_argument("--max-jobs", type=int, default=100)
     parser.add_argument("--include-tasks", action="store_true", help="同时执行通用任务队列")
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO)
+    settings = get_settings()
+    telemetry = Observability(
+        enabled=settings.observability_enabled,
+        metrics_enabled=settings.metrics_enabled,
+        service_name="rag-kb-worker",
+        otlp_endpoint=settings.otel_exporter_otlp_endpoint,
+        trace_sample_ratio=settings.otel_trace_sample_ratio,
+    )
+    from rag_kb.observability import configure_json_logging
+
+    configure_json_logging(service="rag-kb-worker", level=settings.log_level)
+    telemetry.start()
     try:
-        return run(
-            watch=args.watch,
-            poll_seconds=args.poll_seconds,
-            max_jobs=args.max_jobs,
-            include_tasks=args.include_tasks,
-        )
+        with telemetry.activate():
+            return run(
+                watch=args.watch,
+                poll_seconds=args.poll_seconds,
+                max_jobs=args.max_jobs,
+                include_tasks=args.include_tasks,
+            )
     except KeyboardInterrupt:
         return 0
+    finally:
+        telemetry.shutdown()
 
 
 if __name__ == "__main__":

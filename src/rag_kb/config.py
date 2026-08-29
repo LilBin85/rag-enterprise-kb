@@ -38,6 +38,16 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_v2_collection: str = "kb_chunks_v2"
 
+    # M0/M1 可观测性：关闭时业务路径只使用 no-op tracer。
+    observability_enabled: bool = False
+    metrics_enabled: bool = True
+    otel_service_name: str = "rag-kb-api"
+    otel_exporter_otlp_endpoint: str = ""
+    otel_trace_sample_ratio: float = Field(default=1.0, ge=0.0, le=1.0)
+    log_level: str = "INFO"
+    log_format: str = "json"
+    worker_metrics_port: int = Field(default=9464, ge=1, le=65535)
+
     # PostgreSQL 是业务与任务状态的生产事实源。SQLite URL 只用于本地轻量测试；
     # schema 创建和升级必须由 Alembic 显式执行，普通请求不得建表或 ALTER。
     database_url: str = "postgresql+psycopg://rag_kb:rag_kb@localhost:5432/rag_kb"

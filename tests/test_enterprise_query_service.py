@@ -10,6 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from sqlalchemy import select, update
 
 from rag_kb.answerer import DeepSeekAnswerModel
@@ -30,6 +32,7 @@ from rag_kb.infrastructure.database.models import (
 )
 from rag_kb.infrastructure.database.session import Database
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
+from rag_kb.observability import Observability
 
 
 def _auth() -> AuthContext:
@@ -167,6 +170,21 @@ def _tasks(db: Database) -> list[AgentTaskRow]:
         return list(session.scalars(select(AgentTaskRow)).all())
 
 
+def _telemetry() -> tuple[Observability, InMemorySpanExporter]:
+    observability = Observability(
+        enabled=True,
+        metrics_enabled=True,
+        service_name="rag-kb-test",
+        otlp_endpoint="",
+        trace_sample_ratio=1.0,
+    )
+    observability.start()
+    exporter = InMemorySpanExporter()
+    assert observability.provider is not None
+    observability.provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return observability, exporter
+
+
 def test_answer_retrieves_once_records_ledger_and_returns_ledger_citations(database: Database) -> None:
     retriever = FakeRetriever(_result(_candidate()))
     model = FakeModel()
@@ -208,6 +226,39 @@ def test_model_exception_fails_task_and_no_answer(database: Database) -> None:
     assert result.refusal is not None and result.refusal.kind == "retrieval_failure"
     assert retriever.calls == 1
     assert _tasks(database)[0].status == "failed"
+
+
+def test_query_telemetry_distinguishes_answer_refusal_and_failure_without_content_leak(
+    database: Database,
+) -> None:
+    observability, exporter = _telemetry()
+    secret = "Bearer fake-token private-question private-answer object/path"
+    try:
+        with observability.activate():
+            assert KnowledgeQueryService(
+                database, FakeRetriever(_result(_candidate())), FakeModel()
+            ).query(secret, _auth()).verdict == "answer"
+            assert KnowledgeQueryService(
+                database, FakeRetriever(_result()), FakeModel()
+            ).query(secret, _auth()).verdict == "refusal"
+            assert KnowledgeQueryService(
+                database,
+                FakeRetriever(_result(_candidate())),
+                FakeModel(error=RuntimeError(secret)),
+            ).query(secret, _auth()).verdict == "refusal"
+        payload = observability.metrics_payload().decode()
+        spans = [span for span in exporter.get_finished_spans() if span.name == "knowledge.query"]
+        rendered_spans = repr(spans)
+    finally:
+        observability.shutdown()
+
+    assert [span.attributes["outcome"] for span in spans] == ["answer", "refusal", "failure"]
+    assert [span.status.status_code.name for span in spans] == ["UNSET", "UNSET", "ERROR"]
+    assert 'outcome="answer",reason="none"' in payload
+    assert 'outcome="refusal",reason="no_authorized_evidence"' in payload
+    assert 'outcome="failure",reason="retrieval_failure"' in payload
+    assert secret not in payload
+    assert secret not in rendered_spans
 
 
 def test_no_candidate_skips_model_and_task_creation(database: Database) -> None:

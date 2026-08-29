@@ -22,6 +22,7 @@ from rag_kb.infrastructure.database.models import (
     IngestionJobRow,
     PrincipalRow,
 )
+from rag_kb.observability import current_trace_headers
 
 
 class DocumentRegistryConflict(RuntimeError):
@@ -252,6 +253,7 @@ class DocumentRegistryRepository:
         source_object_key = (
             f"t/{tenant_segment}/d/{document_segment}/v/{version_id}/source{suffix}"
         )
+        pending_traceparent, pending_tracestate = current_trace_headers()
         session.add(
             DocumentVersionRow(
                 version_id=version_id,
@@ -272,6 +274,8 @@ class DocumentRegistryRepository:
                 version_id=version_id,
                 status="awaiting_object",
                 available_at=datetime.now(UTC),
+                pending_traceparent=pending_traceparent,
+                pending_tracestate=pending_tracestate,
             )
         )
         # 幂等占位必须先于业务实体原子争抢，但显式结果外键只能在实体落库后回填。

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from contextvars import copy_context
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import json
@@ -43,6 +44,14 @@ from rag_kb.infrastructure.database.task_execution import (
 )
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
 from rag_kb.infrastructure.object_store.local import LocalObjectStore, ObjectConflictError
+from rag_kb.observability import (
+    current_observability,
+    error_category_for,
+    finish_observed_span,
+    log_event,
+    observe_span,
+    stable_error_code,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -142,8 +151,84 @@ class ToolExecutionService:
         self._executor_lock = Lock()
 
     def execute(self, request: ToolExecutionRequest) -> ToolExecutionResult:
-        self._approvals.expire_due(tenant_id=request.auth.tenant_id)
         registered = self._registry.get(request.tool_name)
+        definition = registered.definition
+        started_at = datetime.now(UTC)
+        result: ToolExecutionResult | None = None
+        error_code: str | None = None
+        with observe_span(
+            "tool.execute",
+            attributes={
+                "component": "tool_execution",
+                "operation": "tool.execute",
+                "tool_name": definition.name,
+                "tool_mode": definition.mode.value,
+                "task_id": request.task_id,
+            },
+        ) as span:
+            try:
+                result = self._execute(request, registered)
+                error_code = result.error_code
+                category = (
+                    "none"
+                    if result.status == "succeeded"
+                    else "unknown"
+                    if result.status == "unknown"
+                    else error_category_for(error_code)
+                )
+                finish_observed_span(
+                    span,
+                    outcome=result.status,
+                    error_category=category,
+                    error_code=error_code,
+                )
+                return result
+            except Exception as exc:
+                error_code = stable_error_code(exc)
+                finish_observed_span(
+                    span,
+                    outcome="failure",
+                    error_category=error_category_for(error_code),
+                    error_code=error_code,
+                )
+                raise
+            finally:
+                duration_seconds = (datetime.now(UTC) - started_at).total_seconds()
+                outcome = result.status if result is not None else "failure"
+                category = (
+                    "none"
+                    if outcome == "succeeded"
+                    else "unknown"
+                    if outcome == "unknown"
+                    else error_category_for(error_code)
+                )
+                telemetry = current_observability()
+                if telemetry is not None:
+                    telemetry.record_tool(
+                        tool=definition.name,
+                        mode=definition.mode.value,
+                        outcome=outcome,
+                        error_category=category,
+                        duration_seconds=duration_seconds,
+                    )
+                log_event(
+                    "tool.execution.completed",
+                    level=logging.ERROR if category != "none" else logging.INFO,
+                    component="tool_execution",
+                    operation="tool.execute",
+                    outcome=outcome,
+                    error_category=category,
+                    error_code=error_code,
+                    duration_ms=duration_seconds * 1_000,
+                    task_id=request.task_id,
+                    tool_name=definition.name,
+                    tool_mode=definition.mode.value,
+                )
+
+    def _execute(
+        self, request: ToolExecutionRequest, registered: RegisteredTool
+    ) -> ToolExecutionResult:
+        self._approvals.expire_due(tenant_id=request.auth.tenant_id)
         definition = registered.definition
         self._registry.validate_input(registered, request.arguments)
         arguments_hash = arguments_fingerprint(request.arguments)
@@ -205,7 +290,14 @@ class ToolExecutionService:
         )
         with self._executor_lock:
             executor = self._executor
-            future = executor.submit(registered.adapter.execute, request.arguments, context)
+            adapter_context = copy_context()
+            future = executor.submit(
+                adapter_context.run,
+                self._execute_adapter,
+                registered,
+                request.arguments,
+                context,
+            )
         try:
             result = future.result(timeout=definition.timeout_seconds)
         except FutureTimeout:
@@ -217,8 +309,9 @@ class ToolExecutionService:
                             thread_name_prefix="rag-kb-tool",
                         )
                 executor.shutdown(wait=False, cancel_futures=True)
-            return self._complete(
+            return self._complete_observed(
                 request,
+                registered,
                 tool_call_id,
                 status="unknown" if definition.mode is ToolMode.WRITE else "failed",
                 error_code="tool_timeout",
@@ -229,28 +322,69 @@ class ToolExecutionService:
             code = getattr(exc, "code", None)
             if not isinstance(code, str) or not code:
                 code = f"tool_execution_failed_{type(exc).__name__.lower()}"
-            return self._complete(request, tool_call_id, status=status, error_code=code)
-        try:
-            self._registry.validate_output(registered, result)
-            verified = registered.adapter.verify(result, context)
-        except Exception:
-            verified = False
+            return self._complete_observed(
+                request, registered, tool_call_id, status=status, error_code=code
+            )
+        verify_error: str | None = None
+        with observe_span(
+            "tool.verify",
+            attributes={
+                "component": "tool_execution",
+                "operation": "tool.verify",
+                "tool_name": definition.name,
+                "tool_mode": definition.mode.value,
+                "task_id": request.task_id,
+            },
+        ) as verify_span:
+            try:
+                self._registry.validate_output(registered, result)
+                verified = registered.adapter.verify(result, context)
+            except Exception as exc:
+                verified = False
+                verify_error = stable_error_code(exc)
+            finish_observed_span(
+                verify_span,
+                outcome="succeeded" if verified else "failure",
+                error_category="none" if verified else error_category_for(verify_error),
+                error_code=verify_error,
+            )
         if not verified:
             status = "unknown" if definition.mode is ToolMode.WRITE else "failed"
-            return self._complete(
+            return self._complete_observed(
                 request,
+                registered,
                 tool_call_id,
                 status=status,
-                error_code="tool_result_unverified",
+                error_code=verify_error or "tool_result_unverified",
             )
         result_hash = canonical_fingerprint("tool_result", result)
-        return self._complete(
+        return self._complete_observed(
             request,
+            registered,
             tool_call_id,
             status="succeeded",
             result_hash=result_hash,
             result=result,
         )
+
+    @staticmethod
+    def _execute_adapter(
+        registered: RegisteredTool,
+        arguments: dict[str, object],
+        context: ToolExecutionContext,
+    ) -> dict[str, object]:
+        definition = registered.definition
+        with observe_span(
+            "tool.adapter",
+            attributes={
+                "component": "tool_execution",
+                "operation": "tool.adapter",
+                "tool_name": definition.name,
+                "tool_mode": definition.mode.value,
+                "task_id": context.task_id,
+            },
+        ):
+            return registered.adapter.execute(arguments, context)
 
     def close(self) -> None:
         with self._executor_lock:
@@ -708,6 +842,40 @@ class ToolExecutionService:
                 row.rejected_by = _SYSTEM_REJECT_ACTOR
                 row.rejected_at = self._execution_now(work.session)
                 row.rejection_reason = f"auto:{reason}"[:200]
+
+    def _complete_observed(
+        self,
+        request: ToolExecutionRequest,
+        registered: RegisteredTool,
+        tool_call_id: str,
+        **kwargs: object,
+    ) -> ToolExecutionResult:
+        definition = registered.definition
+        with observe_span(
+            "tool.complete",
+            attributes={
+                "component": "tool_execution",
+                "operation": "tool.complete",
+                "tool_name": definition.name,
+                "tool_mode": definition.mode.value,
+                "task_id": request.task_id,
+            },
+        ) as span:
+            result = self._complete(request, tool_call_id, **kwargs)
+            category = (
+                "none"
+                if result.status == "succeeded"
+                else "unknown"
+                if result.status == "unknown"
+                else error_category_for(result.error_code)
+            )
+            finish_observed_span(
+                span,
+                outcome=result.status,
+                error_category=category,
+                error_code=result.error_code,
+            )
+            return result
 
     def _complete(
         self,

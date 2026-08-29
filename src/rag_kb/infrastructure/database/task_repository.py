@@ -38,6 +38,12 @@ from rag_kb.infrastructure.database.task_execution import (
     current_task_auth,
 )
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
+from rag_kb.observability import (
+    current_request_id,
+    current_span_ids,
+    current_trace_headers,
+    normalize_request_id,
+)
 
 
 class TaskRepositoryError(RuntimeError):
@@ -73,6 +79,8 @@ class TaskLease:
     worker_id: str
     lease_generation: int
     budgets: TaskBudgets
+    pending_traceparent: str | None = None
+    pending_tracestate: str | None = None
 
 
 def _state_from_row(row: AgentTaskRow) -> TaskState:
@@ -191,6 +199,7 @@ class DatabaseTaskRepository:
                     if task_mode is TaskMode.RESEARCH
                     else "task_agent_unavailable"
                 )
+            pending_traceparent, pending_tracestate = current_trace_headers()
             row = AgentTaskRow(
                 task_id=task_id or uuid4().hex,
                 tenant_id=auth.tenant_id,
@@ -204,6 +213,8 @@ class DatabaseTaskRepository:
                 available_at=now,
                 required_capability_name=self._task_capability_name,
                 required_protocol_version=self._task_capability_protocol_version,
+                pending_traceparent=pending_traceparent,
+                pending_tracestate=pending_tracestate,
             )
             work.session.add(row)
             work.session.flush()
@@ -211,8 +222,8 @@ class DatabaseTaskRepository:
                 work.session,
                 row,
                 event_type="task_created",
-                trace_id=auth.request_id,
-                run_id=auth.request_id,
+                correlation_id=auth.request_id,
+                run_id=None,
             )
             return _state_from_row(row)
 
@@ -516,6 +527,8 @@ class DatabaseTaskRepository:
                 worker_id=worker_id,
                 lease_generation=row.lease_generation,
                 budgets=TaskBudgets.model_validate(row.budgets),
+                pending_traceparent=row.pending_traceparent,
+                pending_tracestate=row.pending_tracestate,
             )
 
     def claim_user_resume(
@@ -571,6 +584,7 @@ class DatabaseTaskRepository:
             deadline = _aware(row.deadline)
             if deadline is not None and deadline <= now:
                 raise TaskRepositoryError("task_deadline_expired")
+            pending_traceparent, pending_tracestate = current_trace_headers()
             resumed = work.session.execute(
                 update(AgentTaskRow)
                 .where(
@@ -601,6 +615,8 @@ class DatabaseTaskRepository:
                     lease_expires_at=now + timedelta(seconds=lease_seconds),
                     lease_generation=row.lease_generation + 1,
                     state_version=row.state_version + 1,
+                    pending_traceparent=pending_traceparent,
+                    pending_tracestate=pending_tracestate,
                     updated_at=now,
                 )
                 .execution_options(synchronize_session=False)
@@ -614,14 +630,16 @@ class DatabaseTaskRepository:
                 work.session,
                 row,
                 event_type="task_resume_started",
-                trace_id=auth.request_id,
-                run_id=auth.request_id,
+                correlation_id=auth.request_id,
+                run_id=None,
             )
             return TaskLease(
                 state=_state_from_row(row),
                 worker_id=worker_id,
                 lease_generation=row.lease_generation,
                 budgets=TaskBudgets.model_validate(row.budgets),
+                pending_traceparent=row.pending_traceparent,
+                pending_tracestate=row.pending_tracestate,
             )
 
     def claim_approval_resume(
@@ -684,6 +702,7 @@ class DatabaseTaskRepository:
             deadline = _aware(row.deadline)
             if deadline is not None and deadline <= now:
                 raise TaskRepositoryError("task_deadline_expired")
+            pending_traceparent, pending_tracestate = current_trace_headers()
             resumed = work.session.execute(
                 update(AgentTaskRow)
                 .where(
@@ -708,6 +727,8 @@ class DatabaseTaskRepository:
                     lease_expires_at=now + timedelta(seconds=lease_seconds),
                     lease_generation=row.lease_generation + 1,
                     state_version=row.state_version + 1,
+                    pending_traceparent=pending_traceparent,
+                    pending_tracestate=pending_tracestate,
                     updated_at=now,
                 )
                 .execution_options(synchronize_session=False)
@@ -721,14 +742,16 @@ class DatabaseTaskRepository:
                 work.session,
                 row,
                 event_type="task_approval_resume_started",
-                trace_id=auth.request_id,
-                run_id=auth.request_id,
+                correlation_id=auth.request_id,
+                run_id=None,
             )
             return TaskLease(
                 state=_state_from_row(row),
                 worker_id=worker_id,
                 lease_generation=row.lease_generation,
                 budgets=TaskBudgets.model_validate(row.budgets),
+                pending_traceparent=row.pending_traceparent,
+                pending_tracestate=row.pending_tracestate,
             )
 
     def expire_waiting_tasks(self, *, limit: int = 100) -> int:
@@ -778,8 +801,8 @@ class DatabaseTaskRepository:
                     work.session,
                     row,
                     event_type="task_failed",
-                    trace_id="task_deadline_expired",
-                    run_id="task_deadline_expired",
+                    correlation_id="task_deadline_expired",
+                    run_id=None,
                 )
             return len(rows)
 
@@ -861,6 +884,8 @@ class DatabaseTaskRepository:
                 worker_id=lease.worker_id,
                 lease_generation=lease.lease_generation,
                 budgets=TaskBudgets.model_validate(row.budgets),
+                pending_traceparent=row.pending_traceparent,
+                pending_tracestate=row.pending_tracestate,
             )
 
     def pause_for_user(
@@ -868,7 +893,7 @@ class DatabaseTaskRepository:
         lease: TaskLease,
         *,
         question: str,
-        trace_id: str,
+        run_id: str,
     ) -> TaskState:
         """模型请求澄清：只保存可展示摘要，正文留在 checkpointer 线程内。"""
         if not question.strip():
@@ -899,8 +924,8 @@ class DatabaseTaskRepository:
                 work.session,
                 row,
                 event_type="task_waiting_for_user",
-                trace_id=trace_id,
-                run_id=trace_id,
+                correlation_id=run_id,
+                run_id=run_id,
             )
             return _state_from_row(row)
 
@@ -910,7 +935,7 @@ class DatabaseTaskRepository:
         *,
         interrupt_ref: str,
         summary: str,
-        trace_id: str,
+        run_id: str,
     ) -> TaskState:
         """工具审批暂停：业务表只保存裁剪摘要与不透明审批引用。
 
@@ -944,8 +969,8 @@ class DatabaseTaskRepository:
                 work.session,
                 row,
                 event_type="task_waiting_for_approval",
-                trace_id=trace_id,
-                run_id=trace_id,
+                correlation_id=run_id,
+                run_id=run_id,
             )
             return _state_from_row(row)
 
@@ -958,7 +983,8 @@ class DatabaseTaskRepository:
         result_ref: str | None = None,
         result_hash: str | None = None,
         error_code: str | None = None,
-        trace_id: str,
+        run_id: str,
+        auth_request_id: str | None = None,
         counts: dict[str, int] | None = None,
     ) -> TaskState:
         """终态写入：succeeded 必须原子绑定有效结果（计划 §11.4 门禁）。"""
@@ -1020,7 +1046,7 @@ class DatabaseTaskRepository:
                         work.session,
                         task=row,
                         auth_context_ref=lease.state.auth_context_ref,
-                        request_id=trace_id,
+                        request_id=auth_request_id or current_request_id() or "worker-auth-revalidation",
                     )
                 except TaskExecutionContextError as exc:
                     raise TaskRepositoryError("task_auth_context_changed") from exc
@@ -1043,8 +1069,8 @@ class DatabaseTaskRepository:
                 work.session,
                 row,
                 event_type=f"task_{status.value}",
-                trace_id=trace_id,
-                run_id=trace_id,
+                correlation_id=run_id,
+                run_id=run_id,
                 counts=event_counts,
             )
             return _state_from_row(row)
@@ -1089,8 +1115,8 @@ class DatabaseTaskRepository:
                 work.session,
                 row,
                 event_type="task_cancelled",
-                trace_id=auth.request_id,
-                run_id=auth.request_id,
+                correlation_id=auth.request_id,
+                run_id=None,
             )
             return _state_from_row(row)
 
@@ -1162,8 +1188,8 @@ class DatabaseTaskRepository:
         row: AgentTaskRow,
         *,
         event_type: str,
-        trace_id: str,
-        run_id: str,
+        correlation_id: str,
+        run_id: str | None,
         counts: dict[str, int] | None = None,
     ) -> None:
         sequence = session.scalar(
@@ -1172,6 +1198,7 @@ class DatabaseTaskRepository:
                 TaskEventRow.task_id == row.task_id,
             )
         )
+        otel_trace_id, otel_span_id = current_span_ids()
         session.add(
             TaskEventRow(
                 event_id=uuid4().hex,
@@ -1179,7 +1206,9 @@ class DatabaseTaskRepository:
                 tenant_id=row.tenant_id,
                 sequence=int(sequence or 0),
                 event_type=event_type,
-                trace_id=trace_id,
+                correlation_id=normalize_request_id(correlation_id),
+                otel_trace_id=otel_trace_id,
+                otel_span_id=otel_span_id,
                 run_id=run_id,
                 stage=row.status,
                 status=row.status,

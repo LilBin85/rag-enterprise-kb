@@ -259,7 +259,7 @@ def _controlled_artifact(database, objects, auth, ids):
         lease,
         status=TaskStatus.FAILED,
         error_code="task_agent_failed",
-        trace_id="trace",
+        run_id="trace",
     )
     return repository, task_id, ref
 
@@ -421,7 +421,7 @@ def test_purge_finished_task_content_removes_checkpoint_and_result(postgres_db) 
             result_kind=result.result_kind,
             result_ref=result_ref,
             result_hash=result_hash,
-            trace_id="trace",
+            run_id="trace",
         )
         assert _object_exists(objects, result_ref)
 
@@ -482,7 +482,7 @@ def test_purge_finished_task_content_retries_failed_result_delete(
         result_kind=result.result_kind,
         result_ref=result_ref,
         result_hash=result_hash,
-        trace_id="trace",
+            run_id="trace",
     )
     _expire_task_content(database, tenant_id=ids.tenant_id, task_id=ids.task_id)
     checkpointer = _RecordingCheckpointer()
@@ -534,7 +534,7 @@ def test_purge_finished_task_content_marks_failed_without_result_once(postgres_d
         lease,
         status=TaskStatus.FAILED,
         error_code="task_agent_failed",
-        trace_id="trace",
+            run_id="trace",
     )
     _expire_task_content(database, tenant_id=ids.tenant_id, task_id=ids.task_id)
     checkpointer = _RecordingCheckpointer()
@@ -594,7 +594,7 @@ def test_purge_orphaned_result_objects_respects_grace_references_and_live_deadli
         result_kind=referenced_result.result_kind,
         result_ref=referenced_ref,
         result_hash=referenced_hash,
-        trace_id="trace",
+            run_id="trace",
     )
     running_task_id = f"{ids.task_id}-running"
     running_lease = _claim_research_task(repository, auth, running_task_id)
@@ -659,7 +659,7 @@ def test_expire_waiting_task_uses_postgres_clock_and_writes_event(postgres_db) -
     )
     lease = repository.claim_next(worker_id="worker-a", lease_seconds=60)
     assert lease is not None
-    paused = repository.pause_for_user(lease, question="需要部门", trace_id="trace")
+    paused = repository.pause_for_user(lease, question="需要部门", run_id="trace")
     with database.sessions.begin() as session:
         task = session.get(AgentTaskRow, ids.task_id)
         assert task is not None

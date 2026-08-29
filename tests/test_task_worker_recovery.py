@@ -8,6 +8,8 @@ from threading import Event
 from types import SimpleNamespace
 
 import pytest
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from rag_kb.agent.result import AgentResultStore
 from rag_kb.application.task_worker import TaskWorker
@@ -26,6 +28,7 @@ from rag_kb.infrastructure.database.task_repository import (
     TaskRepositoryError,
 )
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
+from rag_kb.observability import Observability, current_run_id, current_trace_headers
 
 
 class ScriptedAgent:
@@ -127,6 +130,21 @@ def _fence_config(*, generation: int) -> dict[str, object]:
     }
 
 
+def _telemetry() -> tuple[Observability, InMemorySpanExporter]:
+    observability = Observability(
+        enabled=True,
+        metrics_enabled=True,
+        service_name="rag-kb-test",
+        otlp_endpoint="",
+        trace_sample_ratio=1.0,
+    )
+    observability.start()
+    exporter = InMemorySpanExporter()
+    assert observability.provider is not None
+    observability.provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return observability, exporter
+
+
 def test_worker_persists_verified_result_after_initial_agent_run(setup) -> None:
     database, repository, auth, results = setup
     final = _refusal()
@@ -144,6 +162,76 @@ def test_worker_persists_verified_result_after_initial_agent_run(setup) -> None:
         for config in (*agent.state_configs, *(item[1] for item in agent.invocations))
     )
     assert results.read_task_result(state.result_ref, state.result_hash).refusal_code == "insufficient_evidence"
+
+
+def test_worker_run_links_producer_without_becoming_its_child(setup) -> None:
+    database, repository, auth, results = setup
+    observability, exporter = _telemetry()
+    final = _refusal()
+    agent = ScriptedAgent((_snapshot(), _snapshot(values=final)), result=final)
+    try:
+        with observability.activate():
+            with observability.span("producer.request") as producer:
+                traceparent, tracestate = current_trace_headers()
+                producer_context = producer.get_span_context()
+                claimed = repository.claim_next(worker_id="worker-a", lease_seconds=300)
+                assert claimed is not None
+                lease = type(claimed)(
+                    claimed.state,
+                    claimed.worker_id,
+                    claimed.lease_generation,
+                    claimed.budgets,
+                    traceparent,
+                    tracestate,
+                )
+                result = _worker(database, repository, auth, results, agent)._run_claimed(lease)
+                assert current_run_id() is None
+        payload = observability.metrics_payload().decode()
+        run_span = next(span for span in exporter.get_finished_spans() if span.name == "task.run")
+    finally:
+        observability.shutdown()
+
+    assert result.status == "finished"
+    assert {"task.run", "agent.advance", "agent.invoke"} <= {
+        span.name for span in exporter.get_finished_spans()
+    }
+    assert run_span.parent is None or not run_span.parent.is_valid
+    assert len(run_span.links) == 1
+    assert run_span.links[0].context.trace_id == producer_context.trace_id
+    assert run_span.links[0].context.span_id == producer_context.span_id
+    assert agent.invocations[0][2].auth.request_id != run_span.attributes["run_id"]
+    task_run_metric = next(
+        line for line in payload.splitlines() if line.startswith("rag_kb_task_runs_total{")
+    )
+    assert all(label in task_run_metric for label in ('mode="research"', 'outcome="succeeded"', 'error_category="none"'))
+
+
+def test_lease_failure_emits_one_safe_error_span_and_metric() -> None:
+    from rag_kb.application.task_worker import _TaskLeaseHeartbeat
+    from rag_kb.infrastructure.database.task_repository import TaskRepositoryError
+
+    observability, exporter = _telemetry()
+    try:
+        with observability.activate():
+            heartbeat = _TaskLeaseHeartbeat(
+                lambda: (_ for _ in ()).throw(TaskRepositoryError("task_lease_generation_stale")),
+                1,
+                on_failure=lambda exc: observability.record_lease_failure(
+                    kind="task",
+                    operation="task.lease.renew",
+                    error_code=getattr(exc, "code", "unknown"),
+                ),
+            )
+            with pytest.raises(TaskRepositoryError):
+                heartbeat.__enter__()
+        payload = observability.metrics_payload().decode()
+        spans = [span for span in exporter.get_finished_spans() if span.name == "lease.renew"]
+    finally:
+        observability.shutdown()
+
+    assert len(spans) == 1
+    assert spans[0].status.status_code.name == "ERROR"
+    assert 'kind="task",operation="task.lease.renew"' in payload
 
 
 def test_worker_uses_persisted_budgets_for_agent_and_recursion_limit(setup) -> None:
@@ -471,7 +559,7 @@ def test_controlled_finish_binds_result_and_repeat_sync_cannot_change_terminal(
         result_kind="controlled_action",
         result_ref=result_ref,
         result_hash=result_hash,
-        trace_id="trace-controlled",
+        run_id="trace-controlled",
     )
     assert finished.status is TaskStatus.SUCCEEDED
     with database.sessions() as session:
@@ -488,7 +576,7 @@ def test_controlled_finish_binds_result_and_repeat_sync_cannot_change_terminal(
             result_kind="controlled_action",
             result_ref=f"task-results/task-controlled/{uuid4().hex}.json",
             result_hash="sha256:" + "c" * 64,
-            trace_id="trace-controlled-2",
+            run_id="trace-controlled-2",
         )
     with database.sessions() as session:
         row = session.get(AgentTaskRow, "task-controlled")

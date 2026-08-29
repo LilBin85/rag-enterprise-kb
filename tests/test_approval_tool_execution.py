@@ -10,6 +10,8 @@ from threading import Event
 from uuid import uuid4
 
 import pytest
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from sqlalchemy import select, text, update
 
 from rag_kb.application.approval_service import (
@@ -43,6 +45,7 @@ from rag_kb.infrastructure.database.models import (
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository, TaskLease
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
+from rag_kb.observability import Observability
 from rag_kb.infrastructure.tools.artifacts import LocalArtifactToolAdapter
 
 
@@ -202,6 +205,21 @@ def _executor(database, registry, approvals) -> ToolExecutionService:
     )
 
 
+def _telemetry() -> tuple[Observability, InMemorySpanExporter]:
+    observability = Observability(
+        enabled=True,
+        metrics_enabled=True,
+        service_name="rag-kb-test",
+        otlp_endpoint="",
+        trace_sample_ratio=1.0,
+    )
+    observability.start()
+    exporter = InMemorySpanExporter()
+    assert observability.provider is not None
+    observability.provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return observability, exporter
+
+
 def test_any_approval_binding_change_invalidates_execution(stage5) -> None:
     database, requester, approver, _, _lease = stage5
     service, binding = _approved(database, requester, approver)
@@ -232,6 +250,47 @@ def test_approval_requires_authorized_approver_and_write_is_idempotent(stage5) -
     assert second.duplicate is True and first.result_hash == second.result_hash
     with pytest.raises(ToolExecutionError, match="idempotency_key_conflict"):
         executor.execute(_request(requester, binding.approval_id, lease, _arguments("changed")))
+
+
+def test_tool_adapter_thread_keeps_execute_trace_and_excludes_arguments(stage5) -> None:
+    database, requester, approver, _, lease = stage5
+    arguments = _arguments("Bearer fake-token tool-argument C:/private/object")
+    approvals, binding = _approved(database, requester, approver, arguments)
+    executor = _executor(
+        database,
+        ToolRegistry(adapters={"create_report_artifact": _VerifiedAdapter()}),
+        approvals,
+    )
+    observability, exporter = _telemetry()
+    try:
+        with observability.activate():
+            result = executor.execute(
+                _request(requester, binding.approval_id, lease, arguments, key="trace-key")
+            )
+        payload = observability.metrics_payload().decode()
+        spans = exporter.get_finished_spans()
+        rendered_spans = repr(spans)
+    finally:
+        executor.close()
+        observability.shutdown()
+
+    execute_span = next(span for span in spans if span.name == "tool.execute")
+    adapter_span = next(span for span in spans if span.name == "tool.adapter")
+    assert result.status == "succeeded"
+    assert {"tool.execute", "tool.adapter", "tool.verify", "tool.complete"} <= {
+        span.name for span in spans
+    }
+    assert adapter_span.context.trace_id == execute_span.context.trace_id
+    assert adapter_span.parent is not None and adapter_span.parent.span_id == execute_span.context.span_id
+    tool_metric = next(
+        line for line in payload.splitlines() if line.startswith("rag_kb_tool_calls_total{")
+    )
+    assert all(
+        label in tool_metric
+        for label in ('tool="create_report_artifact"', 'mode="write"', 'outcome="succeeded"')
+    )
+    assert arguments["content"] not in payload
+    assert arguments["content"] not in rendered_spans
 
 
 def test_same_approval_can_be_consumed_once_even_with_a_new_idempotency_key(stage5) -> None:

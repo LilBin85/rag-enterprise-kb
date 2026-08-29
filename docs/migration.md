@@ -4,7 +4,7 @@
 
 ## 迁移顺序
 
-1. 运行 `alembic upgrade head`，当前目标为 `20260827_0013`，再运行 `python scripts/init_agent_checkpointer.py` 初始化 checkpointer schema。
+1. 运行 `alembic upgrade head`，当前目标为 `20260829_0014`，再运行 `python scripts/init_agent_checkpointer.py` 初始化 checkpointer schema。
 2. 启动 PostgreSQL、Qdrant，再启动 API 与 Worker；只有 Worker 全部构建完成并注册 `task-agent/m2-fenced-v1` capability lease 后才恢复任务入口。
 3. 使用新版 `/v1` 客户端；首个版本使用 `POST /v1/documents`，同一文档的后续版本使用 `POST /v1/documents/{document_id}/versions`，两者都必须提供 `Idempotency-Key`。
 4. 旧接口兼容层已删除，客户端必须使用 `/v1` 接口。
@@ -49,7 +49,7 @@
 1. 关闭 Research 任务创建入口（或停止对外接受新任务）。
 2. 停止全部任务 Worker，确认 capability lease 已过期或手动删除。
 3. 备份数据库与对象目录（若环境包含需保留数据）。
-4. 执行 `alembic upgrade head` 至 `20260827_0013` 并初始化 checkpointer schema。
+4. 执行 `alembic upgrade head` 至 `20260829_0014` 并初始化 checkpointer schema。
 5. 部署 API 与 Worker 新代码。
 6. 启动 Worker，确认 capability 名称 `task-agent`、协议 `m2-fenced-v1` 的租约有效。
 7. 恢复任务入口；发布前重新执行故障注入、严格真实 E2E 与迁移 round-trip，不能复用历史报告。
@@ -62,7 +62,7 @@ alembic current
 conda run -n rag-kb --no-capture-output python -m pytest -q tests/test_database_migrations.py
 ```
 
-`alembic current` 应显示 `20260827_0013 (head)`。PostgreSQL round-trip 测试需要显式空临时库：设置 `RAG_KB_TEST_POSTGRES_MIGRATION_URL` 后运行同一测试文件，upgrade/downgrade/upgrade 序列不得以 metadata 建表伪造。
+`alembic current` 应显示 `20260829_0014 (head)`。PostgreSQL round-trip 测试需要显式空临时库：设置 `RAG_KB_TEST_POSTGRES_MIGRATION_URL` 后运行同一测试文件，upgrade/downgrade/upgrade 序列不得以 metadata 建表伪造。
 
 ## 旧测试与文档
 

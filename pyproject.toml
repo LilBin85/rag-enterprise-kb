@@ -16,11 +16,15 @@ dependencies = [
   "langgraph-checkpoint-postgres==3.1.2",
   "jsonschema>=4.26.0,<5",
   "pydantic-settings>=2.14.2,<3",
+  "prometheus-client",
   "psycopg[binary]>=3.3,<4",
   "python-multipart>=0.0.32,<1",
   "PyYAML>=6.0.3,<7",
   "qdrant-client>=1.19.0,<2",
   "SQLAlchemy>=2.0.52,<2.1",
+  "opentelemetry-api",
+  "opentelemetry-sdk",
+  "opentelemetry-exporter-otlp-proto-grpc",
   "uvicorn>=0.52.1,<1",
 ]
 

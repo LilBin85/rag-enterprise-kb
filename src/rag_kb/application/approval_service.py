@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from rag_kb.domain.approvals import ApprovalBinding
@@ -27,6 +27,13 @@ from rag_kb.infrastructure.database.task_execution import (
     TaskExecutionContextError,
 )
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
+from rag_kb.observability import (
+    current_observability,
+    error_category_for,
+    finish_observed_span,
+    log_event,
+    observe_span,
+)
 
 
 class ApprovalServiceError(RuntimeError):
@@ -166,6 +173,60 @@ class ApprovalService:
         # 信任边界：tool/version 只从注册表白名单派生，拒绝任意工具或伪造版本。
         self._registry = registry or ToolRegistry()
         self._now = now or (lambda: datetime.now(UTC))
+
+    def _record_transition(
+        self,
+        *,
+        decision: str,
+        outcome: str,
+        task_id: str,
+        created_at: datetime | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        wait_seconds = None
+        if created_at is not None:
+            created_at = (
+                created_at.replace(tzinfo=UTC)
+                if created_at.tzinfo is None
+                else created_at
+            )
+            wait_seconds = (self._now() - created_at).total_seconds()
+        category = error_category_for(error_code) if error_code is not None else "none"
+        with observe_span(
+            "approval.transition",
+            attributes={
+                "component": "approval",
+                "operation": "approval.transition",
+                "decision": decision,
+                "outcome": outcome,
+                "task_id": task_id,
+            },
+        ) as span:
+            finish_observed_span(
+                span,
+                outcome=outcome,
+                error_category=category,
+                error_code=error_code,
+            )
+            telemetry = current_observability()
+            if telemetry is not None:
+                telemetry.record_approval(
+                    decision=decision,
+                    outcome=outcome,
+                    wait_seconds=wait_seconds,
+                )
+            log_event(
+                "approval.transitioned",
+                level=40 if category != "none" else 20,
+                component="approval",
+                operation="approval.transition",
+                decision=decision,
+                outcome=outcome,
+                error_category=category,
+                error_code=error_code,
+                task_id=task_id,
+                duration_ms=wait_seconds * 1_000 if wait_seconds is not None else None,
+            )
 
     def _require_writable_tool(self, tool_name: str) -> RegisteredTool:
         try:
@@ -337,6 +398,7 @@ class ApprovalService:
         if expires_at.tzinfo is None or expires_at <= now:
             raise ApprovalServiceError("approval_expiry_invalid")
         arguments_hash = arguments_fingerprint(arguments)
+        created = False
         with UnitOfWork(self._database) as work:
             assert work.session is not None
             task = work.session.scalar(
@@ -444,6 +506,7 @@ class ApprovalService:
                     )
                     work.session.flush()
             if existing is None:
+                created = True
                 existing = ApprovalRow(
                     approval_id=uuid4().hex,
                     task_id=task_id,
@@ -481,7 +544,14 @@ class ApprovalService:
                 )
                 work.session.add(existing)
                 work.session.flush()
-            return self._binding(existing)
+            binding = self._binding(existing)
+        if created:
+            self._record_transition(
+                decision="requested",
+                outcome="succeeded",
+                task_id=binding.task_id,
+            )
+        return binding
 
     def approve(
         self,
@@ -497,6 +567,8 @@ class ApprovalService:
         self.expire_due(tenant_id=auth.tenant_id)
         now = self._now()
         invalid_code: str | None = None
+        transition_task_id: str | None = None
+        transition_created_at: datetime | None = None
         with UnitOfWork(self._database) as work:
             assert work.session is not None
             candidate = work.session.scalar(
@@ -597,8 +669,25 @@ class ApprovalService:
                 row.approved_at = now
             work.session.flush()
             binding = self._binding(row)
+            transition_task_id = row.task_id
+            transition_created_at = row.created_at
         if invalid_code is not None:
+            assert transition_task_id is not None
+            self._record_transition(
+                decision="rejected",
+                outcome="failed",
+                task_id=transition_task_id,
+                created_at=transition_created_at,
+                error_code=invalid_code,
+            )
             raise ApprovalServiceError(invalid_code)
+        assert transition_task_id is not None
+        self._record_transition(
+            decision="approved",
+            outcome="succeeded",
+            task_id=transition_task_id,
+            created_at=transition_created_at,
+        )
         return binding
 
     def reject(
@@ -615,6 +704,8 @@ class ApprovalService:
             raise ApprovalServiceError("approver_permission_denied")
         self.expire_due(tenant_id=auth.tenant_id)
         now = self._now()
+        transition_task_id: str | None = None
+        transition_created_at: datetime | None = None
         with UnitOfWork(self._database) as work:
             assert work.session is not None
             row = work.session.scalar(
@@ -663,7 +754,17 @@ class ApprovalService:
             reason_text = (reason or "rejected_by_approver").strip()[:200]
             row.rejection_reason = reason_text or "rejected_by_approver"
             work.session.flush()
-            return self._binding(row)
+            binding = self._binding(row)
+            transition_task_id = row.task_id
+            transition_created_at = row.created_at
+        assert transition_task_id is not None
+        self._record_transition(
+            decision="rejected",
+            outcome="succeeded",
+            task_id=transition_task_id,
+            created_at=transition_created_at,
+        )
+        return binding
 
     def get(self, *, tenant_id: str, approval_id: str) -> ApprovalBinding:
         with self._database.sessions() as session:
@@ -889,16 +990,28 @@ class ApprovalService:
 
     def expire_due(self, *, tenant_id: str | None = None) -> int:
         """独立提交过期转换，避免异常回滚令 active 唯一键永久被占用。"""
-        statement = update(ApprovalRow).where(
+        now = self._now()
+        statement = select(ApprovalRow).where(
             ApprovalRow.status.in_(("pending", "approved")),
-            ApprovalRow.expires_at <= self._now(),
+            ApprovalRow.expires_at <= now,
         )
         if tenant_id is not None:
             statement = statement.where(ApprovalRow.tenant_id == tenant_id)
+        transitions: list[tuple[str, datetime]] = []
         with UnitOfWork(self._database) as work:
             assert work.session is not None
-            result = work.session.execute(statement.values(status="expired"))
-            return int(result.rowcount or 0)
+            rows = tuple(work.session.scalars(statement.with_for_update()))
+            for row in rows:
+                row.status = "expired"
+                transitions.append((row.task_id, row.created_at))
+        for task_id, created_at in transitions:
+            self._record_transition(
+                decision="expired",
+                outcome="succeeded",
+                task_id=task_id,
+                created_at=created_at,
+            )
+        return len(transitions)
 
     @staticmethod
     def _require_pending_resume_target(

@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from rag_kb.config import Settings
 from rag_kb.domain.retrieval import RetrievalCandidate
+from rag_kb.observability import MetadataOnlyLlmCallback
 
 _DEEPSEEK_ANSWER_TIMEOUT_SECONDS = 60
 
@@ -43,6 +44,13 @@ class DeepSeekAnswerModel:
             timeout=_DEEPSEEK_ANSWER_TIMEOUT_SECONDS,
             max_retries=0,
             extra_body={"thinking": {"type": "disabled"}},
+            callbacks=[
+                MetadataOnlyLlmCallback(
+                    provider="deepseek",
+                    model_name=settings.deepseek_model,
+                    operation="knowledge.answer",
+                )
+            ],
         )
         self._structured = llm.with_structured_output(ModelVerdict)
 

@@ -25,6 +25,7 @@ from rag_kb.infrastructure.database.task_repository import (
     TASK_AGENT_PROTOCOL_VERSION,
     TaskRepositoryError,
 )
+from rag_kb.observability import Observability, current_trace_headers
 
 
 class Clock:
@@ -134,7 +135,7 @@ def test_finish_task_turns_expired_result_submission_into_failed(database) -> No
         result_kind="research",
         result_ref="task-results/task-a/result.json",
         result_hash="sha256:" + "a" * 64,
-        trace_id="trace-a",
+        run_id="trace-a",
     )
 
     assert finished.status is TaskStatus.FAILED
@@ -170,7 +171,7 @@ def test_finish_task_does_not_write_deadline_failure_after_lease_loss(database) 
             result_kind="research",
             result_ref="task-results/task-a/result.json",
             result_hash="sha256:" + "a" * 64,
-            trace_id="trace-a",
+            run_id="trace-a",
         )
 
     assert repository.get_task(auth=auth(), task_id="task-a").status is TaskStatus.RUNNING
@@ -198,7 +199,7 @@ def test_pause_and_resume_store_only_interrupt_summary(database) -> None:
     paused = repository.pause_for_user(
         lease,
         question="需要哪个部门？",
-        trace_id="trace-a",
+        run_id="trace-a",
     )
     assert paused.status is TaskStatus.WAITING_FOR_USER
     assert paused.interrupt_kind == "user_clarification"
@@ -219,6 +220,69 @@ def test_pause_and_resume_store_only_interrupt_summary(database) -> None:
     assert resumed.state.state_version == paused.state_version + 1
 
 
+def test_resume_replaces_the_pending_producer_trace_context(database) -> None:
+    repository = DatabaseTaskRepository(database)
+    observability = Observability(
+        enabled=True,
+        metrics_enabled=False,
+        service_name="rag-kb-test",
+        otlp_endpoint="",
+        trace_sample_ratio=1.0,
+    )
+    try:
+        with observability.http_span(None):
+            created(repository)
+            initial_traceparent, _ = current_trace_headers()
+        lease = repository.claim_next(worker_id="worker-a", lease_seconds=30)
+        assert lease is not None
+        paused = repository.pause_for_user(
+            lease,
+            question="需要哪个部门？",
+            run_id="run-a",
+        )
+
+        with observability.http_span(None):
+            resumed = repository.claim_user_resume(
+                auth=auth(),
+                task_id="task-a",
+                expected_state_version=paused.state_version,
+                worker_id="worker-b",
+                lease_seconds=30,
+            )
+            resumed_traceparent, _ = current_trace_headers()
+    finally:
+        observability.shutdown()
+
+    assert initial_traceparent is not None
+    assert resumed.pending_traceparent == resumed_traceparent
+    assert resumed.pending_traceparent != initial_traceparent
+
+
+def test_task_event_correlation_id_is_normalized_at_the_repository_boundary(database) -> None:
+    repository = DatabaseTaskRepository(database)
+    oversized_auth = AuthContext(
+        tenant_id="tenant-a",
+        user_id="user-a",
+        attributes={"permissions": ["task:create", "task:read"]},
+        request_id="x" * 65,
+    )
+
+    repository.create_task(
+        auth=oversized_auth,
+        goal="研究采购审批制度",
+        task_mode=TaskMode.RESEARCH,
+        task_id="task-oversized-request-id",
+    )
+
+    with database.sessions() as session:
+        event = session.scalar(
+            select(TaskEventRow).where(TaskEventRow.task_id == "task-oversized-request-id")
+        )
+    assert event is not None
+    assert len(event.correlation_id) == 32
+    assert event.correlation_id != oversized_auth.request_id
+
+
 def test_waiting_deadline_reaper_fails_task_once_and_blocks_resume(database) -> None:
     clock = Clock()
     repository = DatabaseTaskRepository(database, now=clock)
@@ -228,7 +292,7 @@ def test_waiting_deadline_reaper_fails_task_once_and_blocks_resume(database) -> 
     paused = repository.pause_for_user(
         lease,
         question="需要哪个部门？",
-        trace_id="trace-a",
+        run_id="trace-a",
     )
     clock.value += timedelta(seconds=601)
 
@@ -272,7 +336,7 @@ def test_resume_deadline_is_conditionally_checked_at_state_transition(database) 
     paused = repository.pause_for_user(
         lease,
         question="需要哪个部门？",
-        trace_id="trace-a",
+        run_id="trace-a",
     )
     with database.sessions.begin() as session:
         row = session.get(AgentTaskRow, "task-a")
@@ -307,9 +371,9 @@ def test_finished_research_task_requires_immutable_result_and_is_not_reclaimed(d
     assert lease is not None
 
     with pytest.raises(ValueError, match="task_result_binding_required"):
-        repository.finish_task(lease, status=TaskStatus.SUCCEEDED, trace_id="trace-a")
+        repository.finish_task(lease, status=TaskStatus.SUCCEEDED, run_id="trace-a")
     with pytest.raises(ValueError, match="task_result_binding_required"):
-        repository.finish_task(lease, status=TaskStatus.REFUSED, trace_id="trace-a")
+        repository.finish_task(lease, status=TaskStatus.REFUSED, run_id="trace-a")
     with pytest.raises(ValueError, match="task_event_counts_invalid"):
         repository.finish_task(
             lease,
@@ -317,7 +381,7 @@ def test_finished_research_task_requires_immutable_result_and_is_not_reclaimed(d
             result_kind="research",
             result_ref="task-results/task-a/result.json",
             result_hash="sha256:" + "a" * 64,
-            trace_id="trace-a",
+            run_id="trace-a",
             counts={"model_calls": -1},
         )
     finished = repository.finish_task(
@@ -326,7 +390,7 @@ def test_finished_research_task_requires_immutable_result_and_is_not_reclaimed(d
         result_kind="research",
         result_ref="task-results/task-a/result.json",
         result_hash="sha256:" + "a" * 64,
-        trace_id="trace-a",
+        run_id="trace-a",
         counts={"model_calls": 2, "tool_calls": 1},
     )
     assert finished.status is TaskStatus.SUCCEEDED
@@ -361,7 +425,7 @@ def test_finished_research_task_uses_injected_sqlite_clock_for_content_expiry(da
         result_kind="research",
         result_ref="task-results/task-a/result.json",
         result_hash="sha256:" + "a" * 64,
-        trace_id="trace-a",
+        run_id="trace-a",
     )
     assert finished.content_expires_at is not None
     assert finished.content_expires_at == started_at + timedelta(days=7)
@@ -391,7 +455,7 @@ def test_finish_task_keeps_cancelled_status_binding_consistent(database) -> None
     finished = repository.finish_task(
         lease,
         status=TaskStatus.CANCELLED,
-        trace_id="trace-a",
+        run_id="trace-a",
     )
 
     assert finished.status is TaskStatus.CANCELLED
@@ -554,7 +618,7 @@ def test_m2_user_resume_requires_exact_live_worker_capability(database) -> None:
     paused = repository.pause_for_user(
         lease,
         question="需要哪个部门？",
-        trace_id="trace-m2",
+        run_id="trace-m2",
     )
 
     with pytest.raises(TaskRepositoryError, match="task_protocol_mismatch"):

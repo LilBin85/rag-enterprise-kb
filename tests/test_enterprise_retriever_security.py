@@ -4,11 +4,14 @@ import hashlib
 from dataclasses import replace
 
 import pytest
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from rag_kb.application.enterprise_retriever import EnterpriseRetriever, RetrievalSecurityError
 from rag_kb.application.retrieval_fusion import RankedChunk
 from rag_kb.domain.identity import AuthContext
 from rag_kb.infrastructure.database.acl_repository import AuthorizedVersionSet
+from rag_kb.observability import Observability
 
 
 def auth() -> AuthContext:
@@ -84,6 +87,21 @@ class Reranker:
         return tuple(self.transform(item) for item in candidates)
 
 
+def _telemetry() -> tuple[Observability, InMemorySpanExporter]:
+    observability = Observability(
+        enabled=True,
+        metrics_enabled=True,
+        service_name="rag-kb-test",
+        otlp_endpoint="",
+        trace_sample_ratio=1.0,
+    )
+    observability.start()
+    exporter = InMemorySpanExporter()
+    assert observability.provider is not None
+    observability.provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return observability, exporter
+
+
 def test_hybrid_routes_share_scope_and_exact_sql_revalidation() -> None:
     authorization = Authorization()
     vectors = Vectors()
@@ -103,6 +121,45 @@ def test_hybrid_routes_share_scope_and_exact_sql_revalidation() -> None:
     assert all(call[1]["allowed_principals"] == auth().acl_subjects for call in vectors.calls)
     assert authorization.exact_calls
     assert [item.chunk_id for item in result.candidates] == ["chunk-1"]
+
+
+def test_retrieval_telemetry_records_all_stages_without_dynamic_input_labels() -> None:
+    observability, exporter = _telemetry()
+    secret = "query private-token document/body C:/private/object"
+    try:
+        with observability.activate():
+            result = EnterpriseRetriever(
+                Authorization(),
+                Vectors(),
+                hybrid_enabled=True,
+                reranker=Reranker(lambda item: item),
+                candidate_k=5,
+                context_k=2,
+                context_token_budget=100,
+            ).search(secret, auth())
+        payload = observability.metrics_payload().decode()
+        spans = exporter.get_finished_spans()
+        rendered_spans = repr(spans)
+    finally:
+        observability.shutdown()
+
+    names = {span.name for span in spans}
+    assert {
+        "retrieval.search",
+        "retrieval.authorization",
+        "retrieval.dense",
+        "retrieval.sparse",
+        "retrieval.fuse",
+        "retrieval.rerank",
+        "retrieval.revalidate",
+        "retrieval.pack",
+    } <= names
+    assert 'stage="dense"' in payload
+    assert 'stage="fused"' in payload
+    assert 'stage="revalidated"' in payload
+    assert 'stage="packed"' in payload
+    assert secret not in payload
+    assert secret not in rendered_spans
 
 
 def test_vector_tenant_and_text_hash_contracts_fail_closed() -> None:
