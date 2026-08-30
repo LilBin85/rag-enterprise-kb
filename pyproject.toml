@@ -39,6 +39,7 @@ evaluation = [
 ]
 dev = [
   "httpx>=0.28.1,<1",
+  "pypdfium2>=5.12.1,<6",
   "pytest>=9.1.1,<10",
 ]
 
