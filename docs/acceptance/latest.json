@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_on": "2026-08-30T14:44:05.557895+00:00",
+  "generated_on": "2026-08-30T15:16:26.333542+00:00",
   "code": {
     "status": "passed",
     "values": {
-      "git_revision": "320fc6927f0b3f0b9f513ff26ee95d839a9214aa",
+      "git_revision": "ac18d8200ae2f2a7d13c635617d6a81d993ddc24",
       "worktree_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     }
   },
@@ -25,13 +25,13 @@
     "status": "passed",
     "values": {
       "pytest": {
-        "total": 529,
+        "total": 530,
         "failures": 0,
         "errors": 0,
         "skipped": 0,
-        "duration_seconds": 250.984,
+        "duration_seconds": 243.948,
         "skipped_details": [],
-        "passed": 529
+        "passed": 530
       },
       "retrieval": {
         "all_cases": {
@@ -49,7 +49,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 190.717,
+              "latency_ms": 208.898,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -94,7 +94,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 156.37,
+              "latency_ms": 164.807,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -139,7 +139,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 176.64,
+              "latency_ms": 199.089,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -164,7 +164,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 165.776,
+              "latency_ms": 154.47,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -204,7 +204,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 165.052,
+              "latency_ms": 170.391,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -249,7 +249,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 159.505,
+              "latency_ms": 166.794,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -289,7 +289,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": "evidence_quantitative_fact_missing",
-              "latency_ms": 180.96,
+              "latency_ms": 175.425,
               "no_answer_correct": true,
               "returned_document_versions": [],
               "split": "calibration",
@@ -303,7 +303,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 169.237,
+              "latency_ms": 153.999,
               "no_answer_correct": false,
               "returned_document_versions": [
                 {
@@ -328,7 +328,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 165.523,
+              "latency_ms": 152.334,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -373,7 +373,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 191.194,
+              "latency_ms": 162.004,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -418,7 +418,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 183.004,
+              "latency_ms": 188.256,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -463,7 +463,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 155.47,
+              "latency_ms": 167.873,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -508,7 +508,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 183.476,
+              "latency_ms": 151.9,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -553,7 +553,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 178.629,
+              "latency_ms": 171.771,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -573,7 +573,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 202.82,
+              "latency_ms": 172.781,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -593,7 +593,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 186.484,
+              "latency_ms": 183.129,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -633,7 +633,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": "evidence_quantitative_fact_missing",
-              "latency_ms": 185.697,
+              "latency_ms": 167.321,
               "no_answer_correct": true,
               "returned_document_versions": [],
               "split": "test",
@@ -647,7 +647,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": "evidence_anchor_missing",
-              "latency_ms": 183.893,
+              "latency_ms": 161.284,
               "no_answer_correct": true,
               "returned_document_versions": [],
               "split": "test",
@@ -670,7 +670,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 190.429,
+              "latency_ms": 168.524,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -719,7 +719,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 174.953,
+              "latency_ms": 177.398,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -764,7 +764,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 147.145,
+              "latency_ms": 172.64,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -809,7 +809,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 178.666,
+              "latency_ms": 187.502,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -872,7 +872,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 190.717,
+              "latency_ms": 208.898,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -917,7 +917,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 156.37,
+              "latency_ms": 164.807,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -962,7 +962,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 176.64,
+              "latency_ms": 199.089,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -987,7 +987,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 165.776,
+              "latency_ms": 154.47,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1027,7 +1027,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 165.052,
+              "latency_ms": 170.391,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1072,7 +1072,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 159.505,
+              "latency_ms": 166.794,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1112,7 +1112,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": "evidence_quantitative_fact_missing",
-              "latency_ms": 180.96,
+              "latency_ms": 175.425,
               "no_answer_correct": true,
               "returned_document_versions": [],
               "split": "calibration",
@@ -1126,7 +1126,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 169.237,
+              "latency_ms": 153.999,
               "no_answer_correct": false,
               "returned_document_versions": [
                 {
@@ -1159,7 +1159,7 @@
           "object_root": true,
           "tenant": true
         },
-        "completed_at": "2026-08-30T14:42:05.774190+00:00",
+        "completed_at": "2026-08-30T15:14:10.402692+00:00",
         "configuration": {
           "calibration_hybrid_candidates": [
             false,
@@ -1167,7 +1167,7 @@
           ],
           "candidate_k": 20,
           "chunk_max_chars": 800,
-          "collection": "enterprise_retrieval_current_d76f9d92f8d2490b8b5e03eba771e31a",
+          "collection": "enterprise_retrieval_current_8928874b13304c2aa47adc598a5cebbc",
           "context_k": 5,
           "database_source": "RAG_KB_DATABASE_URL",
           "dense_threshold_candidates": [
@@ -1197,205 +1197,205 @@
           "reason": "development split is excluded from calibration and holdout metrics",
           "status": "not_evaluated"
         },
-        "git_baseline_hash": "320fc6927f0b3f0b9f513ff26ee95d839a9214aa",
+        "git_baseline_hash": "ac18d8200ae2f2a7d13c635617d6a81d993ddc24",
         "ingestion": {
           "uploads": [
             {
               "document_id": "travel-reimbursement-policy",
-              "ingestion_job_id": "d703840ff0bf4e428ca7d32314c1346c",
+              "ingestion_job_id": "7d4dc3e9fe814894b39819bf398c17e9",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "ad7ff32b05e246cfb10f937f62c3254c"
+              "version_id": "e5db96a43efa4e73b42a7f3c3dff226b"
             },
             {
               "document_id": "dev-release-process",
-              "ingestion_job_id": "ed0666b2e8ae42c78b226bfcaa548a52",
+              "ingestion_job_id": "a2ae88f38f034d23991d32dfe240b2a6",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "ebccbde347da4023989e5b10a035909a"
+              "version_id": "7329822801d5428dbc189138f50601e5"
             },
             {
               "document_id": "hr-leave-policy",
-              "ingestion_job_id": "aaf08f429721461c8f74cc95d64c41ea",
+              "ingestion_job_id": "dbe2e902b9864991a6d7a22b125810df",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "7ab4e1fa516f4dcbac5f37f5f388a941"
+              "version_id": "c94331bdb8074815840f69f1acb710ed"
             },
             {
               "document_id": "hr-leave-policy",
-              "ingestion_job_id": "8d8c85eeaa3a4062b58fb8da10337ac4",
+              "ingestion_job_id": "209bb6ae075d4fa5baeac3ff6662d394",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 2,
-              "version_id": "d4d527244c17421abc99be5a87244d5e"
+              "version_id": "3f9e9b2ef24645c4b29147374643e222"
             },
             {
               "document_id": "security-access-management",
-              "ingestion_job_id": "984abfcd142a48708450032e1afb4d16",
+              "ingestion_job_id": "fc2d91592c574e1c9ce940e4a416e75b",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "37bdc7a5722a4e9699a2610acebb306a"
+              "version_id": "2cc85fb304c94669a2d10aa8b2371c49"
             },
             {
               "document_id": "procurement-approval-policy",
-              "ingestion_job_id": "f590dce926914b87b4afc0c2f2f44068",
+              "ingestion_job_id": "0a84e0cc0a374535908df5da09440ab1",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "a6d274aad57e4eedb663e4163616d4a4"
+              "version_id": "a5432c62470a401eaf5ed61bba5ab6a8"
             },
             {
               "document_id": "procurement-approval-policy",
-              "ingestion_job_id": "2f6310c2bba4479cb2f4b21a2af08011",
+              "ingestion_job_id": "8198db6bdee7489cb9b4339822dfe2e3",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 2,
-              "version_id": "99760edef86d44138523e766033d3a85"
+              "version_id": "db5a0b4508c444f9b35a27bf2645d409"
             },
             {
               "document_id": "incident-response-standard",
-              "ingestion_job_id": "e7ce80050ccf408787a4ac44a28a7603",
+              "ingestion_job_id": "5d2bc0782db84d9895f921fb6a7d841b",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "c6ffded9702c404f9af5323ee141fe48"
+              "version_id": "ce007b5ae23641bca26784b30a162383"
             },
             {
               "document_id": "employee-onboarding-process",
-              "ingestion_job_id": "f23bad3818a647aaae3aa30be5a2c734",
+              "ingestion_job_id": "e97d00e168a9488dac60b750a8529ab1",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "d822e2c4dfcb451ab33ca1574cf85609"
+              "version_id": "f726dfbaba9246eea2dc69c8f45599b0"
             },
             {
               "document_id": "vendor-management-standard",
-              "ingestion_job_id": "ac701ac5aa704e8ea19d8191d1f5170a",
+              "ingestion_job_id": "1c954f4e03ee44b6830600c2490b2847",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "64a46610a53245718f6615924c77d8f9"
+              "version_id": "893adf1ba096422c9a5136b42e6203ad"
             },
             {
               "document_id": "remote-work-policy",
-              "ingestion_job_id": "c547af15a36f4cc7be336e79609cc9c6",
+              "ingestion_job_id": "ced75880d19a4d698b7bc73904a30f87",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "cc0b77d037854891a580a69e5c437e34"
+              "version_id": "1088ca11febb458f8d995c0947888f9b"
             },
             {
               "document_id": "product-service-level-agreement",
-              "ingestion_job_id": "01bd596be35748f6965104ddb7d5c1c3",
+              "ingestion_job_id": "99bf93ae68cd4294aa42015f141380e1",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "2a14381ca8234a24afd89b020dea2a5c"
+              "version_id": "f99f3ee3902e4bfbb28f4993bd946699"
             },
             {
               "document_id": "data-classification-sharing",
-              "ingestion_job_id": "d01ce07a01a7488697eb912d515bc560",
+              "ingestion_job_id": "11acc5da2acb4654bd208b17455af481",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "46486b48684a475b8efe1c88ef659370"
+              "version_id": "f8bb85f9e58141beb7c1fb25cae91e76"
             },
             {
               "document_id": "malicious-prompt-injection-sample",
-              "ingestion_job_id": "f741953d5a9148a99b871bbafe4ae96a",
+              "ingestion_job_id": "1936ac3731fb4dadabbc6b3bb757508f",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "23fb8df61b874b63a74a4358bbd65caf"
+              "version_id": "6272ae13e6944fe4889ea1b031cc2a0d"
             }
           ],
           "worker_outcomes": [
             {
               "error_code": null,
-              "job_id": "d703840ff0bf4e428ca7d32314c1346c",
+              "job_id": "7d4dc3e9fe814894b39819bf398c17e9",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "ed0666b2e8ae42c78b226bfcaa548a52",
+              "job_id": "a2ae88f38f034d23991d32dfe240b2a6",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "aaf08f429721461c8f74cc95d64c41ea",
+              "job_id": "dbe2e902b9864991a6d7a22b125810df",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "8d8c85eeaa3a4062b58fb8da10337ac4",
+              "job_id": "209bb6ae075d4fa5baeac3ff6662d394",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "984abfcd142a48708450032e1afb4d16",
+              "job_id": "fc2d91592c574e1c9ce940e4a416e75b",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "f590dce926914b87b4afc0c2f2f44068",
+              "job_id": "0a84e0cc0a374535908df5da09440ab1",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "2f6310c2bba4479cb2f4b21a2af08011",
+              "job_id": "8198db6bdee7489cb9b4339822dfe2e3",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "e7ce80050ccf408787a4ac44a28a7603",
+              "job_id": "5d2bc0782db84d9895f921fb6a7d841b",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "f23bad3818a647aaae3aa30be5a2c734",
+              "job_id": "e97d00e168a9488dac60b750a8529ab1",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "ac701ac5aa704e8ea19d8191d1f5170a",
+              "job_id": "1c954f4e03ee44b6830600c2490b2847",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "c547af15a36f4cc7be336e79609cc9c6",
+              "job_id": "ced75880d19a4d698b7bc73904a30f87",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "01bd596be35748f6965104ddb7d5c1c3",
+              "job_id": "99bf93ae68cd4294aa42015f141380e1",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "d01ce07a01a7488697eb912d515bc560",
+              "job_id": "11acc5da2acb4654bd208b17455af481",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "f741953d5a9148a99b871bbafe4ae96a",
+              "job_id": "1936ac3731fb4dadabbc6b3bb757508f",
               "status": "succeeded"
             }
           ]
@@ -1407,7 +1407,7 @@
           "path": "D:\\PythonProject\\rag-enterprise-kb\\docs\\baselines\\2026-08-22.json",
           "sha256": "sha256:05fbd1fc73cf7cecb11fb45d3c86840f3b634862a094ccea634e712cfc08d536"
         },
-        "started_at": "2026-08-30T14:41:06.821983+00:00",
+        "started_at": "2026-08-30T15:13:12.211598+00:00",
         "status": "completed",
         "test": {
           "cases": [
@@ -1424,7 +1424,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 165.523,
+              "latency_ms": 152.334,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1469,7 +1469,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 191.194,
+              "latency_ms": 162.004,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1514,7 +1514,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 183.004,
+              "latency_ms": 188.256,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1559,7 +1559,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 155.47,
+              "latency_ms": 167.873,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1604,7 +1604,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 183.476,
+              "latency_ms": 151.9,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1649,7 +1649,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 178.629,
+              "latency_ms": 171.771,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1669,7 +1669,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 202.82,
+              "latency_ms": 172.781,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1689,7 +1689,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 186.484,
+              "latency_ms": 183.129,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1729,7 +1729,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": "evidence_quantitative_fact_missing",
-              "latency_ms": 185.697,
+              "latency_ms": 167.321,
               "no_answer_correct": true,
               "returned_document_versions": [],
               "split": "test",
@@ -1743,7 +1743,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": "evidence_anchor_missing",
-              "latency_ms": 183.893,
+              "latency_ms": 161.284,
               "no_answer_correct": true,
               "returned_document_versions": [],
               "split": "test",
@@ -1766,7 +1766,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 190.429,
+              "latency_ms": 168.524,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1815,7 +1815,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 174.953,
+              "latency_ms": 177.398,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1860,7 +1860,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 147.145,
+              "latency_ms": 172.64,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1905,7 +1905,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 178.666,
+              "latency_ms": 187.502,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1973,7 +1973,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 190.717,
+                      "latency_ms": 208.898,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2018,7 +2018,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 156.37,
+                      "latency_ms": 164.807,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2063,7 +2063,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 176.64,
+                      "latency_ms": 199.089,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2088,7 +2088,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 165.776,
+                      "latency_ms": 154.47,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2128,7 +2128,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 165.052,
+                      "latency_ms": 170.391,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2173,7 +2173,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 159.505,
+                      "latency_ms": 166.794,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2213,7 +2213,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 180.96,
+                      "latency_ms": 175.425,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -2227,7 +2227,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 169.237,
+                      "latency_ms": 153.999,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -2271,7 +2271,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 170.962,
+                      "latency_ms": 174.132,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2316,7 +2316,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 169.403,
+                      "latency_ms": 145.013,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2361,7 +2361,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 196.276,
+                      "latency_ms": 167.645,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2386,7 +2386,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 153.538,
+                      "latency_ms": 147.92,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2426,7 +2426,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 186.349,
+                      "latency_ms": 179.661,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2471,7 +2471,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 165.904,
+                      "latency_ms": 175.993,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2511,7 +2511,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 170.852,
+                      "latency_ms": 183.891,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -2525,7 +2525,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 173.361,
+                      "latency_ms": 154.417,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -2569,7 +2569,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 159.443,
+                      "latency_ms": 153.97,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2614,7 +2614,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 164.091,
+                      "latency_ms": 170.856,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2659,7 +2659,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 199.485,
+                      "latency_ms": 182.727,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2684,7 +2684,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 177.683,
+                      "latency_ms": 145.905,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2724,7 +2724,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 170.043,
+                      "latency_ms": 181.19,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2769,7 +2769,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 164.599,
+                      "latency_ms": 167.363,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2809,7 +2809,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 228.668,
+                      "latency_ms": 152.858,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -2823,7 +2823,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 148.725,
+                      "latency_ms": 169.52,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -2867,7 +2867,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 175.138,
+                      "latency_ms": 171.752,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2912,7 +2912,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 159.127,
+                      "latency_ms": 154.029,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2957,7 +2957,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 179.42,
+                      "latency_ms": 170.308,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -2982,7 +2982,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 142.109,
+                      "latency_ms": 138.706,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3022,7 +3022,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 184.101,
+                      "latency_ms": 169.092,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3067,7 +3067,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 171.817,
+                      "latency_ms": 165.28,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3107,7 +3107,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 178.579,
+                      "latency_ms": 171.448,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3121,7 +3121,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 149.636,
+                      "latency_ms": 142.616,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -3165,7 +3165,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 164.013,
+                      "latency_ms": 166.067,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3190,7 +3190,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 168.963,
+                      "latency_ms": 154.945,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3215,7 +3215,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 180.381,
+                      "latency_ms": 198.138,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3240,7 +3240,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 153.413,
+                      "latency_ms": 170.7,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3265,7 +3265,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 190.994,
+                      "latency_ms": 160.419,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3284,7 +3284,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 159.806,
+                      "latency_ms": 184.049,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3309,7 +3309,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 155.629,
+                      "latency_ms": 187.379,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3323,7 +3323,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 158.299,
+                      "latency_ms": 155.115,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3361,7 +3361,7 @@
                         }
                       ],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 166.249,
+                      "latency_ms": 186.497,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3380,7 +3380,7 @@
                         }
                       ],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 156.711,
+                      "latency_ms": 160.062,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3399,7 +3399,7 @@
                         }
                       ],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 189.616,
+                      "latency_ms": 198.017,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3418,7 +3418,7 @@
                         }
                       ],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 139.608,
+                      "latency_ms": 148.632,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3432,7 +3432,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 168.678,
+                      "latency_ms": 177.922,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3451,7 +3451,7 @@
                         }
                       ],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 163.9,
+                      "latency_ms": 148.587,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3465,7 +3465,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 149.046,
+                      "latency_ms": 158.881,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3479,7 +3479,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 142.691,
+                      "latency_ms": 168.41,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3522,7 +3522,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 214.827,
+                      "latency_ms": 184.478,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3567,7 +3567,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 172.524,
+                      "latency_ms": 178.778,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3612,7 +3612,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 195.549,
+                      "latency_ms": 209.194,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3637,7 +3637,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 169.279,
+                      "latency_ms": 171.442,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3677,7 +3677,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 203.608,
+                      "latency_ms": 168.561,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3722,7 +3722,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 204.725,
+                      "latency_ms": 176.131,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3762,7 +3762,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 167.574,
+                      "latency_ms": 161.121,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3776,7 +3776,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 163.381,
+                      "latency_ms": 151.368,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -3820,7 +3820,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 183.68,
+                      "latency_ms": 158.476,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3865,7 +3865,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 160.542,
+                      "latency_ms": 189.233,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3910,7 +3910,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 214.075,
+                      "latency_ms": 177.266,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3935,7 +3935,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 173.176,
+                      "latency_ms": 191.884,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3975,7 +3975,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 227.321,
+                      "latency_ms": 190.89,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4020,7 +4020,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 188.852,
+                      "latency_ms": 184.183,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4060,7 +4060,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 194.067,
+                      "latency_ms": 184.565,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -4074,7 +4074,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 188.439,
+                      "latency_ms": 169.136,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -4118,7 +4118,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 199.988,
+                      "latency_ms": 160.635,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4163,7 +4163,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 181.552,
+                      "latency_ms": 165.389,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4208,7 +4208,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 210.125,
+                      "latency_ms": 205.098,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4233,7 +4233,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 189.11,
+                      "latency_ms": 158.821,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4273,7 +4273,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 217.028,
+                      "latency_ms": 187.177,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4318,7 +4318,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 184.042,
+                      "latency_ms": 168.312,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4358,7 +4358,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 172.609,
+                      "latency_ms": 195.125,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -4372,7 +4372,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 179.511,
+                      "latency_ms": 161.37,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -4416,7 +4416,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 187.529,
+                      "latency_ms": 167.737,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4461,7 +4461,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 200.338,
+                      "latency_ms": 184.443,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4506,7 +4506,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 178.643,
+                      "latency_ms": 189.067,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4531,7 +4531,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 169.421,
+                      "latency_ms": 179.307,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4571,7 +4571,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 206.886,
+                      "latency_ms": 203.806,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4616,7 +4616,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 180.991,
+                      "latency_ms": 165.289,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4656,7 +4656,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 241.682,
+                      "latency_ms": 191.709,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -4670,7 +4670,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 154.451,
+                      "latency_ms": 197.873,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -4714,7 +4714,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 161.585,
+                      "latency_ms": 184.372,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4759,7 +4759,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 195.266,
+                      "latency_ms": 186.205,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4804,7 +4804,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 188.628,
+                      "latency_ms": 188.92,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4829,7 +4829,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 176.935,
+                      "latency_ms": 169.36,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4869,7 +4869,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 194.055,
+                      "latency_ms": 196.29,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4914,7 +4914,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 182.368,
+                      "latency_ms": 190.37,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4954,7 +4954,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 194.841,
+                      "latency_ms": 208.707,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -4968,7 +4968,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 188.812,
+                      "latency_ms": 160.416,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -5012,7 +5012,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 185.699,
+                      "latency_ms": 168.679,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -5057,7 +5057,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 217.143,
+                      "latency_ms": 174.493,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -5102,7 +5102,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 238.735,
+                      "latency_ms": 178.909,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -5127,7 +5127,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 182.231,
+                      "latency_ms": 167.133,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -5167,7 +5167,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 213.172,
+                      "latency_ms": 186.628,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -5212,7 +5212,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 182.188,
+                      "latency_ms": 168.409,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -5252,7 +5252,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 187.443,
+                      "latency_ms": 191.285,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -5266,7 +5266,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 173.054,
+                      "latency_ms": 144.572,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -5313,14 +5313,14 @@
           "msgpack",
           "null"
         ],
-        "citation_count": 3,
-        "document_id": "m1-e2e-fe2ec78a98534e5c97768d3de17c8c6d",
+        "citation_count": 4,
+        "document_id": "m1-e2e-8bef8dfd393142939f5ecadee04fd07e",
         "document_version_endpoint": "/v1/documents/{document_id}/versions",
         "document_versions": 2,
         "execution_mode": "live_postgres_msgpack",
         "result_readable": true,
         "source_binding": {
-          "git_revision": "320fc6927f0b3f0b9f513ff26ee95d839a9214aa",
+          "git_revision": "ac18d8200ae2f2a7d13c635617d6a81d993ddc24",
           "worktree_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         },
         "status": "passed",
@@ -5333,7 +5333,7 @@
           "saver_package": "langgraph-checkpoint-postgres==3.1.2",
           "serializer": "JsonPlusSerializer"
         },
-        "task_id": "55b25dcf63a64843ab87aec058e6dd72",
+        "task_id": "eab02630eb014c41831514c5d8d87e4d",
         "tool_calls": 4,
         "tool_trace": [
           "list_document_versions",
@@ -5355,15 +5355,15 @@
           "status": "ready"
         },
         "binding": {
-          "approval_id": "c1f39d0ad1324577af9dfbcec6532e5f",
+          "approval_id": "8534a6dd1db3408e8f5f982df2d9e198",
           "artifact_hash": "sha256:f0c94c2a291e9bfb092751c62f9528004640bfd35af940073e14a835ff37f7bf",
           "artifact_id": "00000000000000000000000000000042",
-          "checkpoint_id": "1f1a4813-a116-60f1-801a-c830dd3df4ca",
-          "interrupt_id": "d0172e47eeb750c85336e1cdf7c07c1b",
+          "checkpoint_id": "1f1a485b-dd70-6ab0-801a-223be850320f",
+          "interrupt_id": "a2ec0a89d2e7e036ef212e2e1b5aad09",
           "result_artifact_id": "00000000000000000000000000000042",
-          "task_id": "30b6e826503c4fd28456a70384999a04",
-          "thread_id": "30b6e826503c4fd28456a70384999a04",
-          "tool_call_id": "9753ad831a53423b9b7e8d0acd1a1711"
+          "task_id": "695f0c6b39d941baa292c84aa0ba5dcd",
+          "thread_id": "695f0c6b39d941baa292c84aa0ba5dcd",
+          "tool_call_id": "72c31649b6284f098562f20458b62a53"
         },
         "capability": "task-agent",
         "checkpoint_encodings": [
@@ -5407,7 +5407,7 @@
           "unknown_replay": 0
         },
         "source_binding": {
-          "git_revision": "320fc6927f0b3f0b9f513ff26ee95d839a9214aa",
+          "git_revision": "ac18d8200ae2f2a7d13c635617d6a81d993ddc24",
           "worktree_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         },
         "status": "passed",
@@ -5421,308 +5421,308 @@
         },
         "task_ledger": [
           {
-            "correlation_id": "d45a2906b85748d6903716b50d883745",
+            "correlation_id": "132a45c4454a46428d2f8f2914c66089",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "34507c6869aa4fe5aec9f4af63776fec",
+            "task_id": "b1019685de934762995046e9c217ffbe",
             "tool_calls": 2
           },
           {
-            "correlation_id": "782280bd542e4f99bb164719ffdbbd4e",
+            "correlation_id": "d62761e3af21436cab5375fed5b7237a",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "0d6f6e820d904f368b0c4cca983e46a7",
+            "task_id": "6bda03e4ed6f420fa44a8b0de3633156",
             "tool_calls": 2
           },
           {
-            "correlation_id": "81ac3aeaf3384a0493975aeeeaae34cb",
+            "correlation_id": "5bef8bfe423441e8998c3cf91a32f9df",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "81f3290de79146809c99c32e2b1d2662",
+            "task_id": "7125bf7468d347f588e6afcf2aadbd88",
             "tool_calls": 2
           },
           {
-            "correlation_id": "70b2f166d60d4ead9f7e8d00aaa034d8",
+            "correlation_id": "b1f5bcde8a254ca28bbe363f4fa7ccab",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "b9ec4782e50b4c62afc4446cae89fc84",
+            "task_id": "e96e55c42aee4fe8b0135fe34e152191",
             "tool_calls": 2
           },
           {
-            "correlation_id": "6731cfba0843420e82ff799c099d6f1a",
+            "correlation_id": "b9fc1a1cb1af4bd78e46be762ad28f98",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "8a85bef582bd4fe3a423c3d86870b2a4",
+            "task_id": "932a241678334235ab944d579eef0882",
             "tool_calls": 2
           },
           {
-            "correlation_id": "118014a878724e02a9574c83e2d473a4",
+            "correlation_id": "8b637b3bd62b4e4897fa7ffef5d002ea",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "e931ffef6b1e4cffaf16479bb3c3c343",
+            "task_id": "5a4cb270f8f7498bbf804fe464dd92d4",
             "tool_calls": 2
           },
           {
-            "correlation_id": "b8ad4a349e8e43debcef5395a71fb54c",
+            "correlation_id": "c6dda0e0d97b48c9867f27fdde580485",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "cc1e8149ca1f44b3a193136c79a472c7",
+            "task_id": "9e8c4b43d55840aebee16f1985da7988",
             "tool_calls": 2
           },
           {
-            "correlation_id": "82f087da88aa4a81b8ce21b13b09efdd",
+            "correlation_id": "a615ecf6ef114f6c9517262455b87c28",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "8253eaa8ca674285943e39fc4324ff4f",
+            "task_id": "ccdd6d8eae154223adeff09c15b6778c",
             "tool_calls": 2
           },
           {
-            "correlation_id": "67818cf44e574285bfd276f6288e553e",
+            "correlation_id": "239a376070604ac0838b8c96a73f4c46",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "41f456d11e1c4783a5ee7d1994a8badb",
+            "task_id": "dacff57e12874a928de8c7fede9379db",
             "tool_calls": 2
           },
           {
-            "correlation_id": "b039838d6c924a259f973a7627989b78",
+            "correlation_id": "6b007d11f11241d98968f6efe94a25c7",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "bebf17abafc84f1da70832e5fdbf41f7",
+            "task_id": "0ebb39a168b8446dbe20c8397ca5b730",
             "tool_calls": 2
           },
           {
-            "correlation_id": "307689d165c84f7b809f03ad1c5b6a46",
+            "correlation_id": "d52b8d8712e44db9a5465becd69b8300",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "8179d38e239746699b3f36b359f82aba",
+            "task_id": "7637c36f589f4517a5db331ea3acecdd",
             "tool_calls": 2
           },
           {
-            "correlation_id": "13d754db763641e08225ff6156ae765a",
+            "correlation_id": "9b44d8d926e844f9b211a8043d590312",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "1171493af8434b148c7dacee1fc680d7",
+            "task_id": "5bf736f678e54175832e5811d5797acd",
             "tool_calls": 2
           },
           {
-            "correlation_id": "6259175126cc4a418dfc53fc70323b35",
+            "correlation_id": "397137dcac21404693f7aed16369ebca",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "38b429309e4c4e7b8941c53bc41352bd",
+            "task_id": "535cf057a8924e8b89b7519a0acd6517",
             "tool_calls": 2
           },
           {
-            "correlation_id": "576440b8673a4b5da6058c77f30a2a9a",
+            "correlation_id": "cc7c6898f03a4eeb97bd89bee83a4cc4",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "b24a3567b3364d678d22ee32e0718cff",
+            "task_id": "e4052079c08148718006471b2b3b529e",
             "tool_calls": 2
           },
           {
-            "correlation_id": "16d670ed13894a4b9eca0957bfe8d483",
+            "correlation_id": "b7942040afdd4062956240c1df376d47",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "4a65172734c44cd5925145c0d9051814",
+            "task_id": "a76895adea32490b8a0a361860388f3c",
             "tool_calls": 2
           },
           {
-            "correlation_id": "dc6394d7172b44a5be207c9e96fb08db",
+            "correlation_id": "4bd80f379a1c4673ba2199e26a32a15d",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "0ad5a66155c74af68b2e5e1c488f1c1c",
+            "task_id": "f52f235e5a21420a8a6ad840d5e81692",
             "tool_calls": 2
           },
           {
-            "correlation_id": "47c81101382041abbf3acdff5d6f3fa6",
+            "correlation_id": "2bba6d4ef1a04327a5dcc41caf74d124",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "02080a86ea4d435da8b95117d4e1de00",
+            "task_id": "4f96f23fd0174dc989b3b13516997d35",
             "tool_calls": 2
           },
           {
-            "correlation_id": "a4021574f50c4589bb7e4215b8b9f512",
+            "correlation_id": "375f9a490f3c4b92a5006de8dff6ef94",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "f7d0367e2ea8448b9e90d615f4b46f0d",
+            "task_id": "d4460d4fc9be4c969aeb82aa3891d0fa",
             "tool_calls": 2
           },
           {
-            "correlation_id": "3d4ce0529d8f402e86c5eb69937a9a81",
+            "correlation_id": "38aadcfc23074783b1a12aa22fe7334c",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "2c6d0fa336804883ab4e6d4528312345",
+            "task_id": "84960f4483d84c488a792b0ebc455426",
             "tool_calls": 2
           },
           {
-            "correlation_id": "0f2b1b20004b45d39e3cc43d782c0f55",
+            "correlation_id": "adf611f00c9540b482fb9d3d1287c17f",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "11dba526e48b4fd09c4d3979df4d4ac4",
+            "task_id": "006a32590a954f5292f096a91db5519f",
             "tool_calls": 2
           },
           {
-            "correlation_id": "692856000319492f90cbcc7dfa5dead6",
+            "correlation_id": "ee8160b0e0a542f8acfc9bcbc7917c6e",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "8347327325394dc586f8646cafaae798",
+            "task_id": "fb0f46ee01df4ad492c57ca7458131cb",
             "tool_calls": 2
           },
           {
-            "correlation_id": "e1efb52dd3594558a873ba19e4273ab5",
+            "correlation_id": "4ff33f081a704c96bee9762c684fced7",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "d9587fbfe2bf44e1aba63b78feb64f85",
+            "task_id": "fe1bf87f66684301bc3442feda5db795",
             "tool_calls": 2
           },
           {
-            "correlation_id": "5a81bc57afd6499886588a2303965f09",
+            "correlation_id": "febc4cc93ee646a49159e289ae50591e",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "b9bcfd604053452795192060c2ef4094",
+            "task_id": "a104bd27c633473ebc681ae852e51dbc",
             "tool_calls": 2
           },
           {
-            "correlation_id": "c329c50475df4776b96996110ae6521d",
+            "correlation_id": "1bbe703e613a4ae38dd5181085e2ff21",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "ef8279699d0943049e3371d214b38cc8",
+            "task_id": "b0d651976fee41058b528b2d909085e1",
             "tool_calls": 2
           },
           {
-            "correlation_id": "d3df34386bf74caf95669f8c5f8624be",
+            "correlation_id": "1d244fc99a9e454d8640de1382d9eefd",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "69ef8e37c1e94a8fa33103cea9eef7f4",
+            "task_id": "0b6f7a52e50946fa9cbda8227be09d8a",
             "tool_calls": 2
           },
           {
-            "correlation_id": "5ca8525db6eb4bbc8494c0b73badc537",
+            "correlation_id": "ee606d8b9e5e46589013cd82287dd590",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "a129e42ba2974ab8aca197a788f7eead",
+            "task_id": "3847d5d088f84985a89ce0d980099b44",
             "tool_calls": 2
           },
           {
-            "correlation_id": "339f4e680a39433a8693ccf7517a15b4",
+            "correlation_id": "2a16b9da6f3a449988397fdfb67e92d9",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "282720e199844a98a684cc50dbd132c9",
+            "task_id": "f5442728ebef46d4bbab1070c5a86a4b",
             "tool_calls": 2
           },
           {
-            "correlation_id": "a818ca2390084f0292f723d35d3aaabf",
+            "correlation_id": "2e51e70b0da84a9da03f028b31c4d4ac",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "3fe33cb2d9134a9e8403d949116a4dad",
+            "task_id": "29e481abc9a247648f4876751a3755e6",
             "tool_calls": 2
           },
           {
-            "correlation_id": "6a4cecf8e8194faea179167f20321108",
+            "correlation_id": "10613d2733d44ee59a7b0d8ba016609f",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "918be8e07d8f4fa3adb3d888729c206e",
+            "task_id": "e389a6f91b3e4eed9ecaf6a43deb10a2",
             "tool_calls": 2
           },
           {
-            "correlation_id": "349c185387444beb9b7480dbe5d5a860",
+            "correlation_id": "220615dd74c746769fb6b1f3c58bc145",
             "error_code": null,
             "model_calls": 4,
             "status": "succeeded",
             "stop_reason": "completed",
-            "task_id": "30b6e826503c4fd28456a70384999a04",
+            "task_id": "695f0c6b39d941baa292c84aa0ba5dcd",
             "tool_calls": 3
           },
           {
-            "correlation_id": "44889da08779446f826747e9c679f38c",
+            "correlation_id": "dd7f849e1ef34eed8ec90819ae39ad54",
             "error_code": null,
             "model_calls": 2,
             "status": "refused",
             "stop_reason": "clarification_completed",
-            "task_id": "ca59f7c027f44becac7b2c8d392c4817",
+            "task_id": "4b81b59110da46e1b88e16d424dc0d70",
             "tool_calls": 0
           }
         ],
         "terminal_binding": {
           "approval": {
-            "approval_id": "c1f39d0ad1324577af9dfbcec6532e5f",
-            "checkpoint_action_id": "30b6e826503c4fd28456a70384999a04-write",
+            "approval_id": "8534a6dd1db3408e8f5f982df2d9e198",
+            "checkpoint_action_id": "695f0c6b39d941baa292c84aa0ba5dcd-write",
             "status": "executed"
           },
           "artifact": {
             "artifact_id": "00000000000000000000000000000042",
             "content_hash": "sha256:f0c94c2a291e9bfb092751c62f9528004640bfd35af940073e14a835ff37f7bf",
             "status": "ready",
-            "tool_call_id": "9753ad831a53423b9b7e8d0acd1a1711"
+            "tool_call_id": "72c31649b6284f098562f20458b62a53"
           },
           "task_result": {
             "artifact_id": "00000000000000000000000000000042",
             "result_kind": "controlled_action",
             "status": "succeeded",
             "stop_reason": "completed",
-            "task_id": "30b6e826503c4fd28456a70384999a04"
+            "task_id": "695f0c6b39d941baa292c84aa0ba5dcd"
           },
           "tool_call": {
-            "approval_id": "c1f39d0ad1324577af9dfbcec6532e5f",
+            "approval_id": "8534a6dd1db3408e8f5f982df2d9e198",
             "status": "succeeded",
-            "tool_call_id": "9753ad831a53423b9b7e8d0acd1a1711"
+            "tool_call_id": "72c31649b6284f098562f20458b62a53"
           }
         },
         "tool_exposure": {
@@ -5749,7 +5749,7 @@
     "status": "passed",
     "values": {
       "execution_mode": "live_postgres_msgpack",
-      "citation_count": 3,
+      "citation_count": 4,
       "strict_msgpack": {
         "allowed_msgpack_modules": [
           "rag_kb.agent.result.TaskResultCandidate"
@@ -5760,7 +5760,7 @@
         "serializer": "JsonPlusSerializer"
       },
       "source_binding": {
-        "git_revision": "320fc6927f0b3f0b9f513ff26ee95d839a9214aa",
+        "git_revision": "ac18d8200ae2f2a7d13c635617d6a81d993ddc24",
         "worktree_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       }
     }
@@ -5805,312 +5805,312 @@
       },
       "task_ledger": [
         {
-          "correlation_id": "d45a2906b85748d6903716b50d883745",
+          "correlation_id": "132a45c4454a46428d2f8f2914c66089",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "34507c6869aa4fe5aec9f4af63776fec",
+          "task_id": "b1019685de934762995046e9c217ffbe",
           "tool_calls": 2
         },
         {
-          "correlation_id": "782280bd542e4f99bb164719ffdbbd4e",
+          "correlation_id": "d62761e3af21436cab5375fed5b7237a",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "0d6f6e820d904f368b0c4cca983e46a7",
+          "task_id": "6bda03e4ed6f420fa44a8b0de3633156",
           "tool_calls": 2
         },
         {
-          "correlation_id": "81ac3aeaf3384a0493975aeeeaae34cb",
+          "correlation_id": "5bef8bfe423441e8998c3cf91a32f9df",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "81f3290de79146809c99c32e2b1d2662",
+          "task_id": "7125bf7468d347f588e6afcf2aadbd88",
           "tool_calls": 2
         },
         {
-          "correlation_id": "70b2f166d60d4ead9f7e8d00aaa034d8",
+          "correlation_id": "b1f5bcde8a254ca28bbe363f4fa7ccab",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "b9ec4782e50b4c62afc4446cae89fc84",
+          "task_id": "e96e55c42aee4fe8b0135fe34e152191",
           "tool_calls": 2
         },
         {
-          "correlation_id": "6731cfba0843420e82ff799c099d6f1a",
+          "correlation_id": "b9fc1a1cb1af4bd78e46be762ad28f98",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "8a85bef582bd4fe3a423c3d86870b2a4",
+          "task_id": "932a241678334235ab944d579eef0882",
           "tool_calls": 2
         },
         {
-          "correlation_id": "118014a878724e02a9574c83e2d473a4",
+          "correlation_id": "8b637b3bd62b4e4897fa7ffef5d002ea",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "e931ffef6b1e4cffaf16479bb3c3c343",
+          "task_id": "5a4cb270f8f7498bbf804fe464dd92d4",
           "tool_calls": 2
         },
         {
-          "correlation_id": "b8ad4a349e8e43debcef5395a71fb54c",
+          "correlation_id": "c6dda0e0d97b48c9867f27fdde580485",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "cc1e8149ca1f44b3a193136c79a472c7",
+          "task_id": "9e8c4b43d55840aebee16f1985da7988",
           "tool_calls": 2
         },
         {
-          "correlation_id": "82f087da88aa4a81b8ce21b13b09efdd",
+          "correlation_id": "a615ecf6ef114f6c9517262455b87c28",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "8253eaa8ca674285943e39fc4324ff4f",
+          "task_id": "ccdd6d8eae154223adeff09c15b6778c",
           "tool_calls": 2
         },
         {
-          "correlation_id": "67818cf44e574285bfd276f6288e553e",
+          "correlation_id": "239a376070604ac0838b8c96a73f4c46",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "41f456d11e1c4783a5ee7d1994a8badb",
+          "task_id": "dacff57e12874a928de8c7fede9379db",
           "tool_calls": 2
         },
         {
-          "correlation_id": "b039838d6c924a259f973a7627989b78",
+          "correlation_id": "6b007d11f11241d98968f6efe94a25c7",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "bebf17abafc84f1da70832e5fdbf41f7",
+          "task_id": "0ebb39a168b8446dbe20c8397ca5b730",
           "tool_calls": 2
         },
         {
-          "correlation_id": "307689d165c84f7b809f03ad1c5b6a46",
+          "correlation_id": "d52b8d8712e44db9a5465becd69b8300",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "8179d38e239746699b3f36b359f82aba",
+          "task_id": "7637c36f589f4517a5db331ea3acecdd",
           "tool_calls": 2
         },
         {
-          "correlation_id": "13d754db763641e08225ff6156ae765a",
+          "correlation_id": "9b44d8d926e844f9b211a8043d590312",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "1171493af8434b148c7dacee1fc680d7",
+          "task_id": "5bf736f678e54175832e5811d5797acd",
           "tool_calls": 2
         },
         {
-          "correlation_id": "6259175126cc4a418dfc53fc70323b35",
+          "correlation_id": "397137dcac21404693f7aed16369ebca",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "38b429309e4c4e7b8941c53bc41352bd",
+          "task_id": "535cf057a8924e8b89b7519a0acd6517",
           "tool_calls": 2
         },
         {
-          "correlation_id": "576440b8673a4b5da6058c77f30a2a9a",
+          "correlation_id": "cc7c6898f03a4eeb97bd89bee83a4cc4",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "b24a3567b3364d678d22ee32e0718cff",
+          "task_id": "e4052079c08148718006471b2b3b529e",
           "tool_calls": 2
         },
         {
-          "correlation_id": "16d670ed13894a4b9eca0957bfe8d483",
+          "correlation_id": "b7942040afdd4062956240c1df376d47",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "4a65172734c44cd5925145c0d9051814",
+          "task_id": "a76895adea32490b8a0a361860388f3c",
           "tool_calls": 2
         },
         {
-          "correlation_id": "dc6394d7172b44a5be207c9e96fb08db",
+          "correlation_id": "4bd80f379a1c4673ba2199e26a32a15d",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "0ad5a66155c74af68b2e5e1c488f1c1c",
+          "task_id": "f52f235e5a21420a8a6ad840d5e81692",
           "tool_calls": 2
         },
         {
-          "correlation_id": "47c81101382041abbf3acdff5d6f3fa6",
+          "correlation_id": "2bba6d4ef1a04327a5dcc41caf74d124",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "02080a86ea4d435da8b95117d4e1de00",
+          "task_id": "4f96f23fd0174dc989b3b13516997d35",
           "tool_calls": 2
         },
         {
-          "correlation_id": "a4021574f50c4589bb7e4215b8b9f512",
+          "correlation_id": "375f9a490f3c4b92a5006de8dff6ef94",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "f7d0367e2ea8448b9e90d615f4b46f0d",
+          "task_id": "d4460d4fc9be4c969aeb82aa3891d0fa",
           "tool_calls": 2
         },
         {
-          "correlation_id": "3d4ce0529d8f402e86c5eb69937a9a81",
+          "correlation_id": "38aadcfc23074783b1a12aa22fe7334c",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "2c6d0fa336804883ab4e6d4528312345",
+          "task_id": "84960f4483d84c488a792b0ebc455426",
           "tool_calls": 2
         },
         {
-          "correlation_id": "0f2b1b20004b45d39e3cc43d782c0f55",
+          "correlation_id": "adf611f00c9540b482fb9d3d1287c17f",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "11dba526e48b4fd09c4d3979df4d4ac4",
+          "task_id": "006a32590a954f5292f096a91db5519f",
           "tool_calls": 2
         },
         {
-          "correlation_id": "692856000319492f90cbcc7dfa5dead6",
+          "correlation_id": "ee8160b0e0a542f8acfc9bcbc7917c6e",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "8347327325394dc586f8646cafaae798",
+          "task_id": "fb0f46ee01df4ad492c57ca7458131cb",
           "tool_calls": 2
         },
         {
-          "correlation_id": "e1efb52dd3594558a873ba19e4273ab5",
+          "correlation_id": "4ff33f081a704c96bee9762c684fced7",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "d9587fbfe2bf44e1aba63b78feb64f85",
+          "task_id": "fe1bf87f66684301bc3442feda5db795",
           "tool_calls": 2
         },
         {
-          "correlation_id": "5a81bc57afd6499886588a2303965f09",
+          "correlation_id": "febc4cc93ee646a49159e289ae50591e",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "b9bcfd604053452795192060c2ef4094",
+          "task_id": "a104bd27c633473ebc681ae852e51dbc",
           "tool_calls": 2
         },
         {
-          "correlation_id": "c329c50475df4776b96996110ae6521d",
+          "correlation_id": "1bbe703e613a4ae38dd5181085e2ff21",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "ef8279699d0943049e3371d214b38cc8",
+          "task_id": "b0d651976fee41058b528b2d909085e1",
           "tool_calls": 2
         },
         {
-          "correlation_id": "d3df34386bf74caf95669f8c5f8624be",
+          "correlation_id": "1d244fc99a9e454d8640de1382d9eefd",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "69ef8e37c1e94a8fa33103cea9eef7f4",
+          "task_id": "0b6f7a52e50946fa9cbda8227be09d8a",
           "tool_calls": 2
         },
         {
-          "correlation_id": "5ca8525db6eb4bbc8494c0b73badc537",
+          "correlation_id": "ee606d8b9e5e46589013cd82287dd590",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "a129e42ba2974ab8aca197a788f7eead",
+          "task_id": "3847d5d088f84985a89ce0d980099b44",
           "tool_calls": 2
         },
         {
-          "correlation_id": "339f4e680a39433a8693ccf7517a15b4",
+          "correlation_id": "2a16b9da6f3a449988397fdfb67e92d9",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "282720e199844a98a684cc50dbd132c9",
+          "task_id": "f5442728ebef46d4bbab1070c5a86a4b",
           "tool_calls": 2
         },
         {
-          "correlation_id": "a818ca2390084f0292f723d35d3aaabf",
+          "correlation_id": "2e51e70b0da84a9da03f028b31c4d4ac",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "3fe33cb2d9134a9e8403d949116a4dad",
+          "task_id": "29e481abc9a247648f4876751a3755e6",
           "tool_calls": 2
         },
         {
-          "correlation_id": "6a4cecf8e8194faea179167f20321108",
+          "correlation_id": "10613d2733d44ee59a7b0d8ba016609f",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "918be8e07d8f4fa3adb3d888729c206e",
+          "task_id": "e389a6f91b3e4eed9ecaf6a43deb10a2",
           "tool_calls": 2
         },
         {
-          "correlation_id": "349c185387444beb9b7480dbe5d5a860",
+          "correlation_id": "220615dd74c746769fb6b1f3c58bc145",
           "error_code": null,
           "model_calls": 4,
           "status": "succeeded",
           "stop_reason": "completed",
-          "task_id": "30b6e826503c4fd28456a70384999a04",
+          "task_id": "695f0c6b39d941baa292c84aa0ba5dcd",
           "tool_calls": 3
         },
         {
-          "correlation_id": "44889da08779446f826747e9c679f38c",
+          "correlation_id": "dd7f849e1ef34eed8ec90819ae39ad54",
           "error_code": null,
           "model_calls": 2,
           "status": "refused",
           "stop_reason": "clarification_completed",
-          "task_id": "ca59f7c027f44becac7b2c8d392c4817",
+          "task_id": "4b81b59110da46e1b88e16d424dc0d70",
           "tool_calls": 0
         }
       ],
       "terminal_binding": {
         "approval": {
-          "approval_id": "c1f39d0ad1324577af9dfbcec6532e5f",
-          "checkpoint_action_id": "30b6e826503c4fd28456a70384999a04-write",
+          "approval_id": "8534a6dd1db3408e8f5f982df2d9e198",
+          "checkpoint_action_id": "695f0c6b39d941baa292c84aa0ba5dcd-write",
           "status": "executed"
         },
         "artifact": {
           "artifact_id": "00000000000000000000000000000042",
           "content_hash": "sha256:f0c94c2a291e9bfb092751c62f9528004640bfd35af940073e14a835ff37f7bf",
           "status": "ready",
-          "tool_call_id": "9753ad831a53423b9b7e8d0acd1a1711"
+          "tool_call_id": "72c31649b6284f098562f20458b62a53"
         },
         "task_result": {
           "artifact_id": "00000000000000000000000000000042",
           "result_kind": "controlled_action",
           "status": "succeeded",
           "stop_reason": "completed",
-          "task_id": "30b6e826503c4fd28456a70384999a04"
+          "task_id": "695f0c6b39d941baa292c84aa0ba5dcd"
         },
         "tool_call": {
-          "approval_id": "c1f39d0ad1324577af9dfbcec6532e5f",
+          "approval_id": "8534a6dd1db3408e8f5f982df2d9e198",
           "status": "succeeded",
-          "tool_call_id": "9753ad831a53423b9b7e8d0acd1a1711"
+          "tool_call_id": "72c31649b6284f098562f20458b62a53"
         }
       },
       "source_binding": {
-        "git_revision": "320fc6927f0b3f0b9f513ff26ee95d839a9214aa",
+        "git_revision": "ac18d8200ae2f2a7d13c635617d6a81d993ddc24",
         "worktree_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       }
     }
@@ -6134,7 +6134,7 @@
       "name": "code_binding",
       "status": "passed",
       "evidence": [
-        "320fc6927f0b3f0b9f513ff26ee95d839a9214aa"
+        "ac18d8200ae2f2a7d13c635617d6a81d993ddc24"
       ]
     },
     {
@@ -6192,13 +6192,13 @@
     {
       "name": "pytest_junit",
       "path": "data\\local\\acceptance\\current\\pytest-current.xml",
-      "sha256": "df5955f0224940ec834dce6b5dff781bc9d34b3c8def9710f52636311d8e5ee3",
+      "sha256": "d2b99a99bd394ce310e0c89eb01b6bc390d17959b21a7ac1d6410203f31085ba",
       "status": "available"
     },
     {
       "name": "retrieval_report",
       "path": "data\\local\\acceptance\\current\\enterprise-retrieval-current.json",
-      "sha256": "02633525198d1b881ce16a33bfb6621a0ca48cd4f0297a28bfde61946345578b",
+      "sha256": "527e67693ef191bfc2b6238c893abf468f1cbc0bb6302d89172d533db0af0aa8",
       "status": "available"
     },
     {
@@ -6216,13 +6216,13 @@
     {
       "name": "m1_research_e2e",
       "path": "docs\\acceptance\\m1-research-e2e.json",
-      "sha256": "b2061d001a9ec0270652acc50f6346fc558c782042f0ff8ad68b4c0cc7b6917b",
+      "sha256": "0243cc39205cf5846ec469022538c4de1ca781ec63e60e05d41acaa49e5c0444",
       "status": "available"
     },
     {
       "name": "m2_controlled_write_e2e",
       "path": "docs\\acceptance\\m2-controlled-write-e2e.json",
-      "sha256": "82ae18255eb5e7763c86368d651984e46410f08edc6e25d9cca01a1ddcdcb22b",
+      "sha256": "3a1c240ff6403dd21f97765bd9f7e20460fa41d8525983cfa682a3b48295b479",
       "status": "available"
     },
     {
@@ -6234,11 +6234,11 @@
     {
       "name": "config",
       "path": "pyproject.toml",
-      "sha256": "45e7fd05726e9e51757ba5742dc1d9f2d686833227188ce4537bd69bd6a8b082",
+      "sha256": "6015ddf9214bef9c55e8fde8f06a101457c296db8a85e76e9eb6f45862d54fe2",
       "status": "available"
     }
   ],
-  "report_hash": "84c70e27a6954d78317245417344358cb282c8352a811350cc6aeec17ee362ed",
+  "report_hash": "b5e83621ee96501cd3a84c5082aa96b045b310c71a7976a46fdbf0048433568b",
   "verdict": {
     "status": "passed",
     "reason": "observed inputs only; missing metrics are not inferred"
