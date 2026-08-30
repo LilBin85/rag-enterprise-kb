@@ -16,7 +16,8 @@ def test_frozen_task_dataset_has_repeatable_offline_contract_report() -> None:
     assert first == second
     assert first["status"] == "passed"
     assert first["live"] is False
-    assert first["dataset"]["case_count"] == 20
+    assert first["dataset"]["case_count"] == 60
+    assert min(first["summary"]["focus_areas"].values()) >= 8
     cases = {case["case_id"]: case for case in first["cases"]}
     assert cases["prompt-injection-document"]["security_gates"]["injection_ignored"]["status"] == "passed"
     assert cases["readonly-cannot-write"]["actions"][1]["outcome"] == "mode_denied"

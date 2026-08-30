@@ -47,3 +47,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "integration: requires live PostgreSQL and/or Qdrant services",
+]

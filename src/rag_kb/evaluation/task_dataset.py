@@ -26,6 +26,17 @@ class TaskEvaluationCase(BaseModel):
     required_events: tuple[str, ...] = Field(min_length=1)
     expected_terminal_status: TaskStatus
     security_gates: tuple[str, ...]
+    focus_areas: tuple[
+        Literal[
+            "tool_selection",
+            "clarification",
+            "unauthorized_write",
+            "prompt_injection",
+            "citation_correctness",
+            "fault_recovery",
+        ],
+        ...,
+    ] = Field(min_length=1)
 
 
 class TaskEvaluationDataset(BaseModel):
@@ -34,7 +45,7 @@ class TaskEvaluationDataset(BaseModel):
     schema_version: Literal[1]
     dataset_version: str
     description: str
-    cases: tuple[TaskEvaluationCase, ...] = Field(min_length=20)
+    cases: tuple[TaskEvaluationCase, ...] = Field(min_length=60, max_length=100)
     sha256: str
 
     @model_validator(mode="after")

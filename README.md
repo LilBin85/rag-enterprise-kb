@@ -1,22 +1,54 @@
 # RAG 企业知识任务智能体
 
-面向企业制度与技术规范的租户隔离知识任务智能体。`/v1` 接口以 PostgreSQL 事实源、Qdrant 授权检索、证据账本和可恢复任务状态为核心。
+一个面向企业制度与技术规范的可审计 RAG/Agent 后端：在租户与 ACL 隔离下完成文档摄取、证据检索、只读研究和 HITL 受控写入。
 
-机器报告 [docs/acceptance/latest.json](docs/acceptance/latest.json) 保留其记录的 revision/worktree 的 M1/M2 验收快照，不代表当前工作树已经通过验收。发布前必须重新生成报告，并以 `verdict`、`gates`、`unverified` 和检索质量门为准，不能由文档补写缺失证据。
+## 架构
 
-## 架构与运行模式
+```mermaid
+flowchart LR
+    U[调用方] --> API[FastAPI /v1]
+    API <--> PG[(PostgreSQL<br/>事实、ACL、证据、checkpoint)]
+    PG <--> W[异步 Worker]
+    API --> Q[(Qdrant<br/>授权向量检索)]
+    W --> Q
+    W --> OBJ[(对象存储)]
+    API --> LLM[DeepSeek]
+    W --> LLM
+```
 
-- `knowledge_query`：一次授权检索、证据账本记录、受约束回答。拒答分两层：数量/锚点等字面缺失在检索层确定性拦截，主谓语义充分性由回答模型 verdict 判定；引用一律以证据账本复核兜底。
-- `research`：公开的只读任务模式，固定暴露四个 READ 工具。
-- `controlled_action`：受 feature gate 和兼容 Worker capability 约束的公开任务模式；在同一 `thread_id = task_id` 中先经 HITL 暂停和服务端审批，再执行两个固定 WRITE adapter。客户端不能传入 checkpoint、resume 或工具绑定数据。
+PostgreSQL 是唯一事实源，Qdrant 只是可重建、可收敛的检索投影；Agent 身份、工具和审批绑定均由服务端注入。
 
-摄取采用三阶段投影切换：先按新 generation 分批构建并回读校验 Qdrant 投影，再发布新世代可见，最后在单个 SQL 事务中以原绑定为前置条件 CAS 激活版本并精确绑定新世代，绑定成功后才清理旧投影。切换窗口内，检索仍只使用 PostgreSQL 当前绑定的 `projection_key`；旧 worker 不能倒退当前世代。
+## 三分钟演示
 
-worker 对任务、摄取和投影队列轮转调度，并周期执行有界的上传预留回收与正文保留收敛：过期的 waiting 任务自动终止，工具结果、任务 checkpoint/结果和固定前缀孤儿对象按 TTL 幂等清理且不改写历史执行终态（详细边界见[架构说明](docs/architecture.md)）。
+前置：Docker Desktop 已启动，`.env` 已配置 `DEEPSEEK_API_KEY`、`DEMO_ROLE_TOKENS` 和本地 BGE-M3 缓存。已有镜像和模型缓存时，只需一条命令：
 
-Research Agent 只暴露 `search_knowledge`、`fetch_evidence`、`list_document_versions`、`compare_document_versions` 四个 READ 工具；controlled-action Agent 在此基础上增加两个固定 WRITE adapter。模型只能使用服务端注入的身份上下文，不能传递 tenant、权限、lease、审批绑定或对象存储路径。公开任务创建与领取要求 `task-agent/m2-fenced-v1` capability lease；无兼容 capability 时 `POST /v1/tasks` 返回 503，同步知识查询、文档接口和全局 readiness 不受影响。
+```powershell
+docker compose up --build -d
+```
 
-详见：[架构说明](docs/architecture.md)、[威胁模型](docs/threat-model.md)、[迁移说明](docs/migration.md)、[使用指南](使用指南.md)。
+服务就绪后打开 [Swagger 操作页](http://localhost:8000/docs)，按“初始化身份 → 上传文档 → 等待摄取成功 → 提问”完成演示；逐步说明见[使用指南](使用指南.md)，健康状态见 [`/health/ready`](http://localhost:8000/health/ready)。
+
+## 核心指标
+
+| 验收项 | 固定版本实测结果 |
+| --- | ---: |
+| 自动化测试 | 528 / 528 通过，0 失败，0 跳过 |
+| 检索质量 | Recall@5 = 1.00，MRR = 1.00，无答案准确率 = 1.00 |
+| 权限隔离 | ACL 泄漏率 = 0 |
+| M1 只读 Research Agent | 通过；4 次工具调用，3 条引用 |
+| M2 受控写入 | 通过；31 个任务，21 个场景 |
+
+数据来自机器报告 [docs/acceptance/latest.json](docs/acceptance/latest.json)，绑定代码版本 `af0e94e`；它是固定版本快照，不自动代表后续工作树已通过。发布前必须重新生成报告，并以 `verdict`、`gates`、`unverified` 和检索质量门为准。
+
+## 三个关键技术取舍
+
+| 取舍 | 得到什么 | 付出什么 |
+| --- | --- | --- |
+| PostgreSQL 作为唯一事实源 | 状态、授权、证据和恢复语义可事务化审计 | 迁移与事务边界更严格 |
+| Qdrant 作为带世代的授权投影 | 避免旧向量和越权结果进入答案 | 摄取需要构建、校验、切换和收敛 |
+| 固定工具集 + HITL + checkpoint | Agent 可恢复，写操作可审批、可追责 | 比无约束同步 Agent 延迟更高、流程更长 |
+
+详细边界见[架构说明](docs/architecture.md)、[威胁模型](docs/threat-model.md)和[迁移说明](docs/migration.md)。
 
 ## Windows 启动
 
@@ -74,6 +106,8 @@ conda run -n rag-kb --no-capture-output python -m rag_kb.worker --watch --includ
 
 ## 验证
 
+GitHub Actions 将普通测试与 PostgreSQL/Qdrant 集成测试拆成两条流水线，并分别上传 JUnit 报告；60 例离线任务评测报告见 [docs/acceptance/enterprise-task-evaluation.json](docs/acceptance/enterprise-task-evaluation.json)。
+
 ```powershell
 conda run -n rag-kb --no-capture-output python -m pytest -q `
   tests/test_database_migrations.py `
@@ -119,7 +153,7 @@ conda run -n rag-kb --no-capture-output python scripts/build_project_acceptance_
   --output docs/acceptance/latest.json
 ```
 
-报告中记录的 M1/M2 严格真实 E2E 曾在隔离资源上通过：M1 验证 V1/V2 上传、精确四个 READ 工具与结果引用；M2 验证 31 个受控任务、HITL、批准/拒绝、artifact 隔离、恢复窗口、严格 msgpack 与终态审计。其双库全量回归为 `550 passed / 0 failed / 0 skipped`，是历史快照而非当前工作树结论；脚本不会从文档继承指标或填充缺失数字。
+报告中记录的 M1/M2 严格真实 E2E 曾在隔离资源上通过：M1 验证 V1/V2 上传、精确四个 READ 工具与结果引用；M2 验证 31 个受控任务、HITL、批准/拒绝、artifact 隔离、恢复窗口、严格 msgpack 与终态审计。其固定版本全量回归为 `528 passed / 0 failed / 0 skipped`，不是后续工作树结论；脚本不会从文档继承指标或填充缺失数字。
 
 ## 目录边界
 

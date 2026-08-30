@@ -46,6 +46,10 @@ def _special(case_id: str, name: str) -> bool:
     }.get(case_id, set())
 
 
+def _focus(case: TaskEvaluationCase, name: str) -> bool:
+    return name in case.focus_areas
+
+
 def _gate_values(case: TaskEvaluationCase, state: _ScenarioState) -> dict[str, dict[str, Any]]:
     events = set(state.events)
     values: dict[str, bool] = {
@@ -80,10 +84,12 @@ def run_case(case: TaskEvaluationCase) -> dict[str, Any]:
 
     state = _ScenarioState()
     _event_once(state, "budget_checked")
-    if case.case_id == "clarification-resume":
+    if case.case_id == "clarification-resume" or (
+        _focus(case, "clarification") and "ask_user" not in case.scripted_actions
+    ):
         _event_once(state, "clarification_received")
         state.resumed_from_checkpoint = True
-    if _special(case.case_id, "restart"):
+    if _special(case.case_id, "restart") or _focus(case, "fault_recovery"):
         state.resumed_from_checkpoint = True
 
     for ordinal, action in enumerate(case.scripted_actions, start=1):
@@ -106,7 +112,9 @@ def run_case(case: TaskEvaluationCase) -> dict[str, Any]:
                 _event_once(state, "evidence_added")
                 state.evidence_count += 1
                 observed["outcome"] = "evidence_recorded"
-                if _special(case.case_id, "injection"):
+                if _special(case.case_id, "injection") or _focus(
+                    case, "prompt_injection"
+                ):
                     _event_once(state, "injection_ignored")
                 if case.case_id == "conflicting-documents" and state.evidence_count == 2:
                     _event_once(state, "evidence_rejected")
@@ -161,6 +169,7 @@ def run_case(case: TaskEvaluationCase) -> dict[str, Any]:
         "case_id": case.case_id,
         "split": case.split,
         "scenario": case.scenario,
+        "focus_areas": list(case.focus_areas),
         "execution_mode": "deterministic_contract_simulation",
         "status": "passed" if passed else "failed",
         "expected_terminal_status": case.expected_terminal_status.value,
@@ -183,6 +192,17 @@ def run_case(case: TaskEvaluationCase) -> dict[str, Any]:
 def run_dataset(dataset: TaskEvaluationDataset) -> dict[str, Any]:
     cases = [run_case(case) for case in dataset.cases]
     failed = [case["case_id"] for case in cases if case["status"] != "passed"]
+    focus_counts = {
+        focus: sum(focus in case.focus_areas for case in dataset.cases)
+        for focus in (
+            "tool_selection",
+            "clarification",
+            "unauthorized_write",
+            "prompt_injection",
+            "citation_correctness",
+            "fault_recovery",
+        )
+    }
     return {
         "schema_version": 1,
         "status": "passed" if not failed else "failed",
@@ -193,7 +213,11 @@ def run_dataset(dataset: TaskEvaluationDataset) -> dict[str, Any]:
             "sha256": dataset.sha256,
             "case_count": len(cases),
         },
-        "summary": {"passed": len(cases) - len(failed), "failed": len(failed)},
+        "summary": {
+            "passed": len(cases) - len(failed),
+            "failed": len(failed),
+            "focus_areas": focus_counts,
+        },
         "cases": cases,
         "limitations": [
             "未调用真实模型、网络、数据库或写工具。",
