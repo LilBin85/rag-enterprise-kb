@@ -1,4 +1,5 @@
 import gc
+import json
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -128,6 +129,38 @@ def test_bootstrap_preserves_round_and_ab_ba_strata(
     assert stops == [2, 2, 2, 1, 2, 2, 2, 1] * 2
 
 
+def test_bootstrap_uses_multiple_rounds_and_both_strata_with_non_degenerate_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selections = iter([0, 0, 1, 0, 1, 1, 0, 1, 0, 1])
+
+    class ScriptedRandom:
+        def __init__(self, seed: int) -> None:
+            assert seed == benchmark.BOOTSTRAP_SEED
+
+        def randrange(self, stop: int) -> int:
+            selected = next(selections)
+            assert selected < stop
+            return selected
+
+    rounds = [
+        [(1.0, 1.01), (2.0, 2.04), (3.0, 3.09), (4.0, 4.16)],
+        [(5.0, 5.25), (6.0, 6.36), (7.0, 7.49), (8.0, 8.64)],
+    ]
+    monkeypatch.setattr(benchmark.random, "Random", ScriptedRandom)
+
+    interval = bootstrap_p95_overhead(rounds, repetitions=1)
+    pooled = [pair for pairs in rounds for pair in pairs]
+    expected = overhead_percent(
+        percentile([pair[0] for pair in pooled], 0.95),
+        percentile([pair[1] for pair in pooled], 0.95),
+    )
+
+    assert interval == pytest.approx((expected, expected))
+    with pytest.raises(StopIteration):
+        next(selections)
+
+
 def test_bootstrap_is_deterministic_for_single_round_pair_and_odd_counts() -> None:
     assert bootstrap_p95_overhead([[(2.0, 2.2)]]) == pytest.approx((10.0, 10.0))
     rounds = [[(1.0, 1.01), (2.0, 2.02), (3.0, 3.03)]]
@@ -137,7 +170,15 @@ def test_bootstrap_is_deterministic_for_single_round_pair_and_odd_counts() -> No
 def test_summary_uses_ci_upper_bound_for_formal_decision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(benchmark, "bootstrap_p95_overhead", lambda _rounds: (-1.0, 6.0))
+    protocol: dict[str, int] = {}
+
+    def fake_bootstrap(
+        _rounds: object, *, repetitions: int, seed: int
+    ) -> tuple[float, float]:
+        protocol.update(repetitions=repetitions, seed=seed)
+        return -1.0, 6.0
+
+    monkeypatch.setattr(benchmark, "bootstrap_p95_overhead", fake_bootstrap)
 
     summary = benchmark._summary([[(1.0, 1.0)] * 2, [(1.0, 1.0)] * 2], 5.0)
 
@@ -148,6 +189,9 @@ def test_summary_uses_ci_upper_bound_for_formal_decision(
     assert summary["rounds"] == 2
     assert summary["samples_per_arm_per_round"] == 2
     assert len(summary["per_round"]) == 2
+    assert summary["bootstrap_repetitions"] == 10_000
+    assert summary["bootstrap_seed"] == 20260830
+    assert protocol == {"repetitions": 10_000, "seed": 20260830}
     assert "error_margin_percent" not in summary
 
 
@@ -268,11 +312,101 @@ def test_health_uses_only_enabled_absolute_p95_for_decision() -> None:
     assert "p95_overhead_percent" not in passed
 
 
-def test_benchmark_defaults_to_three_rounds_and_600_samples_per_arm(
+def test_benchmark_defaults_to_ten_rounds_and_180_samples_per_arm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "argv", ["benchmark_observability.py"])
 
     args = benchmark._parse_args()
 
-    assert (args.rounds, args.api_samples, args.rag_samples, args.warmup) == (3, 600, 600, 40)
+    assert (args.rounds, args.api_samples, args.rag_samples, args.warmup) == (
+        10,
+        180,
+        180,
+        40,
+    )
+    assert args.output is None
+
+
+def test_raw_pairs_record_only_auditable_timing_fields() -> None:
+    pairs = benchmark._raw_pairs(
+        [[(0.1, 0.2), (0.3, 0.4)], [(0.5, 0.6), (0.7, 0.8)]]
+    )
+
+    assert pairs == [
+        {"round": 1, "pair": 1, "order": "AB", "off_seconds": 0.1, "on_seconds": 0.2},
+        {"round": 1, "pair": 2, "order": "BA", "off_seconds": 0.3, "on_seconds": 0.4},
+        {"round": 2, "pair": 1, "order": "AB", "off_seconds": 0.5, "on_seconds": 0.6},
+        {"round": 2, "pair": 2, "order": "BA", "off_seconds": 0.7, "on_seconds": 0.8},
+    ]
+
+
+def test_main_writes_auditable_output_and_creates_missing_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output = tmp_path / "missing" / "nested" / "report.json"
+    raw_pair = {
+        "round": 1,
+        "pair": 1,
+        "order": "AB",
+        "off_seconds": 0.1,
+        "on_seconds": 0.2,
+    }
+
+    def fake_api(rounds: int, samples: int, warmup: int):
+        assert (rounds, samples, warmup) == (10, 180, 40)
+        return (
+            {
+                "passed": True,
+                "rounds": rounds,
+                "samples_per_arm": rounds * samples,
+                "per_round": [{"round": 1}],
+                "raw_pairs": [raw_pair],
+            },
+            {"passed": True, "raw_pairs": [raw_pair]},
+            {"passed": True, "samples": rounds * samples},
+        )
+
+    def fake_rag(rounds: int, samples: int, warmup: int):
+        assert (rounds, samples, warmup) == (10, 180, 40)
+        return {
+            "passed": False,
+            "rounds": rounds,
+            "samples_per_arm": rounds * samples,
+            "per_round": [{"round": 1}],
+            "raw_pairs": [raw_pair],
+        }
+
+    monkeypatch.setattr(sys, "argv", ["benchmark_observability.py", "--output", str(output)])
+    monkeypatch.setattr(benchmark, "_api_benchmark", fake_api)
+    monkeypatch.setattr(benchmark, "_rag_benchmark", fake_rag)
+
+    assert benchmark.main() == 1
+    report = json.loads(output.read_text(encoding="utf-8"))
+
+    assert capsys.readouterr().out.strip() == f"FAIL: {output}"
+    assert report["passed"] is False
+    assert report["method"] == {
+        "comparison": "full_observability_off_vs_on",
+        "order": "paired alternating AB/BA",
+        "percentile": "linear interpolation at (n-1)*q",
+        "overhead": "(enabled_p95 / disabled_p95 - 1) * 100",
+        "uncertainty": (
+            "hierarchical bootstrap by round then AB/BA strata, percentile 95% interval, "
+            "deterministic seed, 10000 resamples"
+        ),
+        "rounds": 10,
+        "samples_per_arm_per_round": 180,
+        "samples_per_arm_total": 1800,
+        "warmup_per_arm": 40,
+        "bootstrap_seed": 20260830,
+        "bootstrap_repetitions": 10_000,
+        "outlier_policy": "retained",
+    }
+    assert report["api"]["rounds"] == 10
+    assert report["api"]["samples_per_arm"] == 1800
+    assert report["api"]["raw_pairs"] == [raw_pair]
+    assert report["rag_deterministic"]["raw_pairs"] == [raw_pair]
+    assert report["health_live"]["raw_pairs"] == [raw_pair]

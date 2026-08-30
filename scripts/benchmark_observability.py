@@ -47,6 +47,10 @@ from rag_kb.web.app import create_app
 from rag_kb.web.dependencies import build_document_service, build_identity_provider
 
 
+BOOTSTRAP_SEED = 20260830
+BOOTSTRAP_REPETITIONS = 10_000
+
+
 def percentile(values: list[float], quantile: float) -> float:
     if not values or not 0 <= quantile <= 1:
         raise ValueError("invalid_percentile_input")
@@ -66,11 +70,14 @@ def overhead_percent(off_seconds: float, on_seconds: float) -> float:
 
 
 def bootstrap_p95_overhead(
-    rounds: list[list[tuple[float, float]]], *, repetitions: int = 1000
+    rounds: list[list[tuple[float, float]]],
+    *,
+    repetitions: int = BOOTSTRAP_REPETITIONS,
+    seed: int = BOOTSTRAP_SEED,
 ) -> tuple[float, float]:
     if not rounds or any(not pairs for pairs in rounds) or repetitions <= 0:
         raise ValueError("invalid_bootstrap_input")
-    generator = random.Random(20260830)
+    generator = random.Random(seed)
     estimates: list[float] = []
     for _ in range(repetitions):
         sample: list[tuple[float, float]] = []
@@ -151,12 +158,18 @@ def _latencies(pairs: list[tuple[float, float]]) -> dict[str, object]:
 
 
 def _summary(
-    rounds: list[list[tuple[float, float]]], limit_percent: float
+    rounds: list[list[tuple[float, float]]],
+    limit_percent: float,
+    *,
+    bootstrap_repetitions: int = BOOTSTRAP_REPETITIONS,
+    bootstrap_seed: int = BOOTSTRAP_SEED,
 ) -> dict[str, object]:
     pooled = [pair for pairs in rounds for pair in pairs]
     latencies = _latencies(pooled)
     p95_overhead = float(latencies["p95_overhead_percent"])
-    interval = bootstrap_p95_overhead(rounds)
+    interval = bootstrap_p95_overhead(
+        rounds, repetitions=bootstrap_repetitions, seed=bootstrap_seed
+    )
     return {
         "rounds": len(rounds),
         "samples_per_arm_per_round": len(rounds[0]),
@@ -171,11 +184,29 @@ def _summary(
         "p95_overhead_percent": p95_overhead,
         "p95_overhead_95ci_percent": [interval[0], interval[1]],
         "p95_overhead_95ci_half_width_percent": (interval[1] - interval[0]) / 2,
+        "bootstrap_repetitions": bootstrap_repetitions,
+        "bootstrap_seed": bootstrap_seed,
         "limit_percent": limit_percent,
         "point_estimate_passed": p95_overhead < limit_percent,
         "decision_basis": "hierarchical_p95_overhead_95ci_upper",
         "passed": interval[1] < limit_percent,
     }
+
+
+def _raw_pairs(
+    rounds: list[list[tuple[float, float]]],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "round": round_index,
+            "pair": pair_index,
+            "order": "AB" if pair_index % 2 == 1 else "BA",
+            "off_seconds": off_seconds,
+            "on_seconds": on_seconds,
+        }
+        for round_index, pairs in enumerate(rounds, start=1)
+        for pair_index, (off_seconds, on_seconds) in enumerate(pairs, start=1)
+    ]
 
 
 def _document_service(
@@ -333,6 +364,7 @@ def _health_summary(rounds: list[list[tuple[float, float]]]) -> dict[str, object
         "off_ms": off_ms,
         "on_ms": on_ms,
         "p95_absolute_delta_ms": float(on_ms["p95"]) - float(off_ms["p95"]),
+        "raw_pairs": _raw_pairs(rounds),
         "limit_ms": 5.0,
         "decision_basis": "enabled_p95_absolute",
         "passed": float(on_ms["p95"]) < 5.0,
@@ -354,8 +386,10 @@ def _api_benchmark(
         health_rounds.append(health_pairs)
         metric_durations.extend(durations)
     metrics_p95 = percentile(metric_durations, 0.95)
+    document_summary = _summary(document_rounds, 5.0)
+    document_summary["raw_pairs"] = _raw_pairs(document_rounds)
     return (
-        _summary(document_rounds, 5.0),
+        document_summary,
         _health_summary(health_rounds),
         {
             "rounds": rounds,
@@ -547,15 +581,18 @@ def _rag_benchmark(rounds: int, samples: int, warmup: int) -> dict[str, object]:
     for _ in range(rounds):
         with tempfile.TemporaryDirectory(prefix="rag-kb-m6-rag-benchmark-") as directory:
             results.append(_rag_round(Path(directory), samples, warmup))
-    return _summary(results, 2.0)
+    summary = _summary(results, 2.0)
+    summary["raw_pairs"] = _raw_pairs(results)
+    return summary
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--rounds", type=int, default=3)
-    parser.add_argument("--api-samples", type=int, default=600)
-    parser.add_argument("--rag-samples", type=int, default=600)
+    parser.add_argument("--rounds", type=int, default=10)
+    parser.add_argument("--api-samples", type=int, default=180)
+    parser.add_argument("--rag-samples", type=int, default=180)
     parser.add_argument("--warmup", type=int, default=40)
+    parser.add_argument("--output", type=Path)
     return parser.parse_args()
 
 
@@ -564,17 +601,38 @@ def main() -> int:
     logging.disable(logging.CRITICAL)
     api, health, metrics = _api_benchmark(args.rounds, args.api_samples, args.warmup)
     rag = _rag_benchmark(args.rounds, args.rag_samples, args.warmup)
+    common_samples = args.api_samples == args.rag_samples
     report = {
         "method": {
+            "comparison": "full_observability_off_vs_on",
             "order": "paired alternating AB/BA",
             "percentile": "linear interpolation at (n-1)*q",
             "overhead": "(enabled_p95 / disabled_p95 - 1) * 100",
             "uncertainty": (
                 "hierarchical bootstrap by round then AB/BA strata, percentile 95% interval, "
-                "deterministic seed, 1000 resamples"
+                f"deterministic seed, {BOOTSTRAP_REPETITIONS} resamples"
             ),
             "rounds": args.rounds,
+            "samples_per_arm_per_round": (
+                args.api_samples
+                if common_samples
+                else {
+                    "document_api": args.api_samples,
+                    "rag_deterministic": args.rag_samples,
+                }
+            ),
+            "samples_per_arm_total": (
+                args.rounds * args.api_samples
+                if common_samples
+                else {
+                    "document_api": args.rounds * args.api_samples,
+                    "rag_deterministic": args.rounds * args.rag_samples,
+                }
+            ),
             "warmup_per_arm": args.warmup,
+            "bootstrap_seed": BOOTSTRAP_SEED,
+            "bootstrap_repetitions": BOOTSTRAP_REPETITIONS,
+            "outlier_policy": "retained",
         },
         "environment": {
             "python": platform.python_version(),
@@ -591,7 +649,14 @@ def main() -> int:
     report["passed"] = bool(
         api["passed"] and rag["passed"] and health["passed"] and metrics["passed"]
     )
-    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    serialized = json.dumps(report, ensure_ascii=False, sort_keys=True)
+    if args.output is None:
+        print(serialized)
+    else:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(f"{serialized}\n", encoding="utf-8")
+        status = "PASS" if report["passed"] else "FAIL"
+        print(f"{status}: {args.output}")
     return 0 if report["passed"] else 1
 
 
