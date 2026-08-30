@@ -5,10 +5,11 @@ from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 import pytest
-from sqlalchemy import inspect, text
+from sqlalchemy import CheckConstraint, Column, Integer, MetaData, Table, inspect, text
 from sqlalchemy.exc import IntegrityError
 
 from rag_kb.infrastructure.database import Base, build_database
+from rag_kb.infrastructure.database.base import NAMING_CONVENTION
 from rag_kb.web.dependencies import EXPECTED_DATABASE_REVISION
 
 
@@ -38,6 +39,22 @@ EXPECTED_TABLES = {
 
 def sqlite_url(path: Path) -> str:
     return f"sqlite+pysqlite:///{path.as_posix()}"
+
+
+def test_check_constraint_naming_convention_is_idempotent() -> None:
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
+    table = Table(
+        "widgets",
+        metadata,
+        Column("value", Integer),
+        CheckConstraint("value >= 0", name="value_nonnegative"),
+        CheckConstraint("value <= 10", name="ck_widgets_value_bounded"),
+    )
+
+    assert {constraint.name for constraint in table.constraints if isinstance(constraint, CheckConstraint)} == {
+        "ck_widgets_value_bounded",
+        "ck_widgets_value_nonnegative",
+    }
 
 
 def upgrade_sqlite_database(tmp_path: Path):
