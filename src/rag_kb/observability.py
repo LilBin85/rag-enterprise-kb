@@ -47,8 +47,6 @@ _REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}\Z")
 _SAFE_EVENT_PATTERN = re.compile(r"[a-z][a-z0-9_.-]{0,127}\Z")
 _SAFE_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}\Z")
 _SAFE_ERROR_CODE_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,99}\Z")
-_TRACE_ID_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
-_SPAN_ID_PATTERN = re.compile(r"[0-9a-f]{16}\Z")
 _SAFE_LOG_FIELDS = frozenset(
     {
         "component",

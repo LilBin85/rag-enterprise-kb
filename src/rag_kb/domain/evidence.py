@@ -1,7 +1,5 @@
 """证据账本契约；只保存来源映射和哈希，不复制授权正文。"""
 
-from datetime import datetime
-
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 from rag_kb.domain.fingerprints import canonical_fingerprint

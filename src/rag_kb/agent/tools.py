@@ -298,37 +298,38 @@ def _execute_write_tool(
     return render_write_tool_message(tool_name, result)
 
 
+def _tool_description(tool_name: str) -> str:
+    from rag_kb.application.tool_registry import builtin_tool_definitions
+
+    return next(
+        definition.description
+        for definition in builtin_tool_definitions()
+        if definition.name == tool_name
+    )
+
+
 def build_research_tools(executor: ToolExecutionService) -> list[BaseTool]:
     """只暴露 4 个只读工具；写工具暴露数为 0。"""
 
-    def _description(tool_name: str) -> str:
-        from rag_kb.application.tool_registry import builtin_tool_definitions
-
-        return next(
-            definition.description
-            for definition in builtin_tool_definitions()
-            if definition.name == tool_name
-        )
-
-    @tool("search_knowledge", description=_description("search_knowledge"))
+    @tool("search_knowledge", description=_tool_description("search_knowledge"))
     def search_knowledge(
         query: str, runtime: ToolRuntime[AgentRunContext], limit: int = 5
     ) -> str:
         return _execute_read_tool("search_knowledge", {"query": query, "limit": limit}, runtime, executor)
 
-    @tool("fetch_evidence", description=_description("fetch_evidence"))
+    @tool("fetch_evidence", description=_tool_description("fetch_evidence"))
     def fetch_evidence(
         evidence_ids: list[str], runtime: ToolRuntime[AgentRunContext]
     ) -> str:
         return _execute_read_tool("fetch_evidence", {"evidence_ids": evidence_ids}, runtime, executor)
 
-    @tool("list_document_versions", description=_description("list_document_versions"))
+    @tool("list_document_versions", description=_tool_description("list_document_versions"))
     def list_document_versions(
         document_id: str, runtime: ToolRuntime[AgentRunContext]
     ) -> str:
         return _execute_read_tool("list_document_versions", {"document_id": document_id}, runtime, executor)
 
-    @tool("compare_document_versions", description=_description("compare_document_versions"))
+    @tool("compare_document_versions", description=_tool_description("compare_document_versions"))
     def compare_document_versions(
         document_id: str,
         left_version: int,
@@ -353,16 +354,7 @@ def build_research_tools(executor: ToolExecutionService) -> list[BaseTool]:
 def build_controlled_action_tools(executor: ToolExecutionService) -> list[BaseTool]:
     """暴露 4 READ + 精确 2 WRITE；WRITE 由 HITL 暂停并要求服务端审批事实。"""
 
-    def _description(tool_name: str) -> str:
-        from rag_kb.application.tool_registry import builtin_tool_definitions
-
-        return next(
-            definition.description
-            for definition in builtin_tool_definitions()
-            if definition.name == tool_name
-        )
-
-    @tool("create_report_artifact", description=_description("create_report_artifact"))
+    @tool("create_report_artifact", description=_tool_description("create_report_artifact"))
     def create_report_artifact(
         title: str,
         content: str,
@@ -376,7 +368,7 @@ def build_controlled_action_tools(executor: ToolExecutionService) -> list[BaseTo
             executor,
         )
 
-    @tool("create_work_item_draft", description=_description("create_work_item_draft"))
+    @tool("create_work_item_draft", description=_tool_description("create_work_item_draft"))
     def create_work_item_draft(
         title: str,
         description: str,

@@ -10,7 +10,7 @@ from pathlib import PurePosixPath
 from sqlalchemy import func, or_, select
 
 from rag_kb.agent.result import AgentResultStore
-from rag_kb.domain.tasks import TaskMode, TaskStatus
+from rag_kb.domain.tasks import TaskStatus
 from rag_kb.infrastructure.database.models import AgentTaskRow, ArtifactRow, ToolCallRow
 from rag_kb.infrastructure.database.session import Database
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository

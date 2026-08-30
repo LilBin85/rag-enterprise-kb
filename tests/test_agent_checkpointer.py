@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from langgraph.checkpoint.serde._msgpack import STRICT_MSGPACK_ENABLED
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 

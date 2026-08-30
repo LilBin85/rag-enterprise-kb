@@ -13,7 +13,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
-from typing import Any, Callable, Protocol
+from typing import Callable, Protocol
 
 from opentelemetry import context as otel_context
 from sqlalchemy import text

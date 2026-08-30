@@ -36,7 +36,6 @@ from rag_kb.domain.tasks import (
 )
 from rag_kb.infrastructure.database import Base, build_database
 from rag_kb.infrastructure.database.models import (
-    AgentTaskRow,
     PrincipalRow,
     TenantRow,
     ToolCallRow,

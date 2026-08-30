@@ -3,8 +3,6 @@
 手动运行: python scripts/diagnose_thinking.py
 """
 
-import json
-
 import httpx
 
 from rag_kb.config import get_settings

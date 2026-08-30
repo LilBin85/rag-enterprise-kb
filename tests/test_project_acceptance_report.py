@@ -2,10 +2,8 @@ import hashlib
 import json
 from pathlib import Path
 
-from jsonschema import Draft202012Validator
-
 from scripts import build_project_acceptance_report as report_builder
-from scripts.build_project_acceptance_report import SCHEMA, build_report, pytest_values, validate_report
+from scripts.build_project_acceptance_report import build_report, pytest_values, validate_report
 
 
 def _source_binding(monkeypatch) -> dict[str, str]:

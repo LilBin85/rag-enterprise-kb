@@ -1,7 +1,5 @@
 """批准绑定契约；任一绑定事实变化都必须使批准失效。"""
 
-from datetime import datetime
-
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 

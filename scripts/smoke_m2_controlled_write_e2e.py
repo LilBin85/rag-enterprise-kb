@@ -12,8 +12,6 @@ import tempfile
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 
@@ -548,7 +546,6 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         from rag_kb.application.tool_registry import ToolRegistry
         from rag_kb.config import get_settings
         from rag_kb.domain.identity import Principal
-        from rag_kb.domain.tasks import TaskBudgets
         from rag_kb.infrastructure.auth.providers import DemoTokenIdentityProvider
         from rag_kb.infrastructure.database import build_database
         from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerRepository

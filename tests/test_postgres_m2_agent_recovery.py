@@ -13,7 +13,6 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import uuid4
 
 os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
@@ -25,7 +24,7 @@ from sqlalchemy import select, text
 
 from rag_kb.agent import factory
 from rag_kb.agent.checkpointer import open_postgres_checkpointer
-from rag_kb.agent.result import AgentResultStore, TaskResultCandidate
+from rag_kb.agent.result import AgentResultStore
 from rag_kb.agent.tools import build_controlled_action_tools
 from rag_kb.application.approval_service import (
     ApprovalService,
