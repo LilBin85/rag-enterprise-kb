@@ -1,5 +1,8 @@
 # RAG 企业知识任务智能体
 
+[![普通测试](https://github.com/LilBin85/rag-enterprise-kb/actions/workflows/tests.yml/badge.svg)](https://github.com/LilBin85/rag-enterprise-kb/actions/workflows/tests.yml)
+[![PostgreSQL/Qdrant 集成测试](https://github.com/LilBin85/rag-enterprise-kb/actions/workflows/integration-tests.yml/badge.svg)](https://github.com/LilBin85/rag-enterprise-kb/actions/workflows/integration-tests.yml)
+
 一个面向企业制度与技术规范的可审计 RAG/Agent 后端：在租户与 ACL 隔离下完成文档摄取、证据检索、只读研究和 HITL 受控写入。
 
 ## 架构
