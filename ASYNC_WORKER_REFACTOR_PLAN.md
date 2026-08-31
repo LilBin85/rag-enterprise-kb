@@ -291,7 +291,7 @@ python -m rag_kb.worker --queue projection --watch
 - 目标：将单个 `worker` 服务替换为 `task-worker`、`ingestion-worker`、`projection-worker`。
 - 必须处理：
   - 每个服务的启动命令、环境变量、volume 和 depends_on；
-  - 只给 task-worker 传 DeepSeek 所需配置；
+  - 只给同步知识问答所需的 API 和运行 Agent 的 task-worker 传 DeepSeek 配置；
   - 健康检查/重启策略保持合理；
   - 多容器指标端口与 Prometheus 抓取目标不冲突；
   - API capability readiness 只由 task-worker 满足。
@@ -349,7 +349,7 @@ python -m rag_kb.worker --queue projection --watch
 | A7 任务一回归 | 已完成 | Terra Max（`max`） | SQLite 129 passed、隔离 PostgreSQL 5 passed；主 Agent复核 144 passed；补充 live fault 17/17、完整 smoke 31 tasks/21 scenarios passed、A6/A7 回归 56 passed；隐私/依赖扫描通过，隔离资源残留 0 | `scripts/smoke_m2_controlled_write_e2e.py`；`src/rag_kb/web/routers/approvals.py`；`src/rag_kb/web/schemas/approvals.py`；`tests/test_v1_tasks_api.py`；`tests/test_v1_approvals_api.py`；`tests/test_task_approval_recovery.py` | 本次补充 live E2E 无需代码修复；历史 A6/A7/B1 basetemp 仍按 C1 精确清理 |
 | B1 单队列 CLI | 已完成 | Terra Max（`max`） | Terra Max：Worker runtime 13 passed；主 Agent：13 passed；`py_compile`、旧参数扫描、`git diff --check` 通过 | `src/rag_kb/worker.py`；`tests/test_worker_runtime.py` | `_run_recovery_window` 的恢复/队列/指标所有权仍聚合，按 B2 拆分；Compose/文档旧命令由 B3/B4 同步；B1 basetemp 留待 C1 清理 |
 | B2 恢复与指标所有权 | 已完成 | Terra Max（`max`） | Terra Max：32 passed；主 Agent：32 passed；`py_compile`、旧聚合入口扫描、低基数标签复核、`git diff --check` 通过 | `src/rag_kb/worker.py`；`src/rag_kb/observability.py`；`tests/test_worker_runtime.py` | Compose 三服务、独立指标端口与 Prometheus targets 留给 B3；B2 basetemp 留待 C1 精确清理 |
-| B3 三 Worker Compose | 已完成 | 主 Agent（Luna Max 不可用） | 部署静态测试 6 passed；旧观测 job 扫描 0 处；`COMPOSE_DISABLE_ENV_FILE=1` 下 `docker compose config --quiet`、`git diff --check` 通过 | `docker-compose.yml`；`ops/observability/prometheus/prometheus.yml`；`ops/observability/grafana/dashboards/system-overview.json`；`ops/observability/grafana/provisioning/alerting/rag-kb.yml`；`tests/test_deployment_acceptance_static.py`；`ASYNC_WORKER_REFACTOR_PLAN.md` | 同步 `/v1/knowledge/query` 仍在 API 内使用 DeepSeek，但 B3 按明确边界不再向 API 传 DeepSeek 配置；问答链执行权需另行设计，未在 B3 扩展重构 |
+| B3 三 Worker Compose | 已完成 | 主 Agent（Luna Max 不可用） | 部署静态测试 6 passed；API/task-worker DeepSeek 配置边界复核通过；`COMPOSE_DISABLE_ENV_FILE=1` 下 `docker compose config --quiet`、`git diff --check` 通过 | `docker-compose.yml`；`ops/observability/prometheus/prometheus.yml`；`ops/observability/grafana/dashboards/system-overview.json`；`ops/observability/grafana/provisioning/alerting/rag-kb.yml`；`tests/test_deployment_acceptance_static.py`；`ASYNC_WORKER_REFACTOR_PLAN.md` | 无已知遗留风险 |
 | B4 文档同步 | 待执行 | Luna Max | - | - | - |
 | C1 最终验收 | 待执行 | Terra Max | - | - | - |
 
@@ -456,13 +456,14 @@ python -m rag_kb.worker --queue projection --watch
 
 ### 7.12 B3 验证记录
 
+- B3 重新打开：代码事实确认同步 `/v1/knowledge/query` 由 API 进程内的 `DeepSeekAnswerModel` 执行，不使用 Agent、工具、checkpoint 或 `TaskWorker`，因此 API 获得 DeepSeek 配置不改变“task Worker 是唯一 Agent 执行者”的边界。处理决定采用最小配置修复：API 与 `task-worker` 同时接收三个 `DEEPSEEK_*` 变量，ingestion、projection 与 migrate 继续不得接收；不迁移同步问答到 Worker，也不拆两套模型配置。
 - 当前环境仍无 Luna Max，按第 5 节规则由主 Agent 亲自完成简单配置节点，没有假称使用 Luna，也没有扩大到 B4/C1。旧单一 `worker` 已替换为 `task-worker`、`ingestion-worker`、`projection-worker`，分别显式使用 `--queue task|ingestion|projection --watch`；API 不依赖任一 Worker 启动，task capability 仅由 task Worker 的数据库 lease 发布。
-- 三个 Worker 均依赖健康的 PostgreSQL/Qdrant、已完成的 Qdrant 初始化和迁移，共享必要对象存储与只读离线模型缓存，并使用 `restart: unless-stopped`。DeepSeek base URL、model 与 API key 只传给 `task-worker`；三个内部 metrics 端口分别为 9464、9465、9466，仅 `expose` 到 Compose 网络而未映射宿主端口。
+- 三个 Worker 均依赖健康的 PostgreSQL/Qdrant、已完成的 Qdrant 初始化和迁移，共享必要对象存储与只读离线模型缓存，并使用 `restart: unless-stopped`。DeepSeek base URL、model 与 API key 只传给同步知识问答所需的 API 和运行 Agent 的 `task-worker`，ingestion、projection 与 migrate 均不接收；三个内部 metrics 端口分别为 9464、9465、9466，仅 `expose` 到 Compose 网络而未映射宿主端口。
 - Prometheus 使用 `rag-kb-task-worker`、`rag-kb-ingestion-worker`、`rag-kb-projection-worker` 三个独立 job/target；Grafana 系统面板分别查询并展示三类 Worker。`rag-kb-target-down` 对 API、三个 Worker 和 Collector 逐个检查 `up == 0` 与 `absent(...)`，不再以聚合掩盖单个 Worker 缺失；运行观测配置中的旧单 Worker job 扫描为 0 处。
 - 仓库没有可复用且能反映 Worker 循环业务健康的探针，因此未添加 `echo`、固定成功命令或仅证明 metrics 线程存活的伪 healthcheck。当前由容器主进程退出状态、`unless-stopped` 重启策略、三个 Prometheus 抓取目标及 B2 的 worker last-loop/error 指标承担存活观测；真正的 Worker 业务健康探针属于独立设计，不在 B3 新造第二套机制。
-- 静态部署测试已同步验证三服务存在、旧服务不存在、命令、依赖、对象卷、DeepSeek 隔离、内部 metrics 端口、Prometheus targets、Grafana 三 Worker 查询及 target-down 的 down/absent 覆盖。主 Agent运行 `conda run -n rag-kb --no-capture-output python -m pytest -q tests/test_deployment_acceptance_static.py`，结果 `6 passed, 1 warning`；warning 仅为现有 `.pytest_cache` 目录 ACL 导致 pytest 无法写缓存，不影响断言结果。
+- 静态部署测试已同步验证三服务存在、旧服务不存在、命令、依赖、对象卷、API/task-worker DeepSeek 配置与其余服务隔离、内部 metrics 端口、Prometheus targets、Grafana 三 Worker 查询及 target-down 的 down/absent 覆盖。主 Agent运行 `conda run -n rag-kb --no-capture-output python -m pytest -q tests/test_deployment_acceptance_static.py`，结果 `6 passed, 1 warning`；warning 仅为现有 `.pytest_cache` 目录 ACL 导致 pytest 无法写缓存，不影响断言结果。
 - Windows PATH 现可解析 `C:\Users\26219\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe`。为保证 Docker Compose 不自动读取受保护的 `.env`，设置 `COMPOSE_DISABLE_ENV_FILE=1` 后运行 `docker compose config --quiet`，退出成功且无输出；旧 job 精确扫描与全工作树 `git diff --check` 同样通过。
-- 实现事实冲突与遗留风险：同步 `/v1/knowledge/query` 仍通过 API 内的 `DeepSeekAnswerModel` 使用 DeepSeek 配置，而 B3 明确要求 DeepSeek 配置只传给 `task-worker`。本节点继续遵守部署配置隔离，不把同步问答链迁移或重构扩大进简单 Compose 节点；该端点在 Compose 默认配置下缺少真实 DeepSeek 凭据的风险如实保留，不以回传配置给 API 掩盖冲突。
+- 重新打开后的最小修复已完成：Compose 将三个 `DEEPSEEK_*` 变量同时传给 API 与 `task-worker`，静态测试精确禁止 ingestion、projection 和 migrate 接收；同步问答未迁移到 Worker，也未拆分模型配置。该修复不改变 task Worker 对 Agent、工具、checkpoint 与 capability lease 的唯一执行权，原 `/v1/knowledge/query` 配置断链风险已消除。
 
 ## 8. 决策记录
 

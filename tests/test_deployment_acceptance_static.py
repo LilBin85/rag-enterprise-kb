@@ -46,7 +46,6 @@ def test_compose_contains_migration_api_worker_and_health_dependencies() -> None
     ]["DATABASE_URL"]
     assert services["api"]["environment"]["DEMO_ROLE_TOKENS"] == "${DEMO_ROLE_TOKENS:-{}}"
     assert "DEMO_ROLE_TOKENS" not in services["migrate"]["environment"]
-    assert "DEEPSEEK_API_KEY" not in services["migrate"]["environment"]
     for name, queue in zip(worker_names, ("task", "ingestion", "projection"), strict=True):
         assert services[name]["command"] == [
             "python",
@@ -102,20 +101,18 @@ def test_compose_contains_migration_api_worker_and_health_dependencies() -> None
             name: services[service]["environment"][name]
             for name in expected_runtime_config
         } == expected_runtime_config
-    assert {
-        name: services["task-worker"]["environment"][name]
-        for name in ("DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL", "DEEPSEEK_API_KEY")
-    } == {
+    deepseek_config = {
         "DEEPSEEK_BASE_URL": "${DEEPSEEK_BASE_URL:-https://api.deepseek.com}",
         "DEEPSEEK_MODEL": "${DEEPSEEK_MODEL:-deepseek-v4-flash}",
         "DEEPSEEK_API_KEY": "${DEEPSEEK_API_KEY:-}",
     }
-    for service in ("api", "ingestion-worker", "projection-worker"):
-        assert not {
-            "DEEPSEEK_BASE_URL",
-            "DEEPSEEK_MODEL",
-            "DEEPSEEK_API_KEY",
-        }.intersection(services[service]["environment"])
+    for service in ("api", "task-worker"):
+        assert {
+            name: services[service]["environment"][name]
+            for name in deepseek_config
+        } == deepseek_config
+    for service in ("ingestion-worker", "projection-worker", "migrate"):
+        assert not deepseek_config.keys() & services[service]["environment"].keys()
     assert services["qdrant-init"]["environment"]["EMBEDDING_DIM"] == "${EMBEDDING_DIM:-1024}"
     for service in ("api", *worker_names):
         assert services[service]["depends_on"]["qdrant-init"]["condition"] == (
