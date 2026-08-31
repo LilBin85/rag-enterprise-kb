@@ -5,8 +5,6 @@ x-app-runtime: &app_runtime
   QDRANT_URL: http://qdrant:6333
   QDRANT_V2_COLLECTION: kb_chunks_v2
   OBJECT_STORE_ROOT: /app/data/local/objects
-  DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
-  DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
   EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}
   RETRIEVAL_TOP_K: ${RETRIEVAL_TOP_K:-5}
   RETRIEVAL_CANDIDATE_K: ${RETRIEVAL_CANDIDATE_K:-}
@@ -31,7 +29,6 @@ x-app-runtime: &app_runtime
   METRICS_ENABLED: ${METRICS_ENABLED:-true}
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
   OTEL_TRACE_SAMPLE_RATIO: ${OTEL_TRACE_SAMPLE_RATIO:-1.0}
-  WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9464}
   HF_HOME: /home/ragkb/.cache/huggingface
   # Docker 只读取宿主机已冻结的模型；运行期不得静默联网下载。
   HF_HUB_OFFLINE: "1"
@@ -73,7 +70,6 @@ services:
     command: ["uvicorn", "rag_kb.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       <<: *app_runtime
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEMO_ROLE_TOKENS: '${DEMO_ROLE_TOKENS:-{}}'
     ports:
       - "127.0.0.1:8000:8000"
@@ -113,12 +109,15 @@ services:
       qdrant:
         condition: service_healthy
 
-  worker:
+  task-worker:
     build: .
-    command: ["python", "-m", "rag_kb.worker", "--watch", "--include-tasks"]
+    command: ["python", "-m", "rag_kb.worker", "--queue", "task", "--watch"]
     environment:
       <<: *app_runtime
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      WORKER_METRICS_PORT: "9464"
     volumes:
       - object_storage:/app/data/local/objects
       - type: bind
@@ -127,6 +126,57 @@ services:
         read_only: true
     expose:
       - "9464"
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      qdrant-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+
+  ingestion-worker:
+    build: .
+    command: ["python", "-m", "rag_kb.worker", "--queue", "ingestion", "--watch"]
+    environment:
+      <<: *app_runtime
+      WORKER_METRICS_PORT: "9465"
+    volumes:
+      - object_storage:/app/data/local/objects
+      - type: bind
+        source: ${HF_HOME:-D:/DevelopmentTools/hf-cache}
+        target: /home/ragkb/.cache/huggingface
+        read_only: true
+    expose:
+      - "9465"
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      qdrant-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+
+  projection-worker:
+    build: .
+    command: ["python", "-m", "rag_kb.worker", "--queue", "projection", "--watch"]
+    environment:
+      <<: *app_runtime
+      WORKER_METRICS_PORT: "9466"
+    volumes:
+      - object_storage:/app/data/local/objects
+      - type: bind
+        source: ${HF_HOME:-D:/DevelopmentTools/hf-cache}
+        target: /home/ragkb/.cache/huggingface
+        read_only: true
+    expose:
+      - "9466"
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy

@@ -1,6 +1,7 @@
 """部署与验收入口的机械静态回归；不要求本机安装 Docker 或启动外部组件。"""
 
 import json
+import re
 from pathlib import Path
 
 import yaml
@@ -24,10 +25,17 @@ def test_docker_image_installs_runtime_model_dependencies() -> None:
 
 def test_compose_contains_migration_api_worker_and_health_dependencies() -> None:
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
-    assert {"postgres", "qdrant", "qdrant-init", "migrate", "api", "worker"}.issubset(
-        compose["services"]
-    )
+    worker_names = ("task-worker", "ingestion-worker", "projection-worker")
+    assert {
+        "postgres",
+        "qdrant",
+        "qdrant-init",
+        "migrate",
+        "api",
+        *worker_names,
+    }.issubset(compose["services"])
     services = compose["services"]
+    assert "worker" not in services
     assert services["migrate"]["command"] == [
         "/bin/sh",
         "-c",
@@ -39,7 +47,23 @@ def test_compose_contains_migration_api_worker_and_health_dependencies() -> None
     assert services["api"]["environment"]["DEMO_ROLE_TOKENS"] == "${DEMO_ROLE_TOKENS:-{}}"
     assert "DEMO_ROLE_TOKENS" not in services["migrate"]["environment"]
     assert "DEEPSEEK_API_KEY" not in services["migrate"]["environment"]
-    assert services["worker"]["command"] == ["python", "-m", "rag_kb.worker", "--watch", "--include-tasks"]
+    for name, queue in zip(worker_names, ("task", "ingestion", "projection"), strict=True):
+        assert services[name]["command"] == [
+            "python",
+            "-m",
+            "rag_kb.worker",
+            "--queue",
+            queue,
+            "--watch",
+        ]
+        assert services[name]["restart"] == "unless-stopped"
+        assert services[name]["depends_on"] == {
+            "postgres": {"condition": "service_healthy"},
+            "qdrant": {"condition": "service_healthy"},
+            "qdrant-init": {"condition": "service_completed_successfully"},
+            "migrate": {"condition": "service_completed_successfully"},
+        }
+        assert "object_storage:/app/data/local/objects" in services[name]["volumes"]
     assert services["qdrant-init"]["command"] == ["python", "-m", "rag_kb.qdrant_init"]
     assert services["qdrant-init"]["depends_on"]["qdrant"]["condition"] == "service_healthy"
     assert services["postgres"]["ports"] == ["127.0.0.1:5432:5432"]
@@ -49,8 +73,6 @@ def test_compose_contains_migration_api_worker_and_health_dependencies() -> None
     ]
     assert services["api"]["ports"] == ["127.0.0.1:8000:8000"]
     expected_runtime_config = {
-        "DEEPSEEK_BASE_URL": "${DEEPSEEK_BASE_URL:-https://api.deepseek.com}",
-        "DEEPSEEK_MODEL": "${DEEPSEEK_MODEL:-deepseek-v4-flash}",
         "EMBEDDING_DIM": "${EMBEDDING_DIM:-1024}",
         "RETRIEVAL_TOP_K": "${RETRIEVAL_TOP_K:-5}",
         "RETRIEVAL_CANDIDATE_K": "${RETRIEVAL_CANDIDATE_K:-}",
@@ -74,21 +96,35 @@ def test_compose_contains_migration_api_worker_and_health_dependencies() -> None
         "METRICS_ENABLED": "${METRICS_ENABLED:-true}",
         "OTEL_EXPORTER_OTLP_ENDPOINT": "${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}",
         "OTEL_TRACE_SAMPLE_RATIO": "${OTEL_TRACE_SAMPLE_RATIO:-1.0}",
-        "WORKER_METRICS_PORT": "${WORKER_METRICS_PORT:-9464}",
     }
-    for service in ("api", "worker"):
+    for service in ("api", *worker_names):
         assert {
             name: services[service]["environment"][name]
             for name in expected_runtime_config
         } == expected_runtime_config
+    assert {
+        name: services["task-worker"]["environment"][name]
+        for name in ("DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL", "DEEPSEEK_API_KEY")
+    } == {
+        "DEEPSEEK_BASE_URL": "${DEEPSEEK_BASE_URL:-https://api.deepseek.com}",
+        "DEEPSEEK_MODEL": "${DEEPSEEK_MODEL:-deepseek-v4-flash}",
+        "DEEPSEEK_API_KEY": "${DEEPSEEK_API_KEY:-}",
+    }
+    for service in ("api", "ingestion-worker", "projection-worker"):
+        assert not {
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_API_KEY",
+        }.intersection(services[service]["environment"])
     assert services["qdrant-init"]["environment"]["EMBEDDING_DIM"] == "${EMBEDDING_DIM:-1024}"
-    for service in ("api", "worker"):
+    for service in ("api", *worker_names):
         assert services[service]["depends_on"]["qdrant-init"]["condition"] == (
             "service_completed_successfully"
         )
     assert services["api"]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
+    assert not set(worker_names).intersection(services["api"]["depends_on"])
     assert services["qdrant"]["healthcheck"]["test"]
-    for service in ("api", "worker"):
+    for service in ("api", *worker_names):
         assert services[service]["environment"]["HF_HOME"] == "/home/ragkb/.cache/huggingface"
         assert services[service]["environment"]["HF_HUB_OFFLINE"] == "1"
         model_mount = next(
@@ -121,8 +157,15 @@ def test_observability_profile_is_internal_and_provisioned() -> None:
         "./ops/observability/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro",
         "./ops/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro",
     ]
-    assert "ports" not in services["worker"]
-    assert services["worker"]["expose"] == ["9464"]
+    worker_ports = {
+        "task-worker": "9464",
+        "ingestion-worker": "9465",
+        "projection-worker": "9466",
+    }
+    for name, port in worker_ports.items():
+        assert "ports" not in services[name]
+        assert services[name]["expose"] == [port]
+        assert services[name]["environment"]["WORKER_METRICS_PORT"] == port
 
     prometheus = yaml.safe_load(
         (ROOT / "ops/observability/prometheus/prometheus.yml").read_text(encoding="utf-8")
@@ -137,7 +180,9 @@ def test_observability_profile_is_internal_and_provisioned() -> None:
     }
     assert scrape_targets == {
         "rag-kb-api": {"api:8000"},
-        "rag-kb-worker": {"worker:9464"},
+        "rag-kb-task-worker": {"task-worker:9464"},
+        "rag-kb-ingestion-worker": {"ingestion-worker:9465"},
+        "rag-kb-projection-worker": {"projection-worker:9466"},
         "rag-kb-collector": {"otel-collector:8888"},
     }
     recording = yaml.safe_load(
@@ -220,9 +265,6 @@ def test_observability_profile_is_internal_and_provisioned() -> None:
         assert all("histogram_quantile(" in expr for expr in exprs if "_bucket" in expr)
     system_exprs = "\n".join(dashboard_exprs["system-overview.json"])
     for contract in (
-        'up{job="rag-kb-api"}',
-        'up{job="rag-kb-worker"}',
-        'up{job="rag-kb-collector"}',
         "histogram_quantile(0.50",
         "histogram_quantile(0.95",
         "histogram_quantile(0.99",
@@ -230,6 +272,14 @@ def test_observability_profile_is_internal_and_provisioned() -> None:
         "otelcol_exporter_send_failed_spans",
     ):
         assert contract in system_exprs
+    expected_up_jobs = {
+        "rag-kb-api",
+        "rag-kb-task-worker",
+        "rag-kb-ingestion-worker",
+        "rag-kb-projection-worker",
+        "rag-kb-collector",
+    }
+    assert set(re.findall(r'up\{job="([^"]+)"\}', system_exprs)) == expected_up_jobs
     rag_exprs = "\n".join(dashboard_exprs["rag.json"])
     for contract in (
         "sum by (outcome, reason)",
@@ -301,7 +351,8 @@ def test_observability_profile_is_internal_and_provisioned() -> None:
         assert "or vector(0)" in alert_exprs[uid]
         assert alert_rules[uid]["noDataState"] == "OK"
     target_down = alert_exprs["rag-kb-target-down"]
-    for job in ("rag-kb-api", "rag-kb-worker", "rag-kb-collector"):
+    assert set(re.findall(r'up\{job="([^"]+)"\}', target_down)) == expected_up_jobs
+    for job in expected_up_jobs:
         assert f'up{{job="{job}"}}' in target_down
         assert f'absent(up{{job="{job}"}})' in target_down
     assert alert_rules["rag-kb-target-down"]["noDataState"] == "Alerting"

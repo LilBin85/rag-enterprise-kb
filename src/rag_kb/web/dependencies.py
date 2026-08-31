@@ -1,7 +1,7 @@
 """HTTP 依赖装配；不得在构造函数中执行迁移或下载模型。"""
 
 from functools import lru_cache
-from typing import Annotated, Generator, Protocol
+from typing import Annotated, Protocol
 
 from fastapi import Depends, Header, HTTPException, Request
 from qdrant_client import QdrantClient
@@ -203,22 +203,6 @@ def build_task_result_service() -> TaskResultService:
         AgentResultStore(LocalObjectStore(settings.object_store_root)),
         EvidenceLedgerRepository(),
     )
-
-
-def build_task_resume_worker() -> Generator[object, None, None]:
-    """每次 continue 独占一个 checkpointer 连接，答案只进入受控 Command。"""
-    from rag_kb.worker import TaskAgentConfigurationError, build_task_worker
-
-    try:
-        worker = build_task_worker(
-            worker_id=f"api-resume-{uuid4().hex[:12]}", publish_capability=True
-        )
-    except TaskAgentConfigurationError as exc:
-        raise HTTPException(status_code=503, detail="任务 Agent 暂不可用") from exc
-    try:
-        yield worker
-    finally:
-        worker.close()
 
 
 @lru_cache

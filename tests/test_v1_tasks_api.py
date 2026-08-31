@@ -22,7 +22,6 @@ from rag_kb.web.dependencies import (
     build_task_query_service,
     build_task_repository,
     build_task_result_service,
-    build_task_resume_worker,
 )
 from rag_kb.web.routers import tasks as tasks_router
 
@@ -142,10 +141,6 @@ class FakeTaskRepository:
         return command
 
 
-def _forbidden_task_resume_worker() -> object:
-    raise AssertionError("continue 路由不得构造 TaskWorker、模型或 checkpointer")
-
-
 class FakeTaskQueryService:
     def events(self, *, auth, task_id: str):
         if not auth.has_permission("task:read"):
@@ -225,7 +220,6 @@ def setup_app() -> Iterator[tuple[TestClient, FakeTaskRepository]]:
     app.dependency_overrides[build_identity_provider] = lambda: provider
     app.dependency_overrides[build_task_repository] = lambda: repository
     app.dependency_overrides[build_task_query_service] = lambda: FakeTaskQueryService()
-    app.dependency_overrides[build_task_resume_worker] = _forbidden_task_resume_worker
     app.dependency_overrides[build_task_result_service] = lambda: FakeResultService()
     with TestClient(app) as client:
         yield client, repository
@@ -455,6 +449,56 @@ def test_continue_only_enqueues_durable_command_without_worker_construction(setu
     assert "answer" not in response.json()
     assert response.json()["status"] == "waiting_for_user"
     assert response.json()["result_available"] is False
+
+
+def test_continue_enqueue_failures_before_and_after_persist_are_retry_safe(
+    setup_app, monkeypatch
+) -> None:
+    client, repository = setup_app
+    repository.current = _state(
+        status=TaskStatus.WAITING_FOR_USER,
+        interrupt_kind="user_clarification",
+        interrupt_summary="需要哪个部门？",
+    )
+
+    before_enqueue = client.post(
+        "/v1/tasks/task-1/continue",
+        headers=_headers(),
+        json={"answer": "财务部", "expected_state_version": 2},
+    )
+    assert before_enqueue.status_code == 409
+    assert repository.enqueued == []
+
+    original_get_task = repository.get_task
+    fail_once = True
+
+    def fail_after_enqueue(*, auth, task_id: str) -> TaskState:
+        nonlocal fail_once
+        if fail_once and repository.enqueued:
+            fail_once = False
+            raise TaskRepositoryError("task_resume_conflict")
+        return original_get_task(auth=auth, task_id=task_id)
+
+    monkeypatch.setattr(repository, "get_task", fail_after_enqueue)
+    after_enqueue = client.post(
+        "/v1/tasks/task-1/continue",
+        headers=_headers(),
+        json={"answer": "财务部", "expected_state_version": 1},
+    )
+    retried = client.post(
+        "/v1/tasks/task-1/continue",
+        headers=_headers(),
+        json={"answer": "财务部", "expected_state_version": 1},
+    )
+
+    assert after_enqueue.status_code == 409
+    assert "财务部" not in after_enqueue.text
+    assert retried.status_code == 202
+    assert len(repository.enqueued) == 1
+    assert retried.json()["resume_command"] == {
+        "command_id": "resume-command-1",
+        "status": "accepted",
+    }
 
 
 def test_continue_rejects_injected_resume_fields_and_tool_approval(setup_app) -> None:

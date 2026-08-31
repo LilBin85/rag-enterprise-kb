@@ -194,6 +194,25 @@ def test_decision_only_enqueues_server_approval_binding_and_is_idempotent(setup_
     assert all(call["expected_task_state_version"] == 4 for call in service.calls)
 
 
+def test_rejection_reason_is_not_returned_by_approval_api(setup_app) -> None:
+    client, _service = setup_app
+    reason = "仅限审批审计的私密原因"
+
+    decided = client.post(
+        "/v1/approvals/approval-1/decision",
+        headers=_headers(),
+        json={"decision": "reject", "reason": reason, "expected_task_state_version": 4},
+    )
+    detail = client.get("/v1/approvals/approval-1", headers=_headers())
+
+    assert decided.status_code == 202
+    assert detail.status_code == 200
+    assert reason not in decided.text
+    assert reason not in detail.text
+    assert "rejection_reason" not in decided.json()
+    assert "rejection_reason" not in detail.json()
+
+
 def test_decision_rejects_server_field_injection_and_preserves_binding(setup_app) -> None:
     client, service = setup_app
 

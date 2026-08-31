@@ -1,3 +1,6 @@
+import subprocess
+import sys
+
 from fastapi.testclient import TestClient
 from opentelemetry.sdk.trace.export import SpanExporter
 
@@ -21,6 +24,39 @@ def test_live_probe_has_no_external_dependency() -> None:
     client = TestClient(create_app())
 
     assert client.get("/health/live").json() == {"status": "ok"}
+
+
+def test_api_startup_does_not_import_worker_or_agent_runtime() -> None:
+    blocked = (
+        "rag_kb.worker",
+        "rag_kb.agent.factory",
+        "rag_kb.agent.checkpointer",
+        "rag_kb.agent.tools",
+        "rag_kb.embedder",
+        "rag_kb.answerer",
+    )
+    code = f"""
+import builtins
+real_import = builtins.__import__
+blocked = {blocked!r}
+def guarded_import(name, *args, **kwargs):
+    if name in blocked:
+        raise AssertionError(name)
+    return real_import(name, *args, **kwargs)
+builtins.__import__ = guarded_import
+from rag_kb.config import Settings
+from rag_kb.web.app import create_app
+create_app(Settings(_env_file=None))
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_ready_probe_reports_dependencies() -> None:

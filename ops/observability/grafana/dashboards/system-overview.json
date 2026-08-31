@@ -15,9 +15,13 @@
     },
     {
       "type": "stat",
-      "title": "Worker up",
+      "title": "Workers up",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"expr": "up{job=\"rag-kb-worker\"}", "refId": "A"}],
+      "targets": [
+        {"expr": "up{job=\"rag-kb-task-worker\"}", "legendFormat": "task", "refId": "A"},
+        {"expr": "up{job=\"rag-kb-ingestion-worker\"}", "legendFormat": "ingestion", "refId": "B"},
+        {"expr": "up{job=\"rag-kb-projection-worker\"}", "legendFormat": "projection", "refId": "C"}
+      ],
       "gridPos": {"h": 8, "w": 6, "x": 6, "y": 0}
     },
     {

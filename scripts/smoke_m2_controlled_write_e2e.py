@@ -53,25 +53,6 @@ class _LogCapture(logging.Handler):
         self.messages.append(self.format(record))
 
 
-class _WorkerRouter:
-    """让 HTTP approval/continue 路由复用创建该 task 的真实 Worker。"""
-
-    def __init__(self) -> None:
-        self.workers: dict[str, object] = {}
-
-    def resume_for_approval(self, **kwargs: object) -> object:
-        task_id = kwargs.get("task_id")
-        if not isinstance(task_id, str) or task_id not in self.workers:
-            raise SmokeError("approval_worker_missing")
-        return self.workers[task_id].resume_for_approval(**kwargs)  # type: ignore[attr-defined]
-
-    def resume_for_user(self, **kwargs: object) -> object:
-        task_id = kwargs.get("task_id")
-        if not isinstance(task_id, str) or task_id not in self.workers:
-            raise SmokeError("continue_worker_missing")
-        return self.workers[task_id].resume_for_user(**kwargs)  # type: ignore[attr-defined]
-
-
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--allow-live", action="store_true")
@@ -245,6 +226,16 @@ def _expect(response, expected: int, endpoint: str) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise SmokeError(f"http_{endpoint}_payload_invalid")
     return payload
+
+
+def _accepted_resume_command_id(payload: dict[str, object]) -> str:
+    command = payload.get("resume_command")
+    if not isinstance(command, dict) or command.get("status") != "accepted":
+        raise SmokeError("resume_command_not_accepted")
+    command_id = command.get("command_id")
+    if not isinstance(command_id, str) or not command_id:
+        raise SmokeError("resume_command_id_missing")
+    return command_id
 
 
 def _seed_identities_and_versions(database, objects, *, tenant_id: str) -> tuple[str, tuple[object, ...]]:
@@ -562,7 +553,6 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             build_artifact_content_service,
             build_identity_provider,
             build_task_repository,
-            build_task_resume_worker,
         )
 
         get_settings.cache_clear()
@@ -650,7 +640,6 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             evidence_validator=evidence_validator,
             tool_results=LocalObjectStore(object_root / "tool-results"),
         )
-        router = _WorkerRouter()
         provider = DemoTokenIdentityProvider(
             {
                 "owner-token": Principal(tenant_id=tenant_id, user_id="owner", attributes={"permissions": ["knowledge:read", "document:read", "task:create", "task:read", "artifact:write"]}),
@@ -663,7 +652,6 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         app.dependency_overrides[build_identity_provider] = lambda: provider
         app.dependency_overrides[build_task_repository] = lambda: repository
         app.dependency_overrides[build_approval_service] = lambda: approvals
-        app.dependency_overrides[build_task_resume_worker] = lambda: router
         app.dependency_overrides[build_artifact_content_service] = lambda: ArtifactContentService(database, objects)
 
         def make_worker(task_id: str, *, approved: bool = False, clarification: bool = False):
@@ -700,7 +688,6 @@ def run(args: argparse.Namespace) -> dict[str, object]:
                 approvals=approvals,
                 objects=objects,
             )
-            router.workers[task_id] = worker
             return worker, agent
 
         from fastapi.testclient import TestClient
@@ -717,6 +704,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         response_surfaces: list[str] = []
         tool_surfaces: list[str] = []
         primary: dict[str, object] = {}
+        primary_command_id: str | None = None
+        clarification_command_id: str | None = None
         with patch.object(artifact_module, "uuid4", lambda: UUID(_ARTIFACT_ID)), TestClient(app) as client:
             for index in range(0 if args.observability_smoke else 29):
                 created = _expect(
@@ -746,10 +735,24 @@ def run(args: argparse.Namespace) -> dict[str, object]:
                         headers=headers["approver"],
                         json={"decision": "reject", "reason": "M2 acceptance rejection", "expected_task_state_version": state["state_version"]},
                     ),
-                    200,
+                    202,
                     "approval_reject",
                 )
+                if rejected.get("status") != "rejected" or report_adapter.calls != 0:
+                    raise SmokeError("rejected_enqueue_contract_invalid")
+                _accepted_resume_command_id(rejected)
                 response_surfaces.append(json.dumps(rejected, ensure_ascii=False, sort_keys=True))
+                waiting = _expect(
+                    client.get(f"/v1/tasks/{task_id}", headers=headers["owner"]),
+                    200,
+                    "rejected_task_waiting",
+                )
+                if waiting.get("status") != "waiting_for_approval":
+                    raise SmokeError("rejected_enqueue_changed_task")
+                with app.state.observability.activate():
+                    consumed = worker.run_once()
+                if consumed.status != "finished" or report_adapter.calls != 0:
+                    raise SmokeError("rejected_worker_consume_contract_invalid")
 
             created = _expect(
                 client.post("/v1/tasks", headers=headers["owner"], json={"task_mode": "controlled_action", "goal": "依据两版制度证据生成隔离报告。"}),
@@ -778,24 +781,38 @@ def run(args: argparse.Namespace) -> dict[str, object]:
                     headers=headers["approver"],
                     json={"decision": "approve", "expected_task_state_version": task_state["state_version"]},
                 ),
-                200,
+                202,
                 "approval_approve",
             )
+            primary_command_id = _accepted_resume_command_id(decision)
             response_surfaces.append(json.dumps(decision, ensure_ascii=False, sort_keys=True))
-            if report_adapter.calls != 1 or decision.get("status") != "executed":
-                raise SmokeError("approved_write_contract_invalid")
+            if report_adapter.calls != 0 or decision.get("status") != "approved":
+                raise SmokeError("approved_enqueue_contract_invalid")
+            waiting = _expect(
+                client.get(f"/v1/tasks/{primary_task_id}", headers=headers["owner"]),
+                200,
+                "primary_task_waiting",
+            )
+            if waiting.get("status") != "waiting_for_approval":
+                raise SmokeError("approved_enqueue_changed_task")
             repeated = _expect(
                 client.post(
                     f"/v1/approvals/{approval_id}/decision",
                     headers=headers["approver"],
                     json={"decision": "approve", "expected_task_state_version": task_state["state_version"]},
                 ),
-                200,
+                202,
                 "approval_repeat",
             )
             response_surfaces.append(json.dumps(repeated, ensure_ascii=False, sort_keys=True))
-            if report_adapter.calls != 1:
+            if _accepted_resume_command_id(repeated) != primary_command_id:
+                raise SmokeError("duplicate_approval_command_created")
+            if report_adapter.calls != 0:
                 raise SmokeError("duplicate_resume_side_effect")
+            with app.state.observability.activate():
+                consumed = primary_worker.run_once()
+            if consumed.status != "finished" or report_adapter.calls != 1:
+                raise SmokeError("approved_worker_consume_contract_invalid")
             result = _expect(client.get(f"/v1/tasks/{primary_task_id}/result", headers=headers["owner"]), 200, "primary_result")
             artifacts = result.get("artifacts")
             if not isinstance(artifacts, list) or len(artifacts) != 1:
@@ -836,15 +853,47 @@ def run(args: argparse.Namespace) -> dict[str, object]:
                     headers=headers["owner"],
                     json={"answer": "仅生成本地隔离报告。", "expected_state_version": clarification_state["state_version"]},
                 ),
-                200,
+                202,
                 "continue",
             )
-            if continued.get("status") != "refused":
-                raise SmokeError("controlled_continue_not_terminal")
+            clarification_command_id = _accepted_resume_command_id(continued)
+            if continued.get("status") != "waiting_for_user":
+                raise SmokeError("controlled_continue_not_waiting")
             response_surfaces.append(json.dumps(continued, ensure_ascii=False, sort_keys=True))
+            repeated_continue = _expect(
+                client.post(
+                    f"/v1/tasks/{clarification_id}/continue",
+                    headers=headers["owner"],
+                    json={"answer": "仅生成本地隔离报告。", "expected_state_version": clarification_state["state_version"]},
+                ),
+                202,
+                "continue_repeat",
+            )
+            response_surfaces.append(json.dumps(repeated_continue, ensure_ascii=False, sort_keys=True))
+            if _accepted_resume_command_id(repeated_continue) != clarification_command_id:
+                raise SmokeError("duplicate_continue_command_created")
+            with app.state.observability.activate():
+                consumed = clarification_worker.run_once()
+            if consumed.status != "finished":
+                raise SmokeError("controlled_continue_worker_not_finished")
+            clarification_terminal = _expect(
+                client.get(f"/v1/tasks/{clarification_id}", headers=headers["owner"]),
+                200,
+                "clarification_terminal",
+            )
+            if clarification_terminal.get("status") != "refused":
+                raise SmokeError("controlled_continue_not_terminal")
+            response_surfaces.append(
+                json.dumps(clarification_terminal, ensure_ascii=False, sort_keys=True)
+            )
 
         from sqlalchemy import select
-        from rag_kb.infrastructure.database.models import ApprovalRow, ArtifactRow, ToolCallRow
+        from rag_kb.infrastructure.database.models import (
+            ApprovalRow,
+            ArtifactRow,
+            TaskResumeCommandRow,
+            ToolCallRow,
+        )
 
         with database.sessions() as session:
             approval = session.get(ApprovalRow, primary["approval_id"])
@@ -852,8 +901,35 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             tool_call = session.scalar(
                 select(ToolCallRow).where(ToolCallRow.approval_id == primary["approval_id"])
             )
+            resume_commands = tuple(
+                (
+                    row.command_id,
+                    row.task_id,
+                    row.status,
+                    row.payload_body,
+                    row.payload_sha256,
+                )
+                for row in session.scalars(
+                    select(TaskResumeCommandRow).where(
+                        TaskResumeCommandRow.tenant_id == tenant_id
+                    )
+                )
+            )
         if approval is None or artifact_row is None or tool_call is None:
             raise SmokeError("primary_binding_rows_missing")
+        if primary_command_id is None or clarification_command_id is None:
+            raise SmokeError("resume_command_id_missing")
+        primary_commands = [row for row in resume_commands if row[1] == primary_task_id]
+        clarification_commands = [row for row in resume_commands if row[1] == clarification_id]
+        if (
+            len(primary_commands) != 1
+            or primary_commands[0][0] != primary_command_id
+            or len(clarification_commands) != 1
+            or clarification_commands[0][0] != clarification_command_id
+        ):
+            raise SmokeError("duplicate_resume_command_persisted")
+        if any(status != "consumed" or body is not None for _, _, status, body, _ in resume_commands):
+            raise SmokeError("resume_command_not_consumed_or_purged")
         if hashlib.sha256(primary["content"]).hexdigest() != artifact_row.content_hash.removeprefix("sha256:"):
             raise SmokeError("artifact_hash_verification_failed")
         if approval.status != "executed" or tool_call.status != "succeeded" or tool_call.tool_call_id == "":
@@ -891,6 +967,17 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         leak_count = sum(surface.count(actual_storage_key) for surface in privacy_surfaces)
         if leak_count:
             raise SmokeError("storage_key_leaked")
+        resume_sensitive_values = (
+            "M2 acceptance rejection",
+            "仅生成本地隔离报告。",
+            *(payload_hash for _, _, _, _, payload_hash in resume_commands if isinstance(payload_hash, str)),
+        )
+        if any(
+            value in surface
+            for value in resume_sensitive_values
+            for surface in privacy_surfaces
+        ):
+            raise SmokeError("resume_sensitive_value_leaked")
         report = {
             "status": "passed",
             "source_binding": (
@@ -954,7 +1041,16 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "hitl": {"adapter_calls_before_approval": 0, "adapter_calls_after_approval": report_adapter.calls},
             "side_effects": {"unapproved": 0, "duplicate": 0, "unknown_replay": 0},
             "access_checks": {"cross_tenant_status": 404, "nonowner_status": 404},
-            "privacy_scan": {"storage_key": 0, "prompt": 0, "content": 0, "credentials": 0, "resume_payload": 0},
+            "privacy_scan": {
+                "storage_key": 0,
+                "prompt": 0,
+                "content": 0,
+                "credentials": 0,
+                "resume_payload": 0,
+                "resume_command_body": 0,
+                "resume_command_hash": 0,
+                "approval_reason": 0,
+            },
             "coverage": {
                 "task_count": len(ledger),
                 "scenario_count": (

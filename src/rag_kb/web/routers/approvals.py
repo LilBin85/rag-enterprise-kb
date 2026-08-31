@@ -55,7 +55,6 @@ def _response(detail: ApprovalDetail) -> ApprovalResponse:
         approved_at=binding.approved_at,
         rejected_by=binding.rejected_by,
         rejected_at=binding.rejected_at,
-        rejection_reason=binding.rejection_reason,
     )
 
 

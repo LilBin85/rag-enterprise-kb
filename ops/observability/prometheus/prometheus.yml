@@ -10,10 +10,18 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["api:8000"]
-  - job_name: rag-kb-worker
+  - job_name: rag-kb-task-worker
     metrics_path: /metrics
     static_configs:
-      - targets: ["worker:9464"]
+      - targets: ["task-worker:9464"]
+  - job_name: rag-kb-ingestion-worker
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["ingestion-worker:9465"]
+  - job_name: rag-kb-projection-worker
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["projection-worker:9466"]
   - job_name: rag-kb-collector
     metrics_path: /metrics
     static_configs:

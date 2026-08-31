@@ -41,6 +41,7 @@ from rag_kb.infrastructure.database.models import (
     EvidenceRecordRow,
     IngestionJobRow,
     PlanRevisionRow,
+    PrincipalRow,
     TaskResumeCommandRow,
     ToolCallRow,
 )
@@ -1050,6 +1051,43 @@ def test_repeat_decision_does_not_reexecute_after_consumption(stage) -> None:
         )
     assert stage.report_adapter.calls == 1
     assert stage.draft_adapter.calls == 0
+
+
+def test_queued_approval_command_fails_closed_after_approver_revocation(stage) -> None:
+    """审批命令入队后撤权，Worker 不得注入 resume 或调用 WRITE adapter。"""
+    approval_id, state_version = _paused_stage(stage)
+    command = stage.approvals.decide_and_enqueue(
+        auth=stage.approver,
+        approval_id=approval_id,
+        expected_task_state_version=state_version,
+        decision="approve",
+        reason=None,
+        repository=stage.repository,
+    )
+    with stage.database.sessions.begin() as session:
+        approver = session.get(PrincipalRow, ("tenant-a", "approver"))
+        assert approver is not None
+        approver.active = False
+
+    resume_agent = ExecutorAgent(
+        stage, (_hitl_snapshot(), _final_snapshot(_succeeded_candidate()))
+    )
+    outcome = _worker(stage, resume_agent).run_once()
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "task_resume_actor_unavailable"
+    assert resume_agent.inputs == []
+    assert stage.report_adapter.calls == 0
+    assert stage.draft_adapter.calls == 0
+    with stage.database.sessions() as session:
+        stored = session.get(TaskResumeCommandRow, command.command_id)
+        tool_calls = tuple(
+            session.scalars(select(ToolCallRow).where(ToolCallRow.task_id == "task-1"))
+        )
+    assert stored is not None
+    assert stored.status == "failed"
+    assert stored.payload_body is None
+    assert tool_calls == ()
 
 
 def test_reject_decision_resumes_thread_with_fixed_payload_and_zero_execution(

@@ -182,6 +182,7 @@ class _CapabilityLeaseHeartbeat:
         )
         if self._telemetry is not None:
             self._telemetry.set_worker_capability_available(
+                worker_kind="task",
                 capability=self._capability_name,
                 protocol=self._protocol_version,
                 available=True,
@@ -204,6 +205,7 @@ class _CapabilityLeaseHeartbeat:
                 )
                 if self._telemetry is not None:
                     self._telemetry.set_worker_capability_available(
+                        worker_kind="task",
                         capability=self._capability_name,
                         protocol=self._protocol_version,
                         available=True,
@@ -212,6 +214,7 @@ class _CapabilityLeaseHeartbeat:
                 code = stable_error_code(exc)
                 if self._telemetry is not None:
                     self._telemetry.set_worker_capability_available(
+                        worker_kind="task",
                         capability=self._capability_name,
                         protocol=self._protocol_version,
                         available=False,
@@ -256,15 +259,15 @@ class _CapabilityLeaseHeartbeat:
         finally:
             if self._telemetry is not None:
                 self._telemetry.set_worker_capability_available(
+                    worker_kind="task",
                     capability=self._capability_name,
                     protocol=self._protocol_version,
                     available=False,
                 )
 
 
-def build_workers(
-    *, worker_id: str | None = None
-) -> tuple[IngestionWorker, ProjectionReconciler]:
+def _build_document_indexing_runtime():
+    """构造 ingestion/projection 共用的解析和索引依赖。"""
     settings = get_settings()
     database = build_database(settings.database_url)
     objects = LocalObjectStore(settings.object_store_root)
@@ -275,25 +278,31 @@ def build_workers(
         DatabaseDocumentIndexMetadataPort(database),
         collection=settings.qdrant_v2_collection,
     )
+    return database, parser, index
+
+
+def build_ingestion_worker(*, worker_id: str | None = None) -> IngestionWorker:
+    """构造单一摄取 worker，不初始化 projection runtime。"""
+    database, parser, index = _build_document_indexing_runtime()
     identity = worker_id or f"{socket.gethostname()}-{uuid4().hex[:12]}"
-    ingestion = IngestionWorker(
+    return IngestionWorker(
         DocumentRegistryIngestionJobPort(database),
         parser,
         index,
         worker_id=identity,
     )
-    reconciler = ProjectionReconciler(
+
+
+def build_projection_reconciler(*, worker_id: str | None = None) -> ProjectionReconciler:
+    """构造单一投影收敛器，不初始化 ingestion runtime。"""
+    database, parser, index = _build_document_indexing_runtime()
+    identity = worker_id or f"{socket.gethostname()}-{uuid4().hex[:12]}"
+    return ProjectionReconciler(
         DatabaseProjectionReconcilePort(database),
         parser,
         index,
         worker_id=f"{identity}-projection-reconciler",
     )
-    return ingestion, reconciler
-
-
-def build_ingestion_worker(*, worker_id: str | None = None) -> IngestionWorker:
-    """保留单元测试/一次性摄取调用兼容入口。"""
-    return build_workers(worker_id=worker_id)[0]
 
 
 def build_upload_reconciler() -> UploadReservationReconciler:
@@ -496,245 +505,383 @@ def build_task_retention() -> TaskRetentionService:
         raise
 
 
-def _build_queue_snapshot_ports():
+def _build_task_queue_snapshot_port() -> DatabaseTaskRepository:
     settings = get_settings()
     database = build_database(settings.database_url)
-    return (
-        DatabaseTaskRepository(
-            database,
-            task_capability_name=settings.task_agent_capability_name,
-            task_capability_protocol_version=settings.task_agent_protocol_version,
-        ),
-        DocumentRegistryIngestionJobPort(database),
+    return DatabaseTaskRepository(
+        database,
+        task_capability_name=settings.task_agent_capability_name,
+        task_capability_protocol_version=settings.task_agent_protocol_version,
     )
 
 
-def _run_recovery_window(
+def _build_ingestion_queue_snapshot_port() -> DocumentRegistryIngestionJobPort:
+    settings = get_settings()
+    return DocumentRegistryIngestionJobPort(build_database(settings.database_url))
+
+
+def _finish_maintenance_span(
+    span: object,
+    *,
+    worker_kind: str,
+    operation: str,
+    started_at: float,
+    error_code: str | None,
+) -> None:
+    duration_seconds = time.perf_counter() - started_at
+    outcome = "failure" if error_code is not None else "succeeded"
+    category = error_category_for(error_code) if error_code is not None else "none"
+    finish_observed_span(
+        span,
+        outcome=outcome,
+        error_category=category,
+        error_code=error_code,
+        attributes={"duration_ms": duration_seconds * 1_000},
+    )
+    log_event(
+        "worker.maintenance.completed",
+        level=logging.ERROR if error_code is not None else logging.INFO,
+        component="worker",
+        worker_kind=worker_kind,
+        operation=operation,
+        outcome=outcome,
+        error_category=category,
+        error_code=error_code,
+        duration_ms=duration_seconds * 1_000,
+    )
+
+
+def _run_maintenance_actions(
+    *,
+    worker_kind: str,
+    operation: str,
+    actions,
+    telemetry: Observability | None,
+) -> None:
+    started_at = time.perf_counter()
+    error_code: str | None = None
+    span_operation = f"worker.{worker_kind}.{operation}"
+    with observe_span(
+        span_operation,
+        attributes={
+            "component": "worker",
+            "worker_kind": worker_kind,
+            "operation": span_operation,
+        },
+    ) as span:
+        try:
+            for kind, action in actions:
+                try:
+                    count = action()
+                except Exception as exc:
+                    error_code = error_code or "runtime_sweep_failed"
+                    if telemetry is not None:
+                        telemetry.record_recovery_action(
+                            worker_kind=worker_kind,
+                            kind=kind,
+                            outcome="failure",
+                        )
+                        telemetry.record_worker_error(
+                            worker_kind=worker_kind,
+                            operation=operation,
+                            error_category=error_category_for(stable_error_code(exc)),
+                        )
+                else:
+                    if telemetry is not None:
+                        telemetry.record_recovery_action(
+                            worker_kind=worker_kind,
+                            kind=kind,
+                            outcome="succeeded",
+                            count=count,
+                        )
+        finally:
+            _finish_maintenance_span(
+                span,
+                worker_kind=worker_kind,
+                operation=span_operation,
+                started_at=started_at,
+                error_code=error_code,
+            )
+
+
+def _run_task_maintenance(
     *,
     task_worker,
     task_retention,
-    upload_reconciler,
-    task_queue,
-    ingestion_queue,
     telemetry: Observability | None,
-    capability_name: str,
-    protocol_version: str,
-    ingestion_max_attempts: int,
 ) -> None:
-    """保持恢复、队列快照与日志在同一个低频业务边界内。"""
+    """仅由 task Worker 执行 task/tool/query 超时和 task retention。"""
+    _run_maintenance_actions(
+        worker_kind="task",
+        operation="maintenance",
+        actions=(
+            (
+                "stale_tool_call",
+                lambda: task_worker.expire_stale_tool_calls(limit=_RECOVERY_BATCH_SIZE),
+            ),
+            (
+                "stale_knowledge_query",
+                lambda: task_worker.expire_stale_knowledge_queries(
+                    limit=_RECOVERY_BATCH_SIZE
+                ),
+            ),
+            (
+                "waiting_task",
+                lambda: task_retention.expire_waiting_tasks(limit=_RECOVERY_BATCH_SIZE),
+            ),
+            (
+                "tool_result_retention",
+                lambda: task_retention.purge_expired_tool_results(
+                    limit=_RECOVERY_BATCH_SIZE
+                ),
+            ),
+            (
+                "task_content_retention",
+                lambda: task_retention.purge_finished_task_content(
+                    limit=_RECOVERY_BATCH_SIZE
+                ),
+            ),
+            (
+                "orphan_result",
+                lambda: task_retention.purge_orphaned_result_objects(
+                    limit=_RECOVERY_BATCH_SIZE
+                ),
+            ),
+        ),
+        telemetry=telemetry,
+    )
+
+
+def _run_ingestion_recovery(
+    *, upload_reconciler, telemetry: Observability | None
+) -> None:
+    """仅由 ingestion Worker 修复上传预留。"""
     started_at = time.perf_counter()
     error_code: str | None = None
+    operation = "worker.ingestion.maintenance"
     with observe_span(
-        "worker.recovery",
-        attributes={"component": "worker", "operation": "worker.recovery"},
+        operation,
+        attributes={
+            "component": "worker",
+            "worker_kind": "ingestion",
+            "operation": operation,
+        },
     ) as span:
         try:
-            if task_worker is not None and task_retention is not None:
-                actions = (
-                    (
-                        "stale_tool_call",
-                        lambda: task_worker.expire_stale_tool_calls(limit=_RECOVERY_BATCH_SIZE),
-                    ),
-                    (
-                        "stale_knowledge_query",
-                        lambda: task_worker.expire_stale_knowledge_queries(
-                            limit=_RECOVERY_BATCH_SIZE
-                        ),
-                    ),
-                    (
-                        "waiting_task",
-                        lambda: task_retention.expire_waiting_tasks(limit=_RECOVERY_BATCH_SIZE),
-                    ),
-                    (
-                        "tool_result_retention",
-                        lambda: task_retention.purge_expired_tool_results(
-                            limit=_RECOVERY_BATCH_SIZE
-                        ),
-                    ),
-                    (
-                        "task_content_retention",
-                        lambda: task_retention.purge_finished_task_content(
-                            limit=_RECOVERY_BATCH_SIZE
-                        ),
-                    ),
-                    (
-                        "orphan_result",
-                        lambda: task_retention.purge_orphaned_result_objects(
-                            limit=_RECOVERY_BATCH_SIZE
-                        ),
-                    ),
-                )
-                for kind, action in actions:
-                    try:
-                        count = action()
-                    except Exception:
-                        error_code = error_code or "runtime_sweep_failed"
-                        if telemetry is not None:
-                            telemetry.record_recovery_action(kind=kind, outcome="failure")
-                    else:
-                        if telemetry is not None:
-                            telemetry.record_recovery_action(
-                                kind=kind,
-                                outcome="succeeded",
-                                count=count,
-                            )
-
             try:
                 upload_result = upload_reconciler.reconcile(
                     older_than=datetime.now(UTC) - _UPLOAD_RESERVATION_GRACE,
                     limit=_RECOVERY_BATCH_SIZE,
                     time_budget_seconds=_RECOVERY_TIME_BUDGET_SECONDS,
                 )
-            except Exception:
-                error_code = error_code or "upload_reconciliation_failed"
+            except Exception as exc:
+                error_code = "upload_reconciliation_failed"
                 if telemetry is not None:
                     telemetry.record_recovery_action(
-                        kind="upload_reservation", outcome="failure"
+                        worker_kind="ingestion",
+                        kind="upload_reservation",
+                        outcome="failure",
+                    )
+                    telemetry.record_worker_error(
+                        worker_kind="ingestion",
+                        operation="maintenance",
+                        error_category=error_category_for(stable_error_code(exc)),
                     )
             else:
                 if telemetry is not None:
-                    telemetry.record_recovery_action(
-                        kind="upload_reservation",
-                        outcome="recovered",
-                        count=upload_result.recovered,
-                    )
-                    telemetry.record_recovery_action(
-                        kind="upload_reservation",
-                        outcome="missing",
-                        count=upload_result.missing_objects,
-                    )
-                    telemetry.record_recovery_action(
-                        kind="upload_reservation",
-                        outcome="mismatched",
-                        count=upload_result.content_mismatches,
-                    )
-                    telemetry.record_recovery_action(
-                        kind="upload_reservation",
-                        outcome="failure",
-                        count=upload_result.failed,
-                    )
+                    for outcome, count in (
+                        ("recovered", upload_result.recovered),
+                        ("missing", upload_result.missing_objects),
+                        ("mismatched", upload_result.content_mismatches),
+                        ("failure", upload_result.failed),
+                    ):
+                        telemetry.record_recovery_action(
+                            worker_kind="ingestion",
+                            kind="upload_reservation",
+                            outcome=outcome,
+                            count=count,
+                        )
                     for _ in range(upload_result.content_mismatches):
                         telemetry.record_security_boundary_violation(kind="content_hash")
                 if upload_result.failed:
-                    error_code = error_code or "upload_reconciliation_failed"
-
-            if telemetry is not None and task_queue is not None and ingestion_queue is not None:
-                try:
-                    for snapshot in task_queue.queue_snapshot(
-                        capability_name=capability_name,
-                        protocol_version=protocol_version,
-                        limit=_QUEUE_SNAPSHOT_LIMIT,
-                    ):
-                        telemetry.set_task_queue_snapshot(
-                            mode=snapshot.task_mode,
-                            status=snapshot.status,
-                            depth=snapshot.depth,
-                            oldest_age_seconds=snapshot.oldest_age_seconds,
+                    error_code = "upload_reconciliation_failed"
+                    if telemetry is not None:
+                        telemetry.record_worker_error(
+                            worker_kind="ingestion",
+                            operation="maintenance",
+                            error_category="storage",
+                            count=upload_result.failed,
                         )
-                    telemetry.set_worker_capability_available(
-                        capability=capability_name,
-                        protocol=protocol_version,
-                        available=task_queue.has_active_capability(
-                            capability_name=capability_name,
-                            protocol_version=protocol_version,
-                        ),
-                    )
-                    for snapshot in ingestion_queue.queue_snapshot(
-                        max_attempts=ingestion_max_attempts,
-                        limit=_QUEUE_SNAPSHOT_LIMIT,
-                    ):
-                        telemetry.set_ingestion_queue_snapshot(
-                            status=snapshot.status,
-                            depth=snapshot.depth,
-                            oldest_age_seconds=snapshot.oldest_age_seconds,
-                        )
-                except Exception:
-                    error_code = error_code or "runtime_sweep_failed"
-                    telemetry.record_recovery_action(kind="queue_snapshot", outcome="failure")
         finally:
-            duration_seconds = time.perf_counter() - started_at
-            outcome = "failure" if error_code is not None else "succeeded"
-            category = error_category_for(error_code) if error_code is not None else "none"
-            finish_observed_span(
+            _finish_maintenance_span(
                 span,
-                outcome=outcome,
-                error_category=category,
+                worker_kind="ingestion",
+                operation=operation,
+                started_at=started_at,
                 error_code=error_code,
-                attributes={"duration_ms": duration_seconds * 1_000},
-            )
-            log_event(
-                "worker.recovery.completed",
-                level=logging.ERROR if error_code is not None else logging.INFO,
-                component="worker",
-                operation="worker.recovery",
-                outcome=outcome,
-                error_category=category,
-                error_code=error_code,
-                duration_ms=duration_seconds * 1_000,
             )
 
 
-def run(*, watch: bool, poll_seconds: float, max_jobs: int, include_tasks: bool = False) -> int:
+def _record_task_queue_snapshot(
+    *,
+    task_queue,
+    telemetry: Observability,
+    capability_name: str,
+    protocol_version: str,
+) -> None:
+    """仅由 task Worker 写 task queue 与 capability 快照。"""
+
+    def snapshot() -> int:
+        for item in task_queue.queue_snapshot(
+            capability_name=capability_name,
+            protocol_version=protocol_version,
+            limit=_QUEUE_SNAPSHOT_LIMIT,
+        ):
+            telemetry.set_task_queue_snapshot(
+                worker_kind="task",
+                mode=item.task_mode,
+                status=item.status,
+                depth=item.depth,
+                oldest_age_seconds=item.oldest_age_seconds,
+            )
+        telemetry.set_worker_capability_available(
+            worker_kind="task",
+            capability=capability_name,
+            protocol=protocol_version,
+            available=task_queue.has_active_capability(
+                capability_name=capability_name,
+                protocol_version=protocol_version,
+            ),
+        )
+        return 0
+
+    _run_maintenance_actions(
+        worker_kind="task",
+        operation="queue_snapshot",
+        actions=(("queue_snapshot", snapshot),),
+        telemetry=telemetry,
+    )
+
+
+def _record_ingestion_queue_snapshot(
+    *,
+    ingestion_queue,
+    telemetry: Observability,
+    ingestion_max_attempts: int,
+) -> None:
+    """仅由 ingestion Worker 写 ingestion queue 快照。"""
+
+    def snapshot() -> int:
+        for item in ingestion_queue.queue_snapshot(
+            max_attempts=ingestion_max_attempts,
+            limit=_QUEUE_SNAPSHOT_LIMIT,
+        ):
+            telemetry.set_ingestion_queue_snapshot(
+                worker_kind="ingestion",
+                status=item.status,
+                depth=item.depth,
+                oldest_age_seconds=item.oldest_age_seconds,
+            )
+        return 0
+
+    _run_maintenance_actions(
+        worker_kind="ingestion",
+        operation="queue_snapshot",
+        actions=(("queue_snapshot", snapshot),),
+        telemetry=telemetry,
+    )
+
+
+def run(*, queue: str, watch: bool, poll_seconds: float, max_jobs: int) -> int:
     if poll_seconds <= 0 or max_jobs <= 0:
         raise ValueError("invalid_worker_runtime_limits")
-    worker, reconciler = build_workers()
-    upload_reconciler = build_upload_reconciler()
+    if queue not in {"task", "ingestion", "projection"}:
+        raise ValueError("invalid_worker_queue")
     telemetry = current_observability()
     settings = get_settings()
     task_queue = None
     ingestion_queue = None
-    if telemetry is not None and telemetry.metrics_enabled:
-        task_queue, ingestion_queue = _build_queue_snapshot_ports()
     task_worker = None
     task_retention = None
+    upload_reconciler = None
     try:
-        if include_tasks:
+        if queue == "task":
             # Agent 未配置即 fail-fast：宁可进程退出由重启策略兜底，
             # 也不让任务接口产生“已接受永不执行”的任务。
             task_worker = build_task_worker()
             task_retention = build_task_retention()
-        queues = [("ingestion", worker), ("projection", reconciler)]
-        if task_worker is not None:
-            queues.insert(0, ("task", task_worker))
+            current_worker = task_worker
+            if telemetry is not None and telemetry.metrics_enabled:
+                task_queue = _build_task_queue_snapshot_port()
+        elif queue == "ingestion":
+            current_worker = build_ingestion_worker()
+            upload_reconciler = build_upload_reconciler()
+            if telemetry is not None and telemetry.metrics_enabled:
+                ingestion_queue = _build_ingestion_queue_snapshot_port()
+        else:
+            current_worker = build_projection_reconciler()
+
         processed = 0
-        queue_index = 0
-        idle_queues = 0
         next_recovery_at = 0.0
         while True:
             now = time.monotonic()
             if now >= next_recovery_at:
-                _run_recovery_window(
-                    task_worker=task_worker,
-                    task_retention=task_retention,
-                    upload_reconciler=upload_reconciler,
-                    task_queue=task_queue,
-                    ingestion_queue=ingestion_queue,
-                    telemetry=telemetry,
-                    capability_name=settings.task_agent_capability_name,
-                    protocol_version=settings.task_agent_protocol_version,
-                    ingestion_max_attempts=worker.max_attempts,
-                )
+                if queue == "task":
+                    assert task_worker is not None and task_retention is not None
+                    _run_task_maintenance(
+                        task_worker=task_worker,
+                        task_retention=task_retention,
+                        telemetry=telemetry,
+                    )
+                    if task_queue is not None and telemetry is not None:
+                        _record_task_queue_snapshot(
+                            task_queue=task_queue,
+                            telemetry=telemetry,
+                            capability_name=settings.task_agent_capability_name,
+                            protocol_version=settings.task_agent_protocol_version,
+                        )
+                elif queue == "ingestion":
+                    assert upload_reconciler is not None
+                    _run_ingestion_recovery(
+                        upload_reconciler=upload_reconciler,
+                        telemetry=telemetry,
+                    )
+                    if ingestion_queue is not None and telemetry is not None:
+                        _record_ingestion_queue_snapshot(
+                            ingestion_queue=ingestion_queue,
+                            telemetry=telemetry,
+                            ingestion_max_attempts=current_worker.max_attempts,
+                        )
                 next_recovery_at = time.monotonic() + _RECOVERY_INTERVAL_SECONDS
 
-            queue_name, current_worker = queues[queue_index]
-            queue_index = (queue_index + 1) % len(queues)
-            result = current_worker.run_once()
+            try:
+                # Projection repair 由 projection Worker 自己的 run_once 独占。
+                result = current_worker.run_once()
+            except Exception as exc:
+                if telemetry is not None:
+                    telemetry.record_worker_error(
+                        worker_kind=queue,
+                        operation="run_once",
+                        error_category=error_category_for(stable_error_code(exc)),
+                    )
+                raise
             if telemetry is not None:
                 telemetry.set_worker_last_loop(
-                    worker_kind=queue_name,
+                    worker_kind=queue,
                     timestamp_seconds=time.time(),
                 )
+                if result.error_code is not None:
+                    telemetry.record_worker_error(
+                        worker_kind=queue,
+                        operation="run_once",
+                        error_category=error_category_for(result.error_code),
+                    )
             if result.status == "idle":
-                idle_queues += 1
-                if idle_queues < len(queues):
-                    continue
-                idle_queues = 0
                 if not watch:
                     return 0
                 time.sleep(poll_seconds)
                 continue
 
-            idle_queues = 0
             processed += 1
             if processed >= max_jobs and not watch:
                 return 0
@@ -747,24 +894,33 @@ def run(*, watch: bool, poll_seconds: float, max_jobs: int, include_tasks: bool 
                 task_retention.close()
 
 
-def main() -> int:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="企业知识库异步摄取工作器")
+    parser.add_argument(
+        "--queue",
+        choices=("task", "ingestion", "projection"),
+        required=True,
+        help="仅运行指定后台队列",
+    )
     parser.add_argument("--watch", action="store_true", help="空闲后持续轮询")
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     parser.add_argument("--max-jobs", type=int, default=100)
-    parser.add_argument("--include-tasks", action="store_true", help="同时执行通用任务队列")
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main() -> int:
+    args = _parse_args()
     settings = get_settings()
     telemetry = Observability(
         enabled=settings.observability_enabled,
         metrics_enabled=settings.metrics_enabled,
-        service_name="rag-kb-worker",
+        service_name=f"rag-kb-worker-{args.queue}",
         otlp_endpoint=settings.otel_exporter_otlp_endpoint,
         trace_sample_ratio=settings.otel_trace_sample_ratio,
     )
     from rag_kb.observability import configure_json_logging
 
-    configure_json_logging(service="rag-kb-worker", level=settings.log_level)
+    configure_json_logging(service=f"rag-kb-worker-{args.queue}", level=settings.log_level)
     telemetry.start()
     metrics_server = (
         _WorkerMetricsServer(telemetry, port=settings.worker_metrics_port)
@@ -776,10 +932,10 @@ def main() -> int:
     try:
         with telemetry.activate():
             return run(
+                queue=args.queue,
                 watch=args.watch,
                 poll_seconds=args.poll_seconds,
                 max_jobs=args.max_jobs,
-                include_tasks=args.include_tasks,
             )
     except KeyboardInterrupt:
         return 0

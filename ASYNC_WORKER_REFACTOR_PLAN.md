@@ -345,11 +345,11 @@ python -m rag_kb.worker --queue projection --watch
 | A3 用户澄清入队 | 已完成 | Terra Max | 主 Agent：API/仓储定向回归 48 passed；`py_compile`、Worker 依赖扫描、响应隐私扫描、`git diff --check` 通过 | `src/rag_kb/web/routers/tasks.py`；`src/rag_kb/web/schemas/tasks.py`；`tests/test_v1_tasks_api.py` | A6 前共享 dependencies 中仍保留 approval API 使用的 resume worker 构造器；A3 路由已无该依赖 |
 | A4 审批决定原子入队 | 已完成 | Terra Max | 主 Agent：审批/命令/恢复回归 96 passed、1 skipped；`py_compile`、Worker 依赖扫描、隐私扫描、`git diff --check` 通过 | `src/rag_kb/application/approval_service.py`；`src/rag_kb/infrastructure/database/task_repository.py`；`src/rag_kb/web/routers/approvals.py`；`src/rag_kb/web/schemas/approvals.py`；`tests/test_v1_approvals_api.py`；`tests/test_approval_decision_enqueue.py`；`tests/test_postgres_approval_decision_enqueue.py` | 未配置 `RAG_KB_TEST_POSTGRES_URL`，真实 PostgreSQL 原子回滚用例 1 skipped，C1 前补验 |
 | A5 Task Worker 消费 | 已完成 | Terra Max | 主 Agent：真实 PostgreSQL A5 全集 36 passed；迁移 round-trip 1 passed；SQLite/API 核心回归 104 passed；`py_compile`、隐私扫描、`git diff --check` 通过 | `migrations/versions/20260831_0015_task_resume_commands.py`；`src/rag_kb/agent/checkpointer.py`；`src/rag_kb/application/task_worker.py`；`src/rag_kb/infrastructure/database/models.py`；`src/rag_kb/infrastructure/database/task_repository.py`；`tests/test_postgres_m2_agent_recovery.py`；`tests/test_postgres_task_repository.py`；A5 相关测试 | 首轮 SQLite 复验受系统临时目录 ACL 影响，改用仓库内独立 basetemp 后全过；临时 PostgreSQL 容器及三个测试库已删除；`.tmp` 留待 C1 统一清理 |
-| A6 移除 Web Worker 构造 | 待执行 | Luna Max | - | - | - |
-| A7 任务一回归 | 待执行 | Terra Max | - | - | - |
-| B1 单队列 CLI | 待执行 | Terra Max | - | - | - |
-| B2 恢复与指标所有权 | 待执行 | Terra Max | - | - | - |
-| B3 三 Worker Compose | 待执行 | Luna Max | - | - | - |
+| A6 移除 Web Worker 构造 | 已完成 | 主 Agent（Luna Max 不可用） | 主 Agent：API/启动定向 26 passed；Agent 公共导入兼容 27 passed；Web 静态依赖扫描、`py_compile`、`git diff --check` 通过 | `src/rag_kb/web/dependencies.py`；`src/rag_kb/agent/__init__.py`；`tests/test_v1_tasks_api.py`；`tests/test_new_app_factory.py`；`scripts/smoke_m2_controlled_write_e2e.py` | 隔离 M2 E2E 仍保留旧同步 `200`/终态断言，须由 A7 改为 `202` 后由 Task Worker 消费；A6 测试 basetemp 留待 C1 统一清理 |
+| A7 任务一回归 | 已完成 | Terra Max（`max`） | SQLite 129 passed、隔离 PostgreSQL 5 passed；主 Agent复核 144 passed；补充 live fault 17/17、完整 smoke 31 tasks/21 scenarios passed、A6/A7 回归 56 passed；隐私/依赖扫描通过，隔离资源残留 0 | `scripts/smoke_m2_controlled_write_e2e.py`；`src/rag_kb/web/routers/approvals.py`；`src/rag_kb/web/schemas/approvals.py`；`tests/test_v1_tasks_api.py`；`tests/test_v1_approvals_api.py`；`tests/test_task_approval_recovery.py` | 本次补充 live E2E 无需代码修复；历史 A6/A7/B1 basetemp 仍按 C1 精确清理 |
+| B1 单队列 CLI | 已完成 | Terra Max（`max`） | Terra Max：Worker runtime 13 passed；主 Agent：13 passed；`py_compile`、旧参数扫描、`git diff --check` 通过 | `src/rag_kb/worker.py`；`tests/test_worker_runtime.py` | `_run_recovery_window` 的恢复/队列/指标所有权仍聚合，按 B2 拆分；Compose/文档旧命令由 B3/B4 同步；B1 basetemp 留待 C1 清理 |
+| B2 恢复与指标所有权 | 已完成 | Terra Max（`max`） | Terra Max：32 passed；主 Agent：32 passed；`py_compile`、旧聚合入口扫描、低基数标签复核、`git diff --check` 通过 | `src/rag_kb/worker.py`；`src/rag_kb/observability.py`；`tests/test_worker_runtime.py` | Compose 三服务、独立指标端口与 Prometheus targets 留给 B3；B2 basetemp 留待 C1 精确清理 |
+| B3 三 Worker Compose | 已完成 | 主 Agent（Luna Max 不可用） | 部署静态测试 6 passed；旧观测 job 扫描 0 处；`COMPOSE_DISABLE_ENV_FILE=1` 下 `docker compose config --quiet`、`git diff --check` 通过 | `docker-compose.yml`；`ops/observability/prometheus/prometheus.yml`；`ops/observability/grafana/dashboards/system-overview.json`；`ops/observability/grafana/provisioning/alerting/rag-kb.yml`；`tests/test_deployment_acceptance_static.py`；`ASYNC_WORKER_REFACTOR_PLAN.md` | 同步 `/v1/knowledge/query` 仍在 API 内使用 DeepSeek，但 B3 按明确边界不再向 API 传 DeepSeek 配置；问答链执行权需另行设计，未在 B3 扩展重构 |
 | B4 文档同步 | 待执行 | Luna Max | - | - | - |
 | C1 最终验收 | 待执行 | Terra Max | - | - | - |
 
@@ -412,6 +412,57 @@ python -m rag_kb.worker --queue projection --watch
 - 真库修复收口：第二名 Terra Max 精确定位到 LangGraph 同一 invoke 的后续 superstep 会继续携带恢复 command fencing 配置，而首次 checkpoint marker 后审批执行可合法推进 task `state_version`。`FencedPostgresSaver` 因此在 marker 前保持 command×task state/generation/active-command 完整交叉 fence；marker 后要求 marker 已存在、active command 已清空且 task lease generation/owner/protocol/有效期仍成立，再退回普通 task fence，不放宽首次应用边界。测试侧仅修正恢复命令 FK 清理顺序，并精确化失效审批与并发 loser 的稳定错误断言。
 - 主 Agent 读取并审查上述生产与测试差异后独立复验：真实 PostgreSQL 仓储、审批原子入队、checkpointer、checkpoint fencing、M2 恢复、retention 与 tool fencing 共 `36 passed`；隔离空迁移库的 Alembic upgrade→downgrade→upgrade 用例 `1 passed`；SQLite/Worker/API A5 核心集使用仓库内独立 basetemp 后 `104 passed`。首次 SQLite 复验的 `78 errors` 全部来自系统 `%TEMP%/pytest-of-26219` ACL，非业务失败；更换可写 basetemp 后无失败。
 - 静态收口：相关模块 `py_compile` 与 `git diff --check` 通过，未残留临时诊断输出；恢复正文/隐私扫描继续通过。临时 `postgres:18.6` 容器仅绑定 loopback，验收完成后已删除，容器内主库、迁移库和 E2E 测试库不可恢复；未读取或修改 `.env`，未调用真实 DeepSeek，未启动 A6。
+
+### 7.7 A6 验证记录
+
+- 执行环境仍不支持 Luna Max；依据第 5 节既定规则，A6 由主 Agent 亲自完成，没有假称使用 Luna，也没有扩大到 A7 的崩溃矩阵或异步 E2E 改造。
+- 删除 `build_task_resume_worker` 及其 Web→`rag_kb.worker` 构造路径；任务 API 测试继续直接注入已有命令仓储假件，隔离 M2 脚本中不再引用或覆盖已删除的 Worker 依赖。
+- 启动检查首次发现 `rag_kb.agent.__init__` 会因 `TaskResultService` 的共享结果类型导入而急切加载 Agent factory/tools；已使用标准模块惰性导出保留既有公共 API，使 `create_app(Settings(_env_file=None))` 在禁止导入 Worker、Agent factory/tools、checkpointer、BGE 与 DeepSeek 模块的独立进程中成功。
+- 主 Agent 独立验证：`tests/test_new_app_factory.py`、`tests/test_v1_tasks_api.py`、`tests/test_v1_approvals_api.py` 共 `26 passed`；`tests/test_task_agent.py`、`tests/test_agent_checkpointer.py` 共 `27 passed`；相关文件 `py_compile`、Web Worker/TaskWorker 静态扫描与 `git diff --check` 通过。
+- A6 未运行需要外部资源的真实 E2E；`scripts/smoke_m2_controlled_write_e2e.py` 仍有 A3/A4 后已过时的同步 `200` 与立即终态断言，A7 必须改为 API `202 Accepted` 后显式由 Task Worker 消费并覆盖崩溃矩阵。A6 新增的仓库内 basetemp 与既有 `.tmp` 一并保留到 C1 精确清理。
+
+### 7.8 A7 验证记录
+
+- Terra Max（推理强度 `max`）完整审计 A7 覆盖矩阵后复用既有崩溃/fencing 用例，只补真实缺口：continue enqueue 前失败不留命令、enqueue 后响应构造失败可重试复用同一命令、审批命令入队后撤销 approver 时 Worker fail-closed 且 WRITE/tool call 为 0。
+- 审计发现审批 `rejection_reason` 仍通过 HTTP schema/路由回显，违反审批原因不得进入响应的不变量；已从公开审批响应移除，耐久审计字段与内部完整性约束保持不变，并补 decision/detail 均不泄漏原因的 API 回归。
+- 隔离 M2 E2E 已改为异步语义：API 返回 `202 Accepted` 后断言 task 仍为 waiting、重复请求复用同一 command 且副作用为 0，再由 `TaskWorker.run_once()` 唯一消费；最终核对 command 仅一条、状态 consumed、正文清除，并扫描答案、审批原因和 payload hash 不进入响应/日志/工具表面。
+- Terra Max 验证：SQLite A7 定向集 `129 passed in 100.51s`；A6 启动兼容 `9 passed in 4.14s`。全新 `postgres:18.6` 容器仅绑定 `127.0.0.1:50741`，迁移至 `20260831_0015` 后，双领取、旧 generation checkpoint fencing、审批入队回滚、撤权零副作用、并发决定单副作用共 `5 passed in 7.75s`；容器使用 `--rm` 停止。
+- 主 Agent 逐文件读取实际差异并独立复验新 API/撤权/两崩溃窗口/A6 启动共 `9 passed in 13.20s`；相关文件 `py_compile`、Web 审批原因扫描、Web Worker/TaskWorker 依赖扫描和 `git diff --check` 通过。主 Agent 在沙箱外只读复查 Docker 端口 `50741`，无容器残留。
+- 本节点没有调用真实 DeepSeek，没有读取 `.env`，没有启动 B1。完整 live M2 smoke 还需要隔离 Qdrant 和 fault JUnit，按 C1 最终门执行；A7 的仓库内 basetemp 与历史 `.tmp` 留到 C1 精确清理。
+
+### 7.9 B1 验证记录
+
+- Terra Max（推理强度 `max`）将 Worker CLI 改为必填 `--queue task|ingestion|projection`；缺失、非法值和旧 `--include-tasks` 均由 argparse fail-fast，不再存在默认混合轮询生产入口。
+- 删除 `build_workers()` 与三队列 round-robin；`task` 只构造 TaskWorker 和 task retention，`ingestion` 只构造 ingestion Worker 与 upload reconciler，`projection` 只构造 projection reconciler。测试通过 monkeypatch 实际记录 builder 调用，证明其他模式组合根没有初始化。
+- 为守住 B1/B2 边界，聚合 `_run_recovery_window()` 未拆分恢复、清理、队列快照或指标所有权，只允许非 ingestion 模式没有 upload reconciler 时跳过该既有子动作；正式所有权拆分留给 B2。
+- Terra Max 验证 `tests/test_worker_runtime.py` 为 `13 passed in 45.01s`。主 Agent 逐行读取 `worker.py` 与测试实际差异，并独立复验 `13 passed in 7.64s`；相关 `py_compile`、生产旧 `include_tasks`/`--include-tasks`/`build_workers` 扫描和 `git diff --check` 通过。
+- 本节点没有读取 `.env`、没有调用真实 DeepSeek、没有修改 A6/A7、Compose 或 README。Compose/部署静态测试与运行文档仍引用旧命令，分别留给 B3/B4；B1 仓库内 basetemp 留待 C1 精确清理。
+
+### 7.10 用户要求的 A6/A7 复核记录
+
+- B1 完成并全文回读后，主 Agent 按用户要求暂停 B2，重新读取 A6/A7 全部实际差异。A6 的旧 `build_task_resume_worker` 删除、Web/脚本生产引用清零、Agent package 惰性导出和独立进程 API 启动门均真实存在；A6 结论保持已完成。
+- A7 的 API enqueue 前后失败、审批原因不回显、排队后撤权 fail-closed、checkpoint 前后崩溃用例和异步 M2 E2E 脚本改造均真实存在；生产 `build_task_resume_worker` 与 Web `rejection_reason` 静态扫描为 0。主 Agent 独立运行 A6/A7 相关 11 个测试文件，结果 `144 passed in 90.64s`。
+- 复核同时发现状态事实冲突：A7 节点验收要求“任务 E2E 通过”，但 7.8 明确记录完整 live M2 smoke 未运行，只完成脚本语义改造与编译。该缺口不能留到 C1 后仍宣称 A7 已完成，因此 A7 已重新标为进行中；必须由 Terra Max `max` 完成隔离 E2E、处理真实失败并确认临时 PostgreSQL/Qdrant/对象资源清理后，才能再次关闭 A7。
+- 用户明确授权 Docker 后，主 Agent 创建唯一 `postgres:18.6` 与 `qdrant:v1.19.0` 容器，分别仅绑定 `127.0.0.1:54492`、`127.0.0.1:54496`；Terra Max 使用 replay/fake 模型实际生成 fault JUnit `17/17 passed`，并运行完整 controlled-write smoke，报告为 `status=passed`、`cleanup.completed=true`、31 tasks/21 scenarios。报告证明 `202 → waiting → TaskWorker`、审批前写 0/最终写 1、未批准/重复/UNKNOWN 副作用 0、跨租户/非所有者 404，以及答案、审批原因、resume body/hash 泄漏均为 0。
+- 补充 live 门同时复验 A6/A7 API/recovery `56 passed`；`py_compile`、Web Worker/TaskWorker 依赖扫描、公开 `rejection_reason` 扫描与 `git diff --check` 通过，无需代码修复。smoke/fault 自建数据库、Qdrant collection、对象根和临时 JUnit/JSON 目录均已清理；主 Agent 停止两个 `--rm` 容器后按名称与端口复查为空。A7 至此重新关闭，验收与状态一致。
+
+### 7.11 B2 验证记录
+
+- 将聚合 `_run_recovery_window()` 拆为唯一所有权边界：task Worker 独占 capability heartbeat/availability、task/tool/knowledge-query 超时、task retention 与 task queue snapshot；ingestion Worker 独占 upload reconciliation 与 ingestion queue snapshot；projection Worker 仅通过 `ProjectionReconciler.run_once()` 执行 projection repair。三类进程分别记录自身 last-loop 与错误。
+- recovery、queue、capability、last-loop 与 worker error 指标均增加或保持固定集合的 `worker_kind`；Worker OTEL/log service 名按 `rag-kb-worker-{task|ingestion|projection}` 区分。所有外部输入在指标层被界定为固定低基数值。
+- 接管审计发现并修正一项真实误报：task 的正常 `finished`/`waiting_*` 结果不再计为 worker error，仅稳定 `error_code` 存在时记录；同时补齐 task capability availability 的固定 `worker_kind="task"`。
+- Terra Max 定向验证 `tests/test_worker_runtime.py` 与 `tests/test_observability.py` 为 `32 passed`。主 Agent 逐项读取实际生产代码与测试，独立复验同一组测试为 `32 passed in 9.17s`；`py_compile`、旧 `_run_recovery_window` 扫描（0 处）、高基数 `worker_kind` 路径复核与全工作树 `git diff --check` 通过。
+- 本节点未修改 Compose、Prometheus 或文档；三服务部署、独立 metrics 端口/抓取目标留给 B3，B2 仓库内 basetemp 留待 C1 精确清理。
+
+### 7.12 B3 验证记录
+
+- 当前环境仍无 Luna Max，按第 5 节规则由主 Agent 亲自完成简单配置节点，没有假称使用 Luna，也没有扩大到 B4/C1。旧单一 `worker` 已替换为 `task-worker`、`ingestion-worker`、`projection-worker`，分别显式使用 `--queue task|ingestion|projection --watch`；API 不依赖任一 Worker 启动，task capability 仅由 task Worker 的数据库 lease 发布。
+- 三个 Worker 均依赖健康的 PostgreSQL/Qdrant、已完成的 Qdrant 初始化和迁移，共享必要对象存储与只读离线模型缓存，并使用 `restart: unless-stopped`。DeepSeek base URL、model 与 API key 只传给 `task-worker`；三个内部 metrics 端口分别为 9464、9465、9466，仅 `expose` 到 Compose 网络而未映射宿主端口。
+- Prometheus 使用 `rag-kb-task-worker`、`rag-kb-ingestion-worker`、`rag-kb-projection-worker` 三个独立 job/target；Grafana 系统面板分别查询并展示三类 Worker。`rag-kb-target-down` 对 API、三个 Worker 和 Collector 逐个检查 `up == 0` 与 `absent(...)`，不再以聚合掩盖单个 Worker 缺失；运行观测配置中的旧单 Worker job 扫描为 0 处。
+- 仓库没有可复用且能反映 Worker 循环业务健康的探针，因此未添加 `echo`、固定成功命令或仅证明 metrics 线程存活的伪 healthcheck。当前由容器主进程退出状态、`unless-stopped` 重启策略、三个 Prometheus 抓取目标及 B2 的 worker last-loop/error 指标承担存活观测；真正的 Worker 业务健康探针属于独立设计，不在 B3 新造第二套机制。
+- 静态部署测试已同步验证三服务存在、旧服务不存在、命令、依赖、对象卷、DeepSeek 隔离、内部 metrics 端口、Prometheus targets、Grafana 三 Worker 查询及 target-down 的 down/absent 覆盖。主 Agent运行 `conda run -n rag-kb --no-capture-output python -m pytest -q tests/test_deployment_acceptance_static.py`，结果 `6 passed, 1 warning`；warning 仅为现有 `.pytest_cache` 目录 ACL 导致 pytest 无法写缓存，不影响断言结果。
+- Windows PATH 现可解析 `C:\Users\26219\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe`。为保证 Docker Compose 不自动读取受保护的 `.env`，设置 `COMPOSE_DISABLE_ENV_FILE=1` 后运行 `docker compose config --quiet`，退出成功且无输出；旧 job 精确扫描与全工作树 `git diff --check` 同样通过。
+- 实现事实冲突与遗留风险：同步 `/v1/knowledge/query` 仍通过 API 内的 `DeepSeekAnswerModel` 使用 DeepSeek 配置，而 B3 明确要求 DeepSeek 配置只传给 `task-worker`。本节点继续遵守部署配置隔离，不把同步问答链迁移或重构扩大进简单 Compose 节点；该端点在 Compose 默认配置下缺少真实 DeepSeek 凭据的风险如实保留，不以回传配置给 API 掩盖冲突。
 
 ## 8. 决策记录
 

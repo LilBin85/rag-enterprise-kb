@@ -40,7 +40,6 @@ class ApprovalResponse(BaseModel):
     approved_at: datetime | None = None
     rejected_by: str | None = None
     rejected_at: datetime | None = None
-    rejection_reason: str | None = None
 
 
 class ApprovalDecisionResponse(ApprovalResponse):

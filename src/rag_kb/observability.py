@@ -140,6 +140,7 @@ _TASK_QUEUE_STATUSES = frozenset(
 )
 _INGESTION_QUEUE_STATUSES = frozenset({"awaiting_object", "pending", "running"})
 _WORKER_KINDS = frozenset({"task", "ingestion", "projection"})
+_WORKER_ERROR_OPERATIONS = frozenset({"maintenance", "queue_snapshot", "run_once"})
 _SECURITY_BOUNDARY_KINDS = frozenset(
     {"acl", "tenant", "content_hash", "fencing", "write_unknown"}
 )
@@ -721,7 +722,13 @@ class Observability:
         self._recovery_actions = Counter(
             "rag_kb_recovery_actions_total",
             "Worker recovery actions.",
-            ("kind", "outcome"),
+            ("worker_kind", "kind", "outcome"),
+            registry=self.registry,
+        )
+        self._worker_errors = Counter(
+            "rag_kb_worker_errors_total",
+            "Worker errors by fixed queue kind and operation.",
+            ("worker_kind", "operation", "error_category"),
             registry=self.registry,
         )
         self._security_boundary_violations = Counter(
@@ -733,25 +740,25 @@ class Observability:
         self._task_queue_depth = Gauge(
             "rag_kb_task_queue_depth",
             "Task queue depth by fixed mode and status.",
-            ("mode", "status"),
+            ("worker_kind", "mode", "status"),
             registry=self.registry,
         )
         self._task_queue_oldest_age = Gauge(
             "rag_kb_task_queue_oldest_age_seconds",
             "Age of the oldest task queue item by fixed mode and status.",
-            ("mode", "status"),
+            ("worker_kind", "mode", "status"),
             registry=self.registry,
         )
         self._ingestion_queue_depth = Gauge(
             "rag_kb_ingestion_queue_depth",
             "Ingestion queue depth by fixed status.",
-            ("status",),
+            ("worker_kind", "status"),
             registry=self.registry,
         )
         self._ingestion_queue_oldest_age = Gauge(
             "rag_kb_ingestion_queue_oldest_age_seconds",
             "Age of the oldest ingestion queue item by fixed status.",
-            ("status",),
+            ("worker_kind", "status"),
             registry=self.registry,
         )
         self._worker_last_loop = Gauge(
@@ -763,7 +770,7 @@ class Observability:
         self._worker_capability_available = Gauge(
             "rag_kb_worker_capability_available",
             "Whether the fixed task worker capability has an active lease.",
-            ("capability", "protocol"),
+            ("worker_kind", "capability", "protocol"),
             registry=self.registry,
         )
         for kind in _SECURITY_BOUNDARY_KINDS:
@@ -1097,39 +1104,75 @@ class Observability:
             phase=bounded_phase, outcome=bounded_outcome
         ).observe(max(0, duration_seconds))
 
-    def record_recovery_action(self, *, kind: str, outcome: str, count: int = 1) -> None:
+    def record_recovery_action(
+        self, *, worker_kind: str, kind: str, outcome: str, count: int = 1
+    ) -> None:
         if not self.metrics_enabled or count <= 0:
             return
         bounded_kind = _bounded_metric_value(kind, _RECOVERY_KINDS, "queue_snapshot")
         bounded_outcome = _bounded_metric_value(outcome, _RECOVERY_OUTCOMES, "failure")
-        self._recovery_actions.labels(kind=bounded_kind, outcome=bounded_outcome).inc(count)
+        self._recovery_actions.labels(
+            worker_kind=_bounded_metric_value(worker_kind, _WORKER_KINDS, "unknown"),
+            kind=bounded_kind,
+            outcome=bounded_outcome,
+        ).inc(count)
+
+    def record_worker_error(
+        self,
+        *,
+        worker_kind: str,
+        operation: str,
+        error_category: str,
+        count: int = 1,
+    ) -> None:
+        if not self.metrics_enabled or count <= 0:
+            return
+        self._worker_errors.labels(
+            worker_kind=_bounded_metric_value(worker_kind, _WORKER_KINDS, "unknown"),
+            operation=_bounded_metric_value(
+                operation, _WORKER_ERROR_OPERATIONS, "run_once"
+            ),
+            error_category=_metric_error_category(error_category),
+        ).inc(count)
 
     def record_security_boundary_violation(self, *, kind: str) -> None:
         if self.metrics_enabled and kind in _SECURITY_BOUNDARY_KINDS:
             self._security_boundary_violations.labels(kind=kind).inc()
 
     def set_task_queue_snapshot(
-        self, *, mode: str, status: str, depth: int, oldest_age_seconds: float
+        self,
+        *,
+        worker_kind: str,
+        mode: str,
+        status: str,
+        depth: int,
+        oldest_age_seconds: float,
     ) -> None:
         if not self.metrics_enabled:
             return
+        bounded_worker_kind = _bounded_metric_value(worker_kind, _WORKER_KINDS, "unknown")
         bounded_mode = _bounded_metric_value(mode, _TASK_QUEUE_MODES, "research")
         bounded_status = _bounded_metric_value(status, _TASK_QUEUE_STATUSES, "planning")
-        self._task_queue_depth.labels(mode=bounded_mode, status=bounded_status).set(max(0, depth))
+        self._task_queue_depth.labels(
+            worker_kind=bounded_worker_kind, mode=bounded_mode, status=bounded_status
+        ).set(max(0, depth))
         self._task_queue_oldest_age.labels(
-            mode=bounded_mode, status=bounded_status
+            worker_kind=bounded_worker_kind, mode=bounded_mode, status=bounded_status
         ).set(max(0, oldest_age_seconds))
 
     def set_ingestion_queue_snapshot(
-        self, *, status: str, depth: int, oldest_age_seconds: float
+        self, *, worker_kind: str, status: str, depth: int, oldest_age_seconds: float
     ) -> None:
         if not self.metrics_enabled:
             return
+        bounded_worker_kind = _bounded_metric_value(worker_kind, _WORKER_KINDS, "unknown")
         bounded_status = _bounded_metric_value(status, _INGESTION_QUEUE_STATUSES, "pending")
-        self._ingestion_queue_depth.labels(status=bounded_status).set(max(0, depth))
-        self._ingestion_queue_oldest_age.labels(status=bounded_status).set(
-            max(0, oldest_age_seconds)
-        )
+        self._ingestion_queue_depth.labels(
+            worker_kind=bounded_worker_kind, status=bounded_status
+        ).set(max(0, depth))
+        self._ingestion_queue_oldest_age.labels(
+            worker_kind=bounded_worker_kind, status=bounded_status
+        ).set(max(0, oldest_age_seconds))
 
     def set_worker_last_loop(self, *, worker_kind: str, timestamp_seconds: float) -> None:
         if self.metrics_enabled and worker_kind in _WORKER_KINDS:
@@ -1138,15 +1181,16 @@ class Observability:
             )
 
     def set_worker_capability_available(
-        self, *, capability: str, protocol: str, available: bool
+        self, *, worker_kind: str, capability: str, protocol: str, available: bool
     ) -> None:
         if (
             self.metrics_enabled
+            and worker_kind == "task"
             and capability == "task-agent"
             and protocol == "m2-fenced-v1"
         ):
             self._worker_capability_available.labels(
-                capability=capability, protocol=protocol
+                worker_kind="task", capability=capability, protocol=protocol
             ).set(1 if available else 0)
 
     def record_lease_failure(

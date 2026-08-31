@@ -174,7 +174,7 @@ groups:
             datasourceUid: prometheus
             model:
               editorMode: code
-              expr: clamp_max((1 - (min(up{job="rag-kb-api"}) or vector(0))) + (1 - (min(up{job="rag-kb-worker"}) or vector(0))) + (1 - (min(up{job="rag-kb-collector"}) or vector(0))) + (sum(absent(up{job="rag-kb-api"})) or vector(0)) + (sum(absent(up{job="rag-kb-worker"})) or vector(0)) + (sum(absent(up{job="rag-kb-collector"})) or vector(0)), 1)
+              expr: clamp_max((1 - (min(up{job="rag-kb-api"}) or vector(0))) + (1 - (min(up{job="rag-kb-task-worker"}) or vector(0))) + (1 - (min(up{job="rag-kb-ingestion-worker"}) or vector(0))) + (1 - (min(up{job="rag-kb-projection-worker"}) or vector(0))) + (1 - (min(up{job="rag-kb-collector"}) or vector(0))) + (sum(absent(up{job="rag-kb-api"})) or vector(0)) + (sum(absent(up{job="rag-kb-task-worker"})) or vector(0)) + (sum(absent(up{job="rag-kb-ingestion-worker"})) or vector(0)) + (sum(absent(up{job="rag-kb-projection-worker"})) or vector(0)) + (sum(absent(up{job="rag-kb-collector"})) or vector(0)), 1)
               instant: true
               intervalMs: 60000
               maxDataPoints: 43200
