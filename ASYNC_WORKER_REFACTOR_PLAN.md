@@ -350,7 +350,7 @@ python -m rag_kb.worker --queue projection --watch
 | B1 单队列 CLI | 已完成 | Terra Max（`max`） | Terra Max：Worker runtime 13 passed；主 Agent：13 passed；`py_compile`、旧参数扫描、`git diff --check` 通过 | `src/rag_kb/worker.py`；`tests/test_worker_runtime.py` | `_run_recovery_window` 的恢复/队列/指标所有权仍聚合，按 B2 拆分；Compose/文档旧命令由 B3/B4 同步；B1 basetemp 留待 C1 清理 |
 | B2 恢复与指标所有权 | 已完成 | Terra Max（`max`） | Terra Max：32 passed；主 Agent：32 passed；`py_compile`、旧聚合入口扫描、低基数标签复核、`git diff --check` 通过 | `src/rag_kb/worker.py`；`src/rag_kb/observability.py`；`tests/test_worker_runtime.py` | Compose 三服务、独立指标端口与 Prometheus targets 留给 B3；B2 basetemp 留待 C1 精确清理 |
 | B3 三 Worker Compose | 已完成 | 主 Agent（Luna Max 不可用） | 部署静态测试 6 passed；API/task-worker DeepSeek 配置边界复核通过；`COMPOSE_DISABLE_ENV_FILE=1` 下 `docker compose config --quiet`、`git diff --check` 通过 | `docker-compose.yml`；`ops/observability/prometheus/prometheus.yml`；`ops/observability/grafana/dashboards/system-overview.json`；`ops/observability/grafana/provisioning/alerting/rag-kb.yml`；`tests/test_deployment_acceptance_static.py`；`ASYNC_WORKER_REFACTOR_PLAN.md` | 无已知遗留风险 |
-| B4 文档同步 | 待执行 | Luna Max | - | - | - |
+| B4 文档同步 | 已完成 | 主 Agent（Luna Max 不可用） | B4 定向测试 30 passed；PowerShell 语法解析、精确静态扫描与 `git diff --check` 通过 | `README.md`；`使用指南.md`；`docs/architecture.md`；`docs/observability-plan.md`；`docs/migration.md`；`scripts/start_worker.ps1`；`tests/test_deployment_acceptance_static.py`；`ASYNC_WORKER_REFACTOR_PLAN.md` | 无已知遗留风险 |
 | C1 最终验收 | 待执行 | Terra Max | - | - | - |
 
 ### 7.1 0A 基线记录
@@ -464,6 +464,16 @@ python -m rag_kb.worker --queue projection --watch
 - 静态部署测试已同步验证三服务存在、旧服务不存在、命令、依赖、对象卷、API/task-worker DeepSeek 配置与其余服务隔离、内部 metrics 端口、Prometheus targets、Grafana 三 Worker 查询及 target-down 的 down/absent 覆盖。主 Agent运行 `conda run -n rag-kb --no-capture-output python -m pytest -q tests/test_deployment_acceptance_static.py`，结果 `6 passed, 1 warning`；warning 仅为现有 `.pytest_cache` 目录 ACL 导致 pytest 无法写缓存，不影响断言结果。
 - Windows PATH 现可解析 `C:\Users\26219\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe`。为保证 Docker Compose 不自动读取受保护的 `.env`，设置 `COMPOSE_DISABLE_ENV_FILE=1` 后运行 `docker compose config --quiet`，退出成功且无输出；旧 job 精确扫描与全工作树 `git diff --check` 同样通过。
 - 重新打开后的最小修复已完成：Compose 将三个 `DEEPSEEK_*` 变量同时传给 API 与 `task-worker`，静态测试精确禁止 ingestion、projection 和 migrate 接收；同步问答未迁移到 Worker，也未拆分模型配置。该修复不改变 task Worker 对 Agent、工具、checkpoint 与 capability lease 的唯一执行权，原 `/v1/knowledge/query` 配置断链风险已消除。
+
+### 7.13 B4 验证记录
+
+- 当前环境仍无 Luna Max，按第 5 节规则由主 Agent 亲自完成简单文档节点，没有假称使用 Luna，也没有启动 C1。
+- README、使用指南和架构说明已同步三个显式单队列启动命令、职责/配置/指标边界、恢复接口 `202 Accepted` 的异步语义、PostgreSQL 事实源与无新增消息中间件边界；当前运行资料不再提供旧参数或单进程三队列轮转说明。
+- readiness 与故障排查已按实现收敛：`/health/ready` 只检查 PostgreSQL、当前 Alembic schema revision、Qdrant、collection schema 和活动投影收敛，不直接检查 Worker；三类 Worker 缺失后的能力影响及日志服务名已分别记录。
+- 可观测性说明已同步三个 OTel/log service 名、固定低基数 `worker_kind`、独立维护所有权、9464/9465/9466 内部端口和三个 Prometheus job/target；迁移说明与 README 已同步 Alembic head `20260831_0015` 及耐久恢复命令 schema。
+- `scripts/start_worker.ps1` 现要求必填 `-Queue`，以 `ValidateSet("task", "ingestion", "projection")` 拒绝非法值，并显式传递 `--queue $Queue --watch --poll-seconds 2`；PowerShell AST 语法解析通过，未实际启动长期 Worker。
+- 主 Agent 运行指定的 `tests/test_deployment_acceptance_static.py` 与 `tests/test_worker_runtime.py`，结果 `30 passed, 1 warning in 9.20s`；warning 仅为既有 `.pytest_cache` ACL 导致无法写缓存。当前运行文档精确扫描、人工语境复核和 `git diff --check` 均通过；修改文件全部位于 B4 允许清单，未读取 `.env`、未调用真实 DeepSeek、未重建容器、未提交或推送 Git。
+- 本节点未创建临时文件；工作树中的未跟踪 `.tmp/` 是开始 B4 前已存在的历史测试目录，按计划留给 C1 精确清理，不在 B4 越界删除。
 
 ## 8. 决策记录
 

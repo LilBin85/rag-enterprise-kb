@@ -2,7 +2,7 @@
 
 状态：计划中
 
-更新时间：2026-08-29
+更新时间：2026-09-01
 
 ## 1. 目标与边界
 
@@ -16,7 +16,7 @@
 首期采用以下最小技术栈：
 
 ```text
-API / Worker
+API / task-worker / ingestion-worker / projection-worker
   |-- JSON 结构化日志 --> stdout
   |-- OTLP Trace ------> OpenTelemetry Collector --> Jaeger
   `-- /metrics --------> Prometheus -------------> Grafana
@@ -51,7 +51,7 @@ API / Worker
 |---|---|---|
 | 同步问答异常日志 | `application/query_service.py` | 只有零散文本日志，无统一 `request_id`、时长和结构化字段 |
 | Agent 任务、工具、审批和事件表 | `infrastructure/database/models.py` | `task_events.duration_ms`、`token_usage`、`tool_name` 未实际写入 |
-| Worker 最终结果日志 | `worker.py` | 只记录最终状态，缺少阶段时长、队列和 lease 信号 |
+| 三类 Worker 结果日志 | `worker.py` | 按固定 `worker_kind` 区分 task、ingestion、projection 的循环、维护和错误 |
 | `/health/live`、`/health/ready` | `web/routers/health.py`、`web/dependencies.py` | 不检查 Worker 可用性、队列积压、对象存储和模型 |
 | 请求 ID | `web/dependencies.py:resolve_auth_context()` | 未回写响应头，且允许 200 字符，但 `task_events.trace_id` 只有 64 字符 |
 | PostgreSQL checkpointer 与租约 fencing | `agent/checkpointer.py`、`application/task_worker.py` | 可恢复执行，但不能在 Trace 中看到每次恢复、失租和 checkpoint 开销 |
@@ -91,7 +91,7 @@ API / Worker
 docker compose --profile observability up --build -d
 ```
 
-目标拓扑：
+当前拓扑：
 
 ```text
                     +--------------------------+
@@ -105,17 +105,19 @@ docker compose --profile observability up --build -d
                     +-------+------------+------+
                             ^            ^
                             | scrape     | scrape
-                    +-------+--+     +---+--------+
-                    | API :8000|     | Worker :9464|
-                    | /metrics |     | /metrics    |
-                    +----------+     +-------------+
+                    +-------+--+     +---------------------------+
+                    | API :8000|     | task-worker      :9464    |
+                    | /metrics |     | ingestion-worker :9465    |
+                    +----------+     | projection-worker:9466    |
+                                     | /metrics                  |
+                                     +---------------------------+
 
                     +--------------------------+
                     | OpenTelemetry Collector  |
                     +------------+-------------+
                                  ^ OTLP/gRPC
                     +------------+-------------+
-                    | API / Worker Trace SDK    |
+                    | API / three Worker SDKs   |
                     +------------+-------------+
                                  |
                     +------------+-------------+
@@ -123,9 +125,11 @@ docker compose --profile observability up --build -d
                     +--------------------------+
 ```
 
-API 的 `/metrics` 不应经公网暴露。当前 Compose 已将 API 映射到 `127.0.0.1`，生产反向代理也必须拒绝外部访问 `/metrics`，仅允许 Prometheus 网络访问。Worker 的 `:9464` 仅暴露在 Docker 内部网络，不映射宿主机端口。
+API 的 `/metrics` 不应经公网暴露。当前 Compose 已将 API 映射到 `127.0.0.1`，生产反向代理也必须拒绝外部访问 `/metrics`，仅允许 Prometheus 网络访问。三个 Worker 的 `:9464`、`:9465`、`:9466` 仅通过 `expose` 暴露在 Compose 网络内，不映射宿主机端口。
 
-首期 Compose 仍为单 API 进程和单 Worker 进程。若未来增加多个 Uvicorn worker 或水平扩容 Worker，必须让 Prometheus 发现每个进程实例；不得让多个进程共享默认内存 registry，也不得把 API 与 Worker 写入同一 Prometheus multiprocess 目录。
+当前 Compose 为单 API 进程和三个独立 Worker 进程。若未来增加多个 Uvicorn worker 或水平扩容同类 Worker，必须让 Prometheus 发现每个进程实例；不得让多个进程共享默认内存 registry，也不得把 API 与 Worker 写入同一 Prometheus multiprocess 目录。
+
+聚合 `_run_recovery_window()` 已不存在：`task-worker` 独占 capability heartbeat/availability、task/tool/knowledge-query 超时、task retention 和任务队列快照；`ingestion-worker` 独占上传预留恢复和摄取队列快照；`projection-worker` 通过自己的 `run_once()` 独占投影审计、修复与重建。三类进程都写自身的 last-loop 和 error 指标。
 
 ### 3.3 配置与失效策略
 
@@ -135,12 +139,12 @@ API 的 `/metrics` 不应经公网暴露。当前 Compose 已将 API 映射到 `
 |---|---:|---|
 | `OBSERVABILITY_ENABLED` | `false` | 总开关；关闭时 tracer 使用 no-op provider，业务路径不依赖 exporter |
 | `METRICS_ENABLED` | `true` | 是否暴露 Metrics；生产环境仍必须由网络层限制访问 |
-| `OTEL_SERVICE_NAME` | API 为 `rag-kb-api`，Worker 为 `rag-kb-worker` | Trace 资源名 |
+| `OTEL_SERVICE_NAME` | API 为 `rag-kb-api`；Worker 为 `rag-kb-worker-task`、`rag-kb-worker-ingestion`、`rag-kb-worker-projection` | Trace 与日志资源名 |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | 空 | 空值时不初始化远程 OTLP exporter |
 | `OTEL_TRACE_SAMPLE_RATIO` | `1.0` | 应用端 head sampling 比率；标准 profile 由 Collector 做 tail sampling |
 | `LOG_LEVEL` | `INFO` | JSON 日志级别 |
 | `LOG_FORMAT` | `json` | 首期固定 JSON，开发调试可后续增加 console 格式 |
-| `WORKER_METRICS_PORT` | `9464` | Worker 内部 Metrics 服务端口 |
+| `WORKER_METRICS_PORT` | task `9464`、ingestion `9465`、projection `9466` | Compose 网络内的 Worker Metrics 端口 |
 
 初始化、exporter 连接或 Collector 不可用时，只写一次安全启动告警，并继续提供业务能力。Exporter 不得阻塞 API 请求、Agent 领取、摄取、审批或数据库事务。
 
@@ -297,14 +301,17 @@ HTTP server span
 | `rag_kb_ingestion_phase_duration_seconds` | Histogram | `phase,outcome` | parse、index、publish、bind、retire |
 | `rag_kb_projection_reconciliations_total` | Counter | `phase,outcome` | audit/reconcile 结束 |
 | `rag_kb_projection_reconcile_duration_seconds` | Histogram | `phase,outcome` | 一次 reconcile run |
-| `rag_kb_recovery_actions_total` | Counter | `kind,outcome` | stale tool/query、TTL、孤儿对象、上传预留恢复 |
+| `rag_kb_recovery_actions_total` | Counter | `worker_kind,kind,outcome` | task/ingestion 各自拥有的恢复与维护动作 |
+| `rag_kb_worker_errors_total` | Counter | `worker_kind,operation,error_category` | 三类 Worker 的维护、队列快照与主循环错误 |
 | `rag_kb_security_boundary_violations_total` | Counter | `kind` | ACL、tenant、content hash、fencing、未知 WRITE |
-| `rag_kb_task_queue_depth` | Gauge | `mode,status` | 周期性 PostgreSQL 快照 |
-| `rag_kb_task_queue_oldest_age_seconds` | Gauge | `mode,status` | 周期性 PostgreSQL 快照 |
-| `rag_kb_ingestion_queue_depth` | Gauge | `status` | 周期性 PostgreSQL 快照 |
-| `rag_kb_ingestion_queue_oldest_age_seconds` | Gauge | `status` | 周期性 PostgreSQL 快照 |
+| `rag_kb_task_queue_depth` | Gauge | `worker_kind,mode,status` | task Worker 的周期性 PostgreSQL 快照 |
+| `rag_kb_task_queue_oldest_age_seconds` | Gauge | `worker_kind,mode,status` | task Worker 的周期性 PostgreSQL 快照 |
+| `rag_kb_ingestion_queue_depth` | Gauge | `worker_kind,status` | ingestion Worker 的周期性 PostgreSQL 快照 |
+| `rag_kb_ingestion_queue_oldest_age_seconds` | Gauge | `worker_kind,status` | ingestion Worker 的周期性 PostgreSQL 快照 |
 | `rag_kb_worker_last_loop_timestamp_seconds` | Gauge | `worker_kind` | Worker 每轮成功完成后更新 |
-| `rag_kb_worker_capability_available` | Gauge | `capability,protocol` | 活跃 capability lease 快照 |
+| `rag_kb_worker_capability_available` | Gauge | `worker_kind,capability,protocol` | task Worker 的活动 capability lease 快照 |
+
+所有 `worker_kind` 均由运行模式收敛到固定低基数集合 `task`、`ingestion`、`projection`，不能来自外部输入或实例 ID。
 
 ### 6.3 Histogram bucket
 
@@ -326,7 +333,7 @@ HTTP 使用短请求 bucket：
 
 队列深度和最老等待年龄是 PostgreSQL 全局事实，不能通过每个 Worker 的进程内计数相加得到。
 
-1. 在 `worker.py` 已有的周期恢复窗口内执行有界队列快照查询。
+1. `task-worker` 和 `ingestion-worker` 在各自维护窗口内执行有界队列快照查询；`projection-worker` 不重复采集这两类队列。
 2. 任务的可领取定义必须复用 `DatabaseTaskRepository.claim_next()` 的状态和 capability 条件，不手写另一套不一致的“pending”判断。
 3. 摄取可领取定义必须复用 `DocumentRepository.claim_next_job()` 的 `pending`、`available_at` 和 attempts 条件。
 4. Trace 和 `/metrics` scrape 均不得触发高成本队列全表扫描。
@@ -351,7 +358,8 @@ HTTP 使用短请求 bucket：
 | 审批 | `approval.transition`、`task.resume` | `ApprovalService`、`TaskWorker.resume_for_approval()` |
 | 摄取 | `ingestion.run`、`ingestion.parse`、`projection.index`、`projection.publish`、`projection.bind`、`projection.retire` | `IngestionWorker.run_once()` |
 | 投影收敛 | `projection.reconcile`、`projection.verify` | `ProjectionReconciler.run_once()` |
-| 周期恢复 | `worker.recovery` | `worker.run()` 的恢复窗口 |
+| task 维护 | `worker.task.maintenance`、`worker.task.queue_snapshot` | `task-worker` 的独占维护窗口 |
+| ingestion 维护 | `worker.ingestion.maintenance`、`worker.ingestion.queue_snapshot` | `ingestion-worker` 的独占维护窗口 |
 
 ### 7.2 Span 状态
 
@@ -399,7 +407,7 @@ API 在 FastAPI lifespan 中初始化和关闭；Worker 在 `main()` 中初始�
   "timestamp": "2026-08-29T12:34:56.789Z",
   "level": "INFO",
   "event": "agent.run.completed",
-  "service": "rag-kb-worker",
+  "service": "rag-kb-worker-task",
   "component": "task_worker",
   "operation": "task.run",
   "outcome": "succeeded",
@@ -425,7 +433,7 @@ tool.execution.completed
 approval.transitioned
 ingestion.job.completed
 projection.reconcile.completed
-worker.recovery.completed
+worker.maintenance.completed
 security.boundary_violated
 ```
 
@@ -512,7 +520,7 @@ opentelemetry-exporter-otlp-proto-grpc
 | `prometheus` | 拉取并保存 Metrics | `127.0.0.1:9090` |
 | `grafana` | dashboard 和 alert rule UI | `127.0.0.1:3000` |
 
-Prometheus 初始 scrape target：
+Prometheus 当前 scrape target：
 
 ```yaml
 scrape_configs:
@@ -520,12 +528,18 @@ scrape_configs:
     static_configs:
       - targets: ["api:8000"]
     metrics_path: /metrics
-  - job_name: rag-kb-worker
+  - job_name: rag-kb-task-worker
     static_configs:
-      - targets: ["worker:9464"]
+      - targets: ["task-worker:9464"]
+  - job_name: rag-kb-ingestion-worker
+    static_configs:
+      - targets: ["ingestion-worker:9465"]
+  - job_name: rag-kb-projection-worker
+    static_configs:
+      - targets: ["projection-worker:9466"]
 ```
 
-这只适用于当前单 Worker Compose。扩容前必须改为每个 Worker 实例的服务发现，不能依赖 Docker service DNS 的单一名称。
+这些目标对应当前三个独立 Worker 服务；扩容前必须改为每个 Worker 实例的服务发现，不能依赖 Docker service DNS 的单一名称。Prometheus target `DOWN` 表示抓取目标不可达，不等同于 API `/health/ready` 失败；readiness 不直接检查 Worker。
 
 ### 11.3 采样与保留
 
@@ -543,7 +557,7 @@ scrape_configs:
 
 | Dashboard | 面板 |
 |---|---|
-| 系统总览 | API/Worker up、请求率、5xx、P50/P95/P99、Collector 导出失败 |
+| 系统总览 | API 与三个 Worker 分别 up、请求率、5xx、P50/P95/P99、Collector 导出失败 |
 | RAG | 问答 answer/refusal/failure、拒答原因、检索阶段时长、候选数、context token estimate、LLM usage 缺失率 |
 | Agent | 任务领取/终态、模型调用、工具成功率和超时、审批等待、checkpoint/lease 失败、任务队列年龄 |
 | 摄取与投影 | 摄取积压、解析/index/publish 时长、重试、投影 audit/reconcile 结果、未收敛数量 |
@@ -557,7 +571,7 @@ scrape_configs:
 |---|---|---|
 | Critical | `increase(rag_kb_security_boundary_violations_total[5m]) > 0` | ACL、tenant、hash 或 fencing 边界失败必须人工确认 |
 | Critical | `increase(rag_kb_tool_calls_total{mode="write",outcome="unknown"}[5m]) > 0` | WRITE 副作用结果不确定 |
-| Critical | task queue 非空且 capability lease 不可用 | 任务会被接受但无法执行 |
+| Critical | task queue 非空且 capability lease 不可用 | 已有任务等待消费；lease 到期后新建 task 返回 503 |
 | High | lease failure 持续 5 分钟 | 可能发生重复执行、恢复失败或 Worker 健康问题 |
 | High | projection 连续两个审计周期未收敛 | 检索投影可能持续不一致 |
 | High | PostgreSQL、Qdrant 或模型 dependency 错误率超阈值 | 外部依赖可用性下降 |
@@ -651,7 +665,7 @@ increase(rag_kb_security_boundary_violations_total[5m]) > 0
 | 队列快照、恢复汇总、Worker exporter | `worker.py`、repository 只读统计入口 |
 | 测试 | `test_ingestion_worker.py`、`test_projection_reconciler.py`、`test_worker_runtime.py` |
 
-完成标准：Worker `:9464/metrics` 可抓取；任务和摄取 dashboard 能区分可领取积压、等待人工和运行中；成功 heartbeat 不造成 Trace/日志洪泛。
+完成标准：三个 Worker 的 `:9464`、`:9465`、`:9466` 指标可在 Compose 网络内分别抓取；任务和摄取 dashboard 能区分可领取积压、等待人工和运行中；成功 heartbeat 不造成 Trace/日志洪泛。
 
 ### M5：本地观测 Stack、Dashboard 与告警
 
@@ -664,7 +678,7 @@ increase(rag_kb_security_boundary_violations_total[5m]) > 0
 | Grafana datasource/dashboard/alert provisioning | `ops/observability/grafana/` |
 | 运维入口文档 | 本文档和 `README.md` 的最小链接 |
 
-完成标准：profile 启动后可在 Grafana 看到 API、Worker、RAG、Agent 和摄取信号；Jaeger 能按 service 和 trace ID 查询；关闭 profile 时主服务仍可独立启动。
+完成标准：profile 启动后可在 Grafana 分别看到 API、task-worker、ingestion-worker、projection-worker、RAG、Agent 和摄取信号；Jaeger 能按 service 和 trace ID 查询；关闭 profile 时主服务仍可独立启动。
 
 ### M6：质量门与验收
 

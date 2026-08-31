@@ -10,16 +10,22 @@
 ```mermaid
 flowchart LR
     U[调用方] --> API[FastAPI /v1]
-    API <--> PG[(PostgreSQL<br/>事实、ACL、证据、checkpoint)]
-    PG <--> W[异步 Worker]
+    API <--> PG[(PostgreSQL<br/>任务、恢复命令、权限与证据事实源)]
+    PG <--> TW[task-worker]
+    PG <--> IW[ingestion-worker]
+    PG <--> PW[projection-worker]
     API --> Q[(Qdrant<br/>授权向量检索)]
-    W --> Q
-    W --> OBJ[(对象存储)]
+    TW --> Q
+    IW --> Q
+    PW --> Q
+    TW --> OBJ[(对象存储)]
+    IW --> OBJ
+    PW --> OBJ
     API --> LLM[DeepSeek]
-    W --> LLM
+    TW --> LLM
 ```
 
-PostgreSQL 是唯一事实源，Qdrant 只是可重建、可收敛的检索投影；Agent 身份、工具和审批绑定均由服务端注入。
+PostgreSQL 是任务、恢复命令和权限状态的唯一事实源，Qdrant 只是可重建、可收敛的检索投影；Agent 身份、工具和审批绑定均由服务端注入。队列继续由 PostgreSQL claim/lease/fencing 驱动，没有新增 Redis、Celery、Kafka 或其他消息中间件。
 
 ## 三分钟演示
 
@@ -57,7 +63,7 @@ docker compose up --build -d
 
 前置：Conda 环境 `rag-kb`、PostgreSQL、Qdrant（默认 `http://localhost:6333`）。不要把密钥写入仓库；`.env` 仅供本地配置读取。
 
-完整容器方式会启动 PostgreSQL、Qdrant、迁移、一次性 `qdrant-init`、API 和 worker。
+完整容器方式会启动 PostgreSQL、Qdrant、迁移、一次性 `qdrant-init`、API 和三个独立 Worker。
 启动前应在 `.env` 中把 `DEMO_ROLE_TOKENS` 配置为 JSON 令牌映射；未配置时健康检查可用，
 受保护接口固定拒绝未认证请求：
 
@@ -66,7 +72,7 @@ docker compose up --build -d
 ```
 
 本地演示完整观测链路时，改用以下命令。Grafana、Jaeger 和 Prometheus 仅绑定到
-`127.0.0.1`；Worker 的 `:9464/metrics` 只在 Compose 网络内供 Prometheus 抓取。
+`127.0.0.1`；三个 Worker 的 `:9464`、`:9465`、`:9466` 指标端口只在 Compose 网络内供 Prometheus 抓取。
 
 ```powershell
 docker compose --profile observability up --build -d
@@ -81,14 +87,30 @@ docker compose --profile observability up --build -d
 conda activate rag-kb
 docker compose up -d qdrant
 $env:RAG_KB_DATABASE_URL = "postgresql+psycopg://<用户>:<密码>@localhost:5432/<数据库>"
-alembic upgrade head                 # 当前迁移目标：20260829_0014
+alembic upgrade head                 # 当前迁移目标：20260831_0015
 python scripts/init_agent_checkpointer.py
 python -m rag_kb.qdrant_init         # 幂等创建并校验企业 Qdrant schema
 .\scripts\start_api.ps1             # FastAPI :8000
-conda run -n rag-kb --no-capture-output python -m rag_kb.worker --watch --include-tasks
+conda run -n rag-kb --no-capture-output python -m rag_kb.worker --queue task --watch
+conda run -n rag-kb --no-capture-output python -m rag_kb.worker --queue ingestion --watch
+conda run -n rag-kb --no-capture-output python -m rag_kb.worker --queue projection --watch
 ```
 
-`--include-tasks` 同时启用通用任务队列、过期工具调用和同步问答租约回收；摄取、投影收敛和上传预留恢复始终由 worker 处理。
+三个命令需要分别在独立终端中持续运行；也可分别执行 `.\scripts\start_worker.ps1 -Queue task`、`.\scripts\start_worker.ps1 -Queue ingestion` 和 `.\scripts\start_worker.ps1 -Queue projection`。不存在默认轮询全部队列的模式。
+
+| Worker | 职责与配置边界 |
+| --- | --- |
+| `task-worker` | 执行 Agent 初始任务、用户澄清恢复和审批恢复，发布 `task-agent/m2-fenced-v1` capability，收敛 task/tool/knowledge-query 超时和 task retention，并维护任务队列指标；需要 DeepSeek 配置。 |
+| `ingestion-worker` | 解析文档、生成 embedding、写入索引、恢复上传预留并维护摄取队列指标；不需要 DeepSeek 配置。 |
+| `projection-worker` | 执行 Qdrant 投影收敛、周期审计、修复与重建；不需要 DeepSeek 配置。 |
+
+`GET /health/ready` 当前只检查 PostgreSQL、Alembic schema revision、Qdrant、Qdrant collection schema 和活动投影收敛状态，不直接检查任一 Worker。Worker 缺失的实际影响如下：
+
+| 缺失服务 | 实际影响 |
+| --- | --- |
+| `task-worker` | capability lease 到期后新建 task 返回 `503`；已有任务和恢复命令继续保留在 PostgreSQL 中等待消费；同步 `/v1/knowledge/query` 不依赖 Agent Worker。 |
+| `ingestion-worker` | 上传仍可能返回 `202`，但摄取任务积压，文档长期停在 `pending`。 |
+| `projection-worker` | 周期投影审计和修复停止；只有活动投影实际不收敛时，`projection_convergence` 才会使 readiness 失败。 |
 
 若本机没有 Docker，可由管理员单独启动 PostgreSQL/Qdrant；不要在 API 进程中执行迁移或下载模型。健康检查：`GET /health/live` 与 `GET /health/ready`。
 
@@ -101,11 +123,13 @@ conda run -n rag-kb --no-capture-output python -m rag_kb.worker --watch --includ
 - `POST /v1/documents`：multipart 上传新文档，必须带 `Idempotency-Key`，返回 `202`。
 - `POST /v1/documents/{document_id}/versions`：上传同一文档的新版本；路径和 metadata 的 `document_id` 必须一致，并使用新的 `Idempotency-Key`。
 - `GET /v1/documents/{document_id}`、`GET /v1/ingestion-jobs/{job_id}`：租户与 ACL 约束的查询。
-- `POST /v1/tasks` 接受 `research` 与 `controlled_action`；后者还要求 feature gate 开启和兼容 Worker lease。`GET /v1/tasks/{task_id}/result` 返回服务端重验的结果；`/continue` 只恢复服务端确认的澄清 interrupt。
-- `GET /v1/approvals`、`GET /v1/approvals/{approval_id}`、`POST /v1/approvals/{approval_id}/decision`：仅 `task:approve` 审批者可发现和决定待审批动作；服务端构造 resume，重复同一决定幂等，相反决定返回 `409`。
+- `POST /v1/tasks` 接受 `research` 与 `controlled_action`；后者还要求 feature gate 开启和兼容 Worker lease。`GET /v1/tasks/{task_id}/result` 返回服务端重验的结果；`POST /v1/tasks/{task_id}/continue` 只接受服务端确认的澄清恢复请求，成功返回 `202 Accepted`。
+- `GET /v1/approvals`、`GET /v1/approvals/{approval_id}`、`POST /v1/approvals/{approval_id}/decision`：仅 `task:approve` 审批者可发现和决定待审批动作；决定成功返回 `202 Accepted`，同一决定重试保持幂等，相反决定返回稳定 `409` 冲突。
 - `GET /v1/tasks/{task_id}/artifacts/{artifact_id}/content`：仅任务 owner 且拥有 `task:read` 时读取正文；未就绪为 `409`、过期或已清理为 `410`、完整性失败为 `500`，响应不暴露对象键或文件元数据。
 
 身份来自 `Authorization: Bearer ...` 或本地演示 `X-Demo-Role-Token`，角色不能由请求正文提升。本地演示主体的初始化请运行 `python scripts/init_demo_principals.py`，它按令牌真实解析的 permissions attributes 写入，不要手工插入空 attributes 的记录。应用只提供版本化 `/v1` 业务接口。
+
+上述两个恢复接口的 `202` 只表示 API 已完成认证、授权、版本校验并把恢复命令耐久提交到 PostgreSQL，不表示 Agent、工具或任务已经同步恢复完成；API 返回时任务仍可能是 `waiting_for_user` 或 `waiting_for_approval`。API 不构造 LangGraph `Command`、不运行 Agent、也不执行工具；只有 `task-worker` 能领取命令、重新校验服务端绑定并构造服务端恢复载荷。Worker 暂时离线不会撤销已提交命令，命令会留在 PostgreSQL 等待消费；响应不暴露恢复命令敏感载荷或内部执行绑定。
 
 ## 验证
 

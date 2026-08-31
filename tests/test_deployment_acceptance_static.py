@@ -401,12 +401,23 @@ def test_example_agent_budget_configuration_matches_runtime_defaults() -> None:
 def test_readme_and_usage_use_same_v1_startup_and_acceptance_targets() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     guide = (ROOT / "使用指南.md").read_text(encoding="utf-8")
+    queue_commands = (
+        "python -m rag_kb.worker --queue task --watch",
+        "python -m rag_kb.worker --queue ingestion --watch",
+        "python -m rag_kb.worker --queue projection --watch",
+    )
     for text in (readme, guide):
         assert "alembic upgrade head" in text
-        assert "rag_kb.worker" in text and "--include-tasks" in text
+        assert all(command in text for command in queue_commands)
+        assert "--include-tasks" not in text
         assert "docs/acceptance/latest.json" in text
         assert "/v1/knowledge/query" in text
     assert "检索质量门" in readme and "unverified" in readme
+
+    script = (ROOT / "scripts/start_worker.ps1").read_text(encoding="utf-8")
+    assert '[ValidateSet("task", "ingestion", "projection")]' in script
+    assert "[Parameter(Mandatory = $true)]" in script
+    assert "python -m rag_kb.worker --queue $Queue --watch" in script
 
 
 def test_acceptance_schema_has_explicit_unverified_and_hash_contracts() -> None:
