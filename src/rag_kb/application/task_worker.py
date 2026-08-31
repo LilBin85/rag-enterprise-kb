@@ -36,6 +36,11 @@ from rag_kb.application.tool_execution_service import (
 )
 from rag_kb.domain.evidence import canonical_evidence_snapshot
 from rag_kb.domain.identity import AuthContext
+from rag_kb.domain.resume_commands import (
+    ApprovalResumeDecision,
+    ResumeCommand,
+    ResumeCommandKind,
+)
 from rag_kb.domain.tasks import TaskBudgets, TaskMode, TaskStatus
 from rag_kb.infrastructure.database.evidence_repository import (
     EvidenceLedgerConflict,
@@ -44,6 +49,7 @@ from rag_kb.infrastructure.database.evidence_repository import (
 from rag_kb.infrastructure.database.models import AgentTaskRow, ArtifactRow, ToolCallRow
 from rag_kb.infrastructure.database.task_repository import (
     DatabaseTaskRepository,
+    ResumeCommandLease,
     TaskLease,
     TaskRepositoryError,
 )
@@ -63,7 +69,12 @@ from rag_kb.observability import (
 logger = logging.getLogger(__name__)
 
 _STALE_REPOSITORY_CODES = frozenset(
-    {"task_lease_generation_stale", "task_lease_expired"}
+    {
+        "task_lease_generation_stale",
+        "task_lease_expired",
+        "task_resume_lease_stale",
+        "task_resume_lease_expired",
+    }
 )
 _STALE_CHECKPOINT_CODE = "task_checkpoint_lease_stale"
 _HITL_ALLOWED_DECISIONS = frozenset({"approve", "reject"})
@@ -92,7 +103,7 @@ class _TaskLeaseHeartbeat:
 
     def __init__(
         self,
-        renew: Callable[[], TaskLease],
+        renew: Callable[[], object],
         lease_seconds: int,
         *,
         on_failure: Callable[[Exception], None] | None = None,
@@ -212,6 +223,8 @@ class TaskWorker:
         self._objects = objects
         self._close = close
         self._accepting_tasks = True
+        # 同一 eligible_at 时轮换，不让持续到达的任一类工作饿死另一类。
+        self._resume_tie_preferred = True
 
     def close(self) -> None:
         if not self._accepting_tasks:
@@ -227,12 +240,7 @@ class TaskWorker:
             if close is not None:
                 close()
 
-    def run_once(self) -> TaskWorkerResult:
-        telemetry = current_observability()
-        if not self._accepting_tasks:
-            if telemetry is not None:
-                telemetry.record_task_claim(mode="none", result="idle")
-            return TaskWorkerResult(status="idle")
+    def _claim_kwargs(self) -> dict[str, object]:
         claim: dict[str, object] = {
             "worker_id": self._worker_id,
             "lease_seconds": self._lease_seconds,
@@ -242,8 +250,67 @@ class TaskWorker:
                 capability_name=self._capability_name,
                 protocol_version=self._protocol_version,
             )
+        return claim
+
+    def _claim_next_work(
+        self,
+    ) -> tuple[TaskLease, ResumeCommandLease | None] | None:
+        claim = self._claim_kwargs()
+        resume_candidates = self._repository.resume_command_candidates(limit=1)
+        resume_candidate = resume_candidates[0] if resume_candidates else None
+        task_eligible_at = self._repository.next_claimable_task_eligible_at(
+            capability_name=self._capability_name,
+            protocol_version=self._protocol_version,
+        )
+        if resume_candidate is None and task_eligible_at is None:
+            return None
+
+        choose_resume: bool
+        tie = (
+            resume_candidate is not None
+            and task_eligible_at is not None
+            and resume_candidate.eligible_at == task_eligible_at
+        )
+        if resume_candidate is None:
+            choose_resume = False
+        elif task_eligible_at is None:
+            choose_resume = True
+        elif resume_candidate.eligible_at < task_eligible_at:
+            choose_resume = True
+        elif resume_candidate.eligible_at > task_eligible_at:
+            choose_resume = False
+        else:
+            choose_resume = self._resume_tie_preferred
+
+        for resume_first in (choose_resume, not choose_resume):
+            if resume_first:
+                if resume_candidate is None:
+                    continue
+                resume_lease = self._repository.claim_resume_command(
+                    command_id=resume_candidate.command_id,
+                    **claim,
+                )
+                if resume_lease is None:
+                    continue
+                if tie:
+                    self._resume_tie_preferred = False
+                return resume_lease.task_lease, resume_lease
+            task_lease = self._repository.claim_next(**claim)
+            if task_lease is None:
+                continue
+            if tie:
+                self._resume_tie_preferred = True
+            return task_lease, None
+        return None
+
+    def run_once(self) -> TaskWorkerResult:
+        telemetry = current_observability()
+        if not self._accepting_tasks:
+            if telemetry is not None:
+                telemetry.record_task_claim(mode="none", result="idle")
+            return TaskWorkerResult(status="idle")
         try:
-            lease = self._repository.claim_next(**claim)
+            claimed = self._claim_next_work()
         except Exception as exc:
             if telemetry is not None:
                 result = (
@@ -253,15 +320,20 @@ class TaskWorker:
                 )
                 telemetry.record_task_claim(mode="none", result=result)
             raise
-        if lease is None:
+        if claimed is None:
             if telemetry is not None:
                 telemetry.record_task_claim(mode="none", result="idle")
             return TaskWorkerResult(status="idle")
+        lease, resume_lease = claimed
         if telemetry is not None:
             telemetry.record_task_claim(
                 mode=lease.state.task_mode.value, result="claimed"
             )
-        return self._run_claimed(lease)
+        # 保持初始任务调用形状，兼容只替换 ``_run_claimed(lease)`` 的
+        # 轻量测试/监测挂钩；恢复命令才显式携带双 lease。
+        if resume_lease is None:
+            return self._run_claimed(lease)
+        return self._run_claimed(lease, resume_lease=resume_lease)
 
     def resume_for_user(
         self,
@@ -276,20 +348,22 @@ class TaskWorker:
             raise ValueError("task_resume_answer_invalid")
         if not self._accepting_tasks:
             raise TaskWorkerError("task_worker_closed")
-        claim: dict[str, object] = {
-            "auth": auth,
-            "task_id": task_id,
-            "expected_state_version": expected_state_version,
-            "worker_id": self._worker_id,
-            "lease_seconds": self._lease_seconds,
-        }
-        if self._capability_name is not None and self._protocol_version is not None:
-            claim.update(
-                capability_name=self._capability_name,
-                protocol_version=self._protocol_version,
-            )
-        lease = self._repository.claim_user_resume(**claim)
-        return self._run_claimed(lease, resume_answer=answer.strip())
+        command = self._repository.enqueue_user_resume_command(
+            auth=auth,
+            task_id=task_id,
+            expected_state_version=expected_state_version,
+            answer=answer.strip(),
+        )
+        resume_lease = self._repository.claim_resume_command(
+            command_id=command.command_id,
+            **self._claim_kwargs(),
+        )
+        if resume_lease is None:
+            raise TaskRepositoryError("task_resume_conflict")
+        return self._run_claimed(
+            resume_lease.task_lease,
+            resume_lease=resume_lease,
+        )
 
     def resume_for_approval(
         self,
@@ -353,39 +427,23 @@ class TaskWorker:
             raise TaskWorkerError("task_worker_closed")
         if self._approvals is None:
             raise TaskWorkerError("task_mode_not_supported")
-        if decision == "approve":
-            self._approvals.approve(
-                auth=auth,
-                approval_id=approval_id,
-                expected_task_id=task_id,
-                expected_task_state_version=expected_state_version,
-            )
-        else:
-            self._approvals.reject(
-                auth=auth,
-                approval_id=approval_id,
-                reason=reason,
-                expected_task_id=task_id,
-                expected_task_state_version=expected_state_version,
-            )
-        claim: dict[str, object] = {
-            "auth": auth,
-            "task_id": task_id,
-            "expected_state_version": expected_state_version,
-            "approval_id": approval_id,
-            "worker_id": self._worker_id,
-            "lease_seconds": self._lease_seconds,
-        }
-        if self._capability_name is not None and self._protocol_version is not None:
-            claim.update(
-                capability_name=self._capability_name,
-                protocol_version=self._protocol_version,
-            )
-        lease = self._repository.claim_approval_resume(**claim)
+        command = self._approvals.decide_and_enqueue(
+            auth=auth,
+            approval_id=approval_id,
+            expected_task_state_version=expected_state_version,
+            decision=decision,
+            reason=reason,
+            repository=self._repository,
+        )
+        resume_lease = self._repository.claim_resume_command(
+            command_id=command.command_id,
+            **self._claim_kwargs(),
+        )
+        if resume_lease is None:
+            raise TaskRepositoryError("task_resume_conflict")
         return self._run_claimed(
-            lease,
-            resume_decision=decision,
-            resume_approval_id=approval_id,
+            resume_lease.task_lease,
+            resume_lease=resume_lease,
         )
 
     def expire_stale_tool_calls(self, *, limit: int = 100) -> int:
@@ -398,9 +456,7 @@ class TaskWorker:
         self,
         lease: TaskLease,
         *,
-        resume_answer: str | None = None,
-        resume_decision: str | None = None,
-        resume_approval_id: str | None = None,
+        resume_lease: ResumeCommandLease | None = None,
     ) -> TaskWorkerResult:
         run_id = uuid4().hex
         started_at = datetime.now(UTC)
@@ -438,13 +494,20 @@ class TaskWorker:
                     result = self._advance(
                         lease,
                         run_id=run_id,
-                        resume_answer=resume_answer,
-                        resume_decision=resume_decision,
-                        resume_approval_id=resume_approval_id,
+                        resume_lease=resume_lease,
                     )
                 except TaskRepositoryError as exc:
                     if exc.code not in _STALE_REPOSITORY_CODES:
-                        stale_code = self._fail_safely(lease, exc.code, run_id)
+                        stale_code = (
+                            self._fail_resume_safely(
+                                lease,
+                                resume_lease,
+                                exc.code,
+                                run_id,
+                            )
+                            if resume_lease is not None
+                            else self._fail_safely(lease, exc.code, run_id)
+                        )
                         result = TaskWorkerResult(
                             status="stale" if stale_code is not None else "failed",
                             task_id=lease.state.task_id,
@@ -465,7 +528,16 @@ class TaskWorker:
                             status="stale", task_id=lease.state.task_id, error_code=code
                         )
                     else:
-                        stale_code = self._fail_safely(lease, code, run_id)
+                        stale_code = (
+                            self._fail_resume_safely(
+                                lease,
+                                resume_lease,
+                                code,
+                                run_id,
+                            )
+                            if resume_lease is not None
+                            else self._fail_safely(lease, code, run_id)
+                        )
                         result = TaskWorkerResult(
                             status="stale" if stale_code is not None else "failed",
                             task_id=lease.state.task_id,
@@ -515,9 +587,7 @@ class TaskWorker:
         lease: TaskLease,
         *,
         run_id: str | None = None,
-        resume_answer: str | None = None,
-        resume_decision: str | None = None,
-        resume_approval_id: str | None = None,
+        resume_lease: ResumeCommandLease | None = None,
     ) -> TaskWorkerResult:
         error_code: str | None = None
         with observe_span(
@@ -533,9 +603,7 @@ class TaskWorker:
                 result = self._advance_inner(
                     lease,
                     run_id=run_id,
-                    resume_answer=resume_answer,
-                    resume_decision=resume_decision,
-                    resume_approval_id=resume_approval_id,
+                    resume_lease=resume_lease,
                 )
                 finish_observed_span(
                     span,
@@ -558,13 +626,24 @@ class TaskWorker:
         lease: TaskLease,
         *,
         run_id: str | None = None,
-        resume_answer: str | None = None,
-        resume_decision: str | None = None,
-        resume_approval_id: str | None = None,
+        resume_lease: ResumeCommandLease | None = None,
     ) -> TaskWorkerResult:
-        lease = self._repository.refresh_lease(
-            lease, lease_seconds=self._lease_seconds
-        )
+        resume_command: ResumeCommand | None = None
+        if resume_lease is not None:
+            resume_command = self._repository.validate_resume_command_execution(
+                resume_lease,
+                capability_name=self._capability_name,
+                protocol_version=self._protocol_version,
+            )
+            resume_lease = self._repository.refresh_resume_command_lease(
+                resume_lease,
+                lease_seconds=self._lease_seconds,
+            )
+            lease = resume_lease.task_lease
+        else:
+            lease = self._repository.refresh_lease(
+                lease, lease_seconds=self._lease_seconds
+            )
         state = lease.state
         if state.task_mode is TaskMode.RESEARCH:
             agent = self._agent_for(lease.budgets)
@@ -611,6 +690,13 @@ class TaskWorker:
                 checkpoint_required_capability_name=state.required_capability_name,
                 checkpoint_required_protocol_version=state.required_protocol_version,
             )
+        if resume_lease is not None:
+            configurable.update(
+                checkpoint_resume_command_id=resume_lease.command.command_id,
+                checkpoint_resume_command_lease_generation=(
+                    resume_lease.command_lease_generation
+                ),
+            )
         config = {
             "configurable": configurable,
             # 每个 middleware 节点各消耗一个 superstep，预算之外必须留出
@@ -624,19 +710,33 @@ class TaskWorker:
         snapshot = agent.get_state(config)
         invoke_agent = True
         approval_facts: tuple[object, tuple[str, ...]] | None = None
-        if resume_answer is not None:
-            self._require_user_interrupt(snapshot)
-            invoke_input: object = Command(resume={"answer": resume_answer})
-        elif resume_decision is not None:
-            # 服务端复核保存的 interrupt 与审批 checkpoint 绑定逐项一致；
-            # 任一不符 fail-closed，不进入 resume（恢复侧形状纪律同批次 1）。
-            approval_facts = self._require_approval_interrupt(
-                lease, snapshot, auth=auth, approval_id=resume_approval_id
-            )
-            context = self._approval_run_context(
-                lease, auth, run_id, approval_facts
-            )
-            invoke_input = Command(resume=_approval_resume_payload(resume_decision))
+        if resume_command is not None:
+            if resume_command.kind is ResumeCommandKind.USER_CLARIFICATION:
+                self._require_user_interrupt(snapshot)
+                if not resume_command.payload_body:
+                    raise TaskWorkerError("task_resume_payload_missing")
+                invoke_input = Command(resume={"answer": resume_command.payload_body})
+            elif resume_command.kind is ResumeCommandKind.TOOL_APPROVAL:
+                if resume_command.approval_id is None or resume_command.decision is None:
+                    raise TaskWorkerError("task_resume_binding_invalid")
+                approval_facts = self._require_approval_interrupt(
+                    lease,
+                    snapshot,
+                    auth=auth,
+                    approval_id=resume_command.approval_id,
+                )
+                context = self._approval_run_context(
+                    lease, auth, run_id, approval_facts
+                )
+                invoke_input = Command(
+                    resume=_approval_resume_payload(
+                        "approve"
+                        if resume_command.decision is ApprovalResumeDecision.APPROVED
+                        else "reject"
+                    )
+                )
+            else:  # StrEnum 的运行时防御，不能猜测未来命令类型。
+                raise TaskWorkerError("task_resume_kind_invalid")
         elif snapshot.interrupts:
             return self._route_interrupt(lease, snapshot, run_id, auth)
         elif not snapshot.values:
@@ -651,8 +751,7 @@ class TaskWorker:
 
         if invoke_agent:
             if (
-                resume_decision is None
-                and resume_answer is None
+                resume_command is None
                 and lease.state.task_mode is TaskMode.CONTROLLED_ACTION
                 and self._approvals is not None
                 and snapshot.next
@@ -686,17 +785,36 @@ class TaskWorker:
                             parent_context=invoke_context,
                         )
 
-                with _TaskLeaseHeartbeat(
-                    lambda: self._repository.refresh_lease(
+                if resume_lease is None:
+                    renew = lambda: self._repository.refresh_lease(
                         lease, lease_seconds=self._lease_seconds
-                    ),
+                    )
+                else:
+                    # 首个 resume checkpoint 之前，task 与 command 的 lease
+                    # 必须同事务、同 expiry 续约；禁止单边 heartbeat。
+                    renew = lambda: self._repository.refresh_resume_command_lease(
+                        resume_lease, lease_seconds=self._lease_seconds
+                    )
+                with _TaskLeaseHeartbeat(
+                    renew,
                     self._lease_seconds,
                     on_failure=record_lease_failure,
                 ):
                     result = agent.invoke(invoke_input, config, context=context)
-            lease = self._repository.refresh_lease(
-                lease, lease_seconds=self._lease_seconds
-            )
+            if resume_lease is not None:
+                # FencedPostgresSaver 已在首次 checkpoint 的同一事务写 marker
+                # 并解除 task 门闩；这里只能据 marker 结算，不能独立标记。
+                self._repository.consume_resume_command(resume_lease)
+                configurable.pop("checkpoint_resume_command_id", None)
+                configurable.pop("checkpoint_resume_command_lease_generation", None)
+                lease = self._repository.refresh_lease(
+                    resume_lease.task_lease,
+                    lease_seconds=self._lease_seconds,
+                )
+            else:
+                lease = self._repository.refresh_lease(
+                    lease, lease_seconds=self._lease_seconds
+                )
             # deadline 终检：invoke 期间过期的任务不得再进入 settle/终态提交。
             fresh_deadline = lease.state.deadline
             if (
@@ -881,8 +999,16 @@ class TaskWorker:
         question = payload.get("question")
         if not isinstance(question, str) or not question.strip():
             raise TaskWorkerError("task_interrupt_payload_invalid")
+        checkpoint_ns, checkpoint_id, interrupt_id = self._interrupt_checkpoint_binding(
+            lease, snapshot, snapshot.interrupts[0]
+        )
         paused = self._repository.pause_for_user(
-            lease, question=question, run_id=run_id
+            lease,
+            question=question,
+            checkpoint_ns=checkpoint_ns,
+            checkpoint_id=checkpoint_id,
+            interrupt_id=interrupt_id,
+            run_id=run_id,
         )
         return TaskWorkerResult(status="waiting_for_user", task_id=paused.task_id)
 
@@ -948,21 +1074,13 @@ class TaskWorker:
         interrupt_id = getattr(interrupt, "id", None)
         if not isinstance(interrupt_id, str) or not interrupt_id.strip():
             raise TaskWorkerError("task_interrupt_id_invalid")
-        configurable = dict(
-            (getattr(snapshot, "config", None) or {}).get("configurable") or {}
+        checkpoint_ns, checkpoint_id, snapshot_interrupt_id = (
+            self._interrupt_checkpoint_binding(lease, snapshot, interrupt)
         )
-        thread_id = configurable.get("thread_id")
-        checkpoint_ns = configurable.get("checkpoint_ns")
-        checkpoint_id = configurable.get("checkpoint_id")
-        if (
-            thread_id != lease.state.task_id
-            or not isinstance(checkpoint_ns, str)
-            or not isinstance(checkpoint_id, str)
-            or not checkpoint_id.strip()
-        ):
+        if snapshot_interrupt_id != interrupt_id:
             raise TaskWorkerError("task_checkpoint_binding_invalid")
         binding = ApprovalCheckpointBinding(
-            thread_id=thread_id,
+            thread_id=lease.state.task_id,
             checkpoint_ns=checkpoint_ns,
             checkpoint_id=checkpoint_id,
             interrupt_id=interrupt_id,
@@ -996,9 +1114,36 @@ class TaskWorker:
             lease,
             interrupt_ref=approval.approval_id,
             summary=self._render_approval_summary(tool_name, arguments),
+            checkpoint_ns=checkpoint_ns,
+            checkpoint_id=checkpoint_id,
+            interrupt_id=interrupt_id,
             run_id=run_id,
         )
         return TaskWorkerResult(status="waiting_for_approval", task_id=paused.task_id)
+
+    @staticmethod
+    def _interrupt_checkpoint_binding(
+        lease: TaskLease,
+        snapshot: object,
+        interrupt: object,
+    ) -> tuple[str, str, str]:
+        """从已验证 snapshot 复制低敏恢复坐标；根 namespace 可为 ``""``。"""
+        configurable = dict(
+            (getattr(snapshot, "config", None) or {}).get("configurable") or {}
+        )
+        checkpoint_ns = configurable.get("checkpoint_ns")
+        checkpoint_id = configurable.get("checkpoint_id")
+        interrupt_id = getattr(interrupt, "id", None)
+        if (
+            configurable.get("thread_id") != lease.state.task_id
+            or not isinstance(checkpoint_ns, str)
+            or not isinstance(checkpoint_id, str)
+            or not checkpoint_id.strip()
+            or not isinstance(interrupt_id, str)
+            or not interrupt_id.strip()
+        ):
+            raise TaskWorkerError("task_checkpoint_binding_invalid")
+        return checkpoint_ns, checkpoint_id.strip(), interrupt_id.strip()
 
     @staticmethod
     def _resolve_action_tool_call_id(
@@ -1249,4 +1394,36 @@ class TaskWorker:
             logger.error("Research Agent 终态同步失败 task_id=%s", lease.state.task_id)
         except Exception:
             logger.error("Research Agent 终态同步失败 task_id=%s", lease.state.task_id)
+        return None
+
+    def _fail_resume_safely(
+        self,
+        lease: TaskLease,
+        resume_lease: ResumeCommandLease,
+        code: str,
+        run_id: str,
+    ) -> str | None:
+        """仅以当前双 fence 结算恢复命令，marker 已存在时绝不再次注入。"""
+        try:
+            settled = self._repository.settle_applied_resume_command(
+                command_id=resume_lease.command.command_id
+            )
+            if settled is not None:
+                return self._fail_safely(lease, code, run_id)
+            if code in {"task_resume_expired", "task_deadline_expired", "approval_expired"}:
+                self._repository.expire_claimed_resume_command(
+                    resume_lease,
+                    failure_code="task_resume_expired",
+                )
+            else:
+                self._repository.fail_resume_command(
+                    resume_lease,
+                    failure_code=code,
+                )
+        except TaskRepositoryError as exc:
+            if exc.code in _STALE_REPOSITORY_CODES:
+                return exc.code
+            logger.error("恢复命令终态同步失败 task_id=%s", lease.state.task_id)
+        except Exception:
+            logger.error("恢复命令终态同步失败 task_id=%s", lease.state.task_id)
         return None

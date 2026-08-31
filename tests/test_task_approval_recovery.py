@@ -41,12 +41,15 @@ from rag_kb.infrastructure.database.models import (
     EvidenceRecordRow,
     IngestionJobRow,
     PlanRevisionRow,
+    TaskResumeCommandRow,
     ToolCallRow,
 )
 from rag_kb.infrastructure.database.task_repository import (
     DatabaseTaskRepository,
+    ResumeCommandLease,
     TaskLease,
     TaskRepositoryError,
+    _command_from_row,
 )
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
@@ -89,6 +92,21 @@ class ScriptedAgent:
         self.inputs.append(_input)
         self.contexts.append(context)
         return {}
+
+
+class _CheckpointMarkingAgent:
+    """测试替身：模拟真实 fenced saver 在 ToolNode 前的首个 resume checkpoint。"""
+
+    def __init__(self, stage: SimpleNamespace, agent: ScriptedAgent) -> None:
+        self._stage = stage
+        self._agent = agent
+
+    def get_state(self, config: dict[str, object]) -> object:
+        return self._agent.get_state(config)
+
+    def invoke(self, input_value: object, config: dict[str, object], *, context: object) -> dict[str, object]:
+        _mark_resume_checkpoint(self._stage, config)
+        return self._agent.invoke(input_value, config, context=context)
 
 
 class ExecutorAgent(ScriptedAgent):
@@ -409,12 +427,42 @@ class CrashingWorker(TaskWorker):
         return self._advance(lease, **kwargs)
 
 
+def _mark_resume_checkpoint(stage: SimpleNamespace, config: dict[str, object]) -> None:
+    configurable = config.get("configurable")
+    if not isinstance(configurable, dict):
+        return
+    command_id = configurable.get("checkpoint_resume_command_id")
+    command_generation = configurable.get("checkpoint_resume_command_lease_generation")
+    if command_id is None and command_generation is None:
+        return
+    assert isinstance(command_id, str)
+    assert isinstance(command_generation, int)
+    worker_id = configurable.get("checkpoint_worker_id")
+    assert isinstance(worker_id, str)
+    with stage.database.sessions.begin() as session:
+        command = session.get(TaskResumeCommandRow, command_id)
+        assert command is not None
+        task = session.get(AgentTaskRow, command.task_id)
+        assert task is not None
+        stage.repository.mark_resume_command_applied_in_session(
+            session,
+            lease=ResumeCommandLease(
+                command=_command_from_row(command),
+                task_lease=stage.repository._resume_task_lease(task, worker_id=worker_id),
+                worker_id=worker_id,
+                command_lease_generation=command_generation,
+            ),
+            checkpoint_id="resume-checkpoint-1",
+        )
+
+
 def _worker(stage: SimpleNamespace, agent: ScriptedAgent) -> TaskWorker:
+    fenced_agent = _CheckpointMarkingAgent(stage, agent)
     return TaskWorker(
         repository=stage.repository,
         auth_contexts=AuthContexts(stage.requester),
-        agent_for=lambda _budgets: agent,
-        controlled_agent_for=lambda _budgets: agent,
+        agent_for=lambda _budgets: fenced_agent,
+        controlled_agent_for=lambda _budgets: fenced_agent,
         results=AgentResultStore(LocalObjectStore(stage.tmp_path / "objects")),
         evidence=EvidenceLedgerRepository(),
         tools=stage.tools,
@@ -543,6 +591,10 @@ def test_resynced_checkpoint_reuses_single_active_approval(stage) -> None:
         task.interrupt_kind = None
         task.interrupt_summary = None
         task.interrupt_ref = None
+        task.interrupt_checkpoint_ns = None
+        task.interrupt_checkpoint_id = None
+        task.interrupt_id = None
+        task.interrupt_approval_id = None
         task.lease_owner = "worker-1"
         task.lease_expires_at = datetime.now(UTC) + timedelta(seconds=60)
         task.lease_generation = 2
@@ -1113,19 +1165,19 @@ def test_initial_and_approval_resumed_runs_link_their_producers_as_new_roots(sta
     assert second.status == "finished"
     assert len(run_spans) == 2
     assert all(span.parent is None or not span.parent.is_valid for span in run_spans)
-    assert len(run_spans[0].links) == len(run_spans[1].links) == 1
+    assert len(run_spans[0].links) == 1
+    # A4 只耐久化审批决定与恢复命令，不再把 HTTP trace 写回 task 行；
+    # 后台消费是独立的新 root，不能伪造为 API 的同步子调用。
+    assert len(run_spans[1].links) == 0
     assert run_spans[0].links[0].context.trace_id == create_context.trace_id
     assert run_spans[0].links[0].context.span_id == create_context.span_id
     assert resume_span.context.trace_id == approval_context.trace_id
     assert resume_span.parent is not None
     assert resume_span.parent.span_id == approval_context.span_id
-    assert run_spans[1].links[0].context.trace_id == approval_context.trace_id
-    assert run_spans[1].links[0].context.span_id == resume_span.context.span_id
 
 
-def test_resume_crash_before_toolnode_recovers_without_new_action_key(stage) -> None:
-    """D6 窗口 1/3：resume 后 ToolNode 前崩溃 → claim_next 重领取幂等重建，
-    重复 decision 复用同一 approval 与 action key，最终恰好执行 1 次。"""
+def test_resume_crash_before_checkpoint_reclaims_the_same_command_once(stage) -> None:
+    """首个 checkpoint 前崩溃只能双 lease 重领同一命令，不能降级为普通 task。"""
     approval_id, state_version = _paused_stage(stage)
     stage.approvals.approve(auth=stage.approver, approval_id=approval_id)
 
@@ -1152,48 +1204,99 @@ def test_resume_crash_before_toolnode_recovers_without_new_action_key(stage) -> 
             decision="approve",
         )
 
-    # Worker 崩溃：租约随后被释放（等效于失租收敛），任务保留 RUNNING，
-    # 由同协议 Worker 经 claim_next 重领取。
+    # 不得单边释放 task lease：active command 仍保护正文。两边同时过期后
+    # 只能由 resume command 路径重领，task state_version 不会再次递增。
     with UnitOfWork(stage.database) as work:
         assert work.session is not None
         task = work.session.scalar(
             select(AgentTaskRow).where(AgentTaskRow.task_id == "task-1")
         )
+        command = work.session.scalar(
+            select(TaskResumeCommandRow).where(
+                TaskResumeCommandRow.tenant_id == "tenant-a",
+                TaskResumeCommandRow.task_id == "task-1",
+            )
+        )
         assert task is not None
-        task.lease_owner = None
-        task.lease_expires_at = None
-    recovered_lease = stage.repository.claim_next(
-        worker_id="worker-1",
-        lease_seconds=60,
-        capability_name="task-agent",
-        protocol_version="m2-fenced-v1",
-    )
-    assert recovered_lease is not None
+        assert command is not None
+        expired = datetime.now(UTC) - timedelta(seconds=1)
+        task.lease_expires_at = expired
+        command.lease_expires_at = expired
 
-    resync = _worker(stage, ScriptedAgent((_hitl_snapshot(),)))._run_claimed(
-        recovered_lease
-    )
-    assert resync.status == "waiting_for_approval"
-    approvals = _approval_rows(stage)
-    assert len(approvals) == 1
-    assert approvals[0].approval_id == approval_id
-    assert len(_plan_rows(stage)) == 1
-
-    with stage.database.sessions() as session:
-        resync_version = session.get(AgentTaskRow, "task-1").state_version
-    resume_agent = ExecutorAgent(
+    recovered_agent = ExecutorAgent(
         stage, (_hitl_snapshot(), _final_snapshot(_succeeded_candidate()))
     )
-    outcome = _worker(stage, resume_agent).resume_for_approval(
-        auth=stage.approver,
-        task_id="task-1",
-        expected_state_version=resync_version,
-        approval_id=approval_id,
-        decision="approve",
-    )
+    outcome = _worker(stage, recovered_agent).run_once()
     assert outcome.status == "finished"
     assert stage.report_adapter.calls == 1
     assert stage.draft_adapter.calls == 0
+    with stage.database.sessions() as session:
+        task = session.get(AgentTaskRow, "task-1")
+        command = session.scalar(
+            select(TaskResumeCommandRow).where(
+                TaskResumeCommandRow.tenant_id == "tenant-a",
+                TaskResumeCommandRow.task_id == "task-1",
+            )
+        )
+        assert task is not None and task.active_resume_command_id is None
+        assert command is not None and command.status == "consumed"
+        assert command.payload_body is None
+
+
+def test_resume_crash_after_checkpoint_settles_without_reinjecting(stage) -> None:
+    """checkpoint 已提交、consume 前崩溃时仅清正文结算，绝不再调用 Agent。"""
+    approval_id, state_version = _paused_stage(stage)
+    stage.approvals.approve(auth=stage.approver, approval_id=approval_id)
+
+    crashing = CrashingInvokeAgent((_hitl_snapshot(),))
+    fenced_crashing = _CheckpointMarkingAgent(stage, crashing)
+    with pytest.raises(RuntimeError):
+        CrashingWorker(
+            repository=stage.repository,
+            auth_contexts=AuthContexts(stage.requester),
+            agent_for=lambda _budgets: fenced_crashing,
+            controlled_agent_for=lambda _budgets: fenced_crashing,
+            results=AgentResultStore(LocalObjectStore(stage.tmp_path / "objects")),
+            evidence=EvidenceLedgerRepository(),
+            tools=stage.tools,
+            database=stage.database,
+            worker_id="worker-1",
+            capability_name="task-agent",
+            protocol_version="m2-fenced-v1",
+            approvals=stage.approvals,
+        ).resume_for_approval(
+            auth=stage.approver,
+            task_id="task-1",
+            expected_state_version=state_version,
+            approval_id=approval_id,
+            decision="approve",
+        )
+
+    with stage.database.sessions() as session:
+        task = session.get(AgentTaskRow, "task-1")
+        command = session.scalar(
+            select(TaskResumeCommandRow).where(
+                TaskResumeCommandRow.tenant_id == "tenant-a",
+                TaskResumeCommandRow.task_id == "task-1",
+            )
+        )
+        assert task is not None and task.active_resume_command_id is None
+        assert command is not None and command.status == "claimed"
+        assert command.applied_checkpoint_id == "resume-checkpoint-1"
+
+    idle_agent = ScriptedAgent(())
+    outcome = _worker(stage, idle_agent).run_once()
+    assert outcome.status == "idle"
+    assert idle_agent.inputs == []
+    with stage.database.sessions() as session:
+        command = session.scalar(
+            select(TaskResumeCommandRow).where(
+                TaskResumeCommandRow.tenant_id == "tenant-a",
+                TaskResumeCommandRow.task_id == "task-1",
+            )
+        )
+        assert command is not None and command.status == "consumed"
+        assert command.payload_body is None
 
 
 def test_approval_resume_context_carries_stable_action_key(stage) -> None:

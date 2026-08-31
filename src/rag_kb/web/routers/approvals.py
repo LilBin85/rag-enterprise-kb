@@ -9,19 +9,23 @@ from rag_kb.application.approval_service import (
     ApprovalService,
     ApprovalServiceError,
 )
-from rag_kb.application.task_worker import TaskWorker, TaskWorkerError
 from rag_kb.domain.identity import AuthContext, Permission
-from rag_kb.infrastructure.database.task_repository import TaskRepositoryError
+from rag_kb.infrastructure.database.task_repository import (
+    DatabaseTaskRepository,
+    TaskRepositoryError,
+)
 from rag_kb.web.dependencies import (
     build_approval_service,
-    build_task_resume_worker,
+    build_task_repository,
     resolve_auth_context,
 )
 from rag_kb.web.schemas.approvals import (
     ApprovalDecisionRequest,
+    ApprovalDecisionResponse,
     ApprovalResponse,
     ApprovalStatus,
 )
+from rag_kb.web.schemas.tasks import ResumeCommandResponse
 
 
 router = APIRouter(prefix="/v1/approvals", tags=["approvals"])
@@ -69,34 +73,6 @@ def _resume_error(exc: TaskRepositoryError) -> HTTPException:
     return HTTPException(status_code=409, detail="审批状态冲突")
 
 
-def _same_decision(*, status: str | None, decision: str) -> bool:
-    return (decision == "approve" and status in {"approved", "executed"}) or (
-        decision == "reject" and status == "rejected"
-    )
-
-
-def _worker_error(exc: TaskWorkerError) -> HTTPException:
-    if exc.code in {"task_worker_closed", "task_mode_not_supported", "task_protocol_mismatch"}:
-        return HTTPException(status_code=503, detail="任务 Agent 暂不可用")
-    return HTTPException(status_code=409, detail="审批状态冲突")
-
-
-def _resume_result_error(result: object) -> HTTPException | None:
-    status = getattr(result, "status", None)
-    code = getattr(result, "error_code", None)
-    if status == "stale":
-        return HTTPException(status_code=409, detail="审批状态冲突")
-    if status != "failed":
-        return None
-    if isinstance(code, str) and (
-        code.startswith("task_interrupt_")
-        or code.startswith("task_approval_")
-        or code == "task_checkpoint_binding_invalid"
-    ):
-        return HTTPException(status_code=409, detail="审批状态冲突")
-    return HTTPException(status_code=500, detail="任务恢复失败")
-
-
 @router.get("", response_model=tuple[ApprovalResponse, ...])
 def list_approvals(
     auth: Annotated[AuthContext, Depends(resolve_auth_context)],
@@ -128,49 +104,36 @@ def get_approval(
         raise _approval_error(exc) from None
 
 
-@router.post("/{approval_id}/decision", response_model=ApprovalResponse)
+@router.post(
+    "/{approval_id}/decision",
+    response_model=ApprovalDecisionResponse,
+    status_code=202,
+)
 def decide_approval(
     approval_id: str,
     request: ApprovalDecisionRequest,
     auth: Annotated[AuthContext, Depends(resolve_auth_context)],
     approvals: Annotated[ApprovalService, Depends(build_approval_service)],
-    worker: Annotated[TaskWorker, Depends(build_task_resume_worker)],
-) -> ApprovalResponse:
+    repository: Annotated[DatabaseTaskRepository, Depends(build_task_repository)],
+) -> ApprovalDecisionResponse:
     _require_approver(auth)
     try:
-        detail = approvals.get_detail(tenant_id=auth.tenant_id, approval_id=approval_id)
-        same_decision = _same_decision(
-            status=detail.binding.status, decision=request.decision
+        command = approvals.decide_and_enqueue(
+            auth=auth,
+            approval_id=approval_id,
+            expected_task_state_version=request.expected_task_state_version,
+            decision=request.decision,
+            reason=request.reason,
+            repository=repository,
         )
-        try:
-            result = worker.resume_for_approval(
-                auth=auth,
-                task_id=detail.binding.task_id,
-                expected_state_version=request.expected_task_state_version,
-                approval_id=detail.binding.approval_id,
-                decision=request.decision,
-                reason=request.reason,
-            )
-        except TaskRepositoryError as exc:
-            if same_decision and exc.code in {
-                "task_state_conflict",
-                "task_not_waiting_for_approval",
-            }:
-                return _response(
-                    approvals.get_detail(
-                        tenant_id=auth.tenant_id, approval_id=approval_id
-                    )
-                )
-            raise
-        result_error = _resume_result_error(result)
-        if result_error is not None:
-            raise result_error
-        return _response(
-            approvals.get_detail(tenant_id=auth.tenant_id, approval_id=approval_id)
+        detail = approvals.get_detail(tenant_id=auth.tenant_id, approval_id=approval_id)
+        return ApprovalDecisionResponse(
+            **_response(detail).model_dump(),
+            resume_command=ResumeCommandResponse(command_id=command.command_id),
         )
     except ApprovalServiceError as exc:
         raise _approval_error(exc) from None
     except TaskRepositoryError as exc:
         raise _resume_error(exc) from None
-    except TaskWorkerError as exc:
-        raise _worker_error(exc) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="审批决定请求非法") from exc

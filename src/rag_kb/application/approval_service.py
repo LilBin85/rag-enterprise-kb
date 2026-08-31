@@ -13,6 +13,11 @@ from rag_kb.domain.approvals import ApprovalBinding
 from rag_kb.domain.evidence import canonical_evidence_snapshot
 from rag_kb.domain.identity import AuthContext, Permission
 from rag_kb.domain.fingerprints import canonical_fingerprint
+from rag_kb.domain.resume_commands import (
+    ApprovalResumeDecision,
+    ResumeCommand,
+    ResumeCommandKind,
+)
 from rag_kb.domain.tools import ToolMode
 from rag_kb.application.tool_registry import RegisteredTool, ToolRegistry, ToolRegistryError
 from rag_kb.infrastructure.database.models import (
@@ -22,6 +27,7 @@ from rag_kb.infrastructure.database.models import (
     PlanRevisionRow,
 )
 from rag_kb.infrastructure.database.session import Database
+from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
 from rag_kb.infrastructure.database.task_execution import (
     DatabaseTaskEvidencePort,
     TaskExecutionContextError,
@@ -689,6 +695,181 @@ class ApprovalService:
             created_at=transition_created_at,
         )
         return binding
+
+    def decide_and_enqueue(
+        self,
+        *,
+        auth: AuthContext,
+        approval_id: str,
+        expected_task_state_version: int,
+        decision: str,
+        reason: str | None,
+        repository: DatabaseTaskRepository,
+    ) -> ResumeCommand:
+        """在一个事务内写入审批决定及其服务端恢复命令。"""
+        if not auth.has_permission(Permission.TASK_APPROVE):
+            raise ApprovalServiceError("approver_permission_denied")
+        try:
+            resume_decision = {
+                "approve": ApprovalResumeDecision.APPROVED,
+                "reject": ApprovalResumeDecision.REJECTED,
+            }[decision]
+        except KeyError as exc:
+            raise ValueError("approval_decision_invalid") from exc
+
+        transitioned = False
+        transition_task_id: str | None = None
+        transition_created_at: datetime | None = None
+        with UnitOfWork(self._database) as work:
+            assert work.session is not None
+            # SQLite 的写锁必须先于无锁候选读取；PostgreSQL 候选本身不构成锁。
+            repository._begin_resume_write(work.session)
+            candidate_task_id = work.session.scalar(
+                select(ApprovalRow.task_id).where(
+                    ApprovalRow.tenant_id == auth.tenant_id,
+                    ApprovalRow.approval_id == approval_id,
+                )
+            )
+            if candidate_task_id is None:
+                raise ApprovalServiceError("approval_not_found")
+
+            # 固定顺序：task -> approval -> command。候选 task_id 未加锁，
+            # 真正的状态判断只使用下面两行锁后的事实。
+            task = repository._lock_resume_task(
+                work.session,
+                tenant_id=auth.tenant_id,
+                task_id=candidate_task_id,
+                skip_locked=False,
+            )
+            approval = repository._lock_resume_approval(
+                work.session,
+                tenant_id=auth.tenant_id,
+                approval_id=approval_id,
+                skip_locked=False,
+            )
+            if approval is None:
+                raise ApprovalServiceError("approval_not_found")
+            if task is None or task.cancelled or approval.task_id != task.task_id:
+                raise ApprovalServiceError("approval_plan_binding_invalid")
+            if auth.user_id == task.user_id:
+                raise ApprovalServiceError("approval_self_rejected")
+
+            now = repository._lease_now(work.session)
+            expires_at = approval.expires_at
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=UTC)
+            if expires_at <= now or approval.status == "expired":
+                raise ApprovalServiceError("approval_expired")
+
+            command = repository.lock_approval_resume_command_in_session(
+                work.session,
+                tenant_id=auth.tenant_id,
+                task_id=task.task_id,
+                approval_id=approval_id,
+            )
+            same_decision = (
+                resume_decision is ApprovalResumeDecision.APPROVED
+                and approval.status in {"approved", "executed"}
+            ) or (
+                resume_decision is ApprovalResumeDecision.REJECTED
+                and approval.status == "rejected"
+            )
+            if command is not None:
+                if not same_decision or command.decision is not resume_decision:
+                    raise ApprovalServiceError("approval_decision_conflict")
+                if command.expected_task_state_version != expected_task_state_version:
+                    raise ApprovalServiceError("approval_resume_state_conflict")
+                return command
+            if not same_decision and approval.status != "pending":
+                if approval.status in {"approved", "executed", "rejected"}:
+                    raise ApprovalServiceError("approval_decision_conflict")
+                raise ApprovalServiceError("approval_not_pending")
+
+            # 没有命令的已决定历史记录只能在完整锁定和复核后补写；不能以
+            # approval 状态或客户端字段猜测 checkpoint/tool binding。
+            self._require_pending_resume_target(
+                task,
+                approval,
+                expected_task_state_version=expected_task_state_version,
+            )
+            self._validate_decision_binding_in_session(
+                work.session,
+                task=task,
+                approval=approval,
+                request_id=auth.request_id,
+            )
+            if approval.status == "pending":
+                if resume_decision is ApprovalResumeDecision.APPROVED:
+                    approval.status = "approved"
+                    approval.approved_by = auth.user_id
+                    approval.approved_at = now
+                else:
+                    approval.status = "rejected"
+                    approval.rejected_by = auth.user_id
+                    approval.rejected_at = now
+                    reason_text = (reason or "rejected_by_approver").strip()[:200]
+                    approval.rejection_reason = reason_text or "rejected_by_approver"
+                transitioned = True
+                transition_task_id = task.task_id
+                transition_created_at = approval.created_at
+
+            command = repository.enqueue_resume_command_in_session(
+                work.session,
+                task=task,
+                actor_principal_id=auth.user_id,
+                actor_kind="user",
+                kind=ResumeCommandKind.TOOL_APPROVAL,
+                expected_task_state_version=expected_task_state_version,
+                payload_body=reason,
+                approval=approval,
+                decision=resume_decision,
+                now=now,
+            )
+
+        if transitioned:
+            assert transition_task_id is not None
+            self._record_transition(
+                decision=resume_decision.value,
+                outcome="succeeded",
+                task_id=transition_task_id,
+                created_at=transition_created_at,
+            )
+        return command
+
+    def _validate_decision_binding_in_session(
+        self,
+        session,
+        *,
+        task: AgentTaskRow,
+        approval: ApprovalRow,
+        request_id: str,
+    ) -> None:
+        """以锁定的 approval 完整 binding 复核当前 task、plan 与主体事实。"""
+        plan = session.scalar(
+            select(PlanRevisionRow)
+            .where(
+                PlanRevisionRow.tenant_id == approval.tenant_id,
+                PlanRevisionRow.task_id == approval.task_id,
+                PlanRevisionRow.revision == approval.plan_revision,
+                PlanRevisionRow.plan_digest == approval.plan_digest,
+                PlanRevisionRow.evidence_digest == approval.evidence_digest,
+            )
+            .with_for_update()
+        )
+        try:
+            if plan is None or task.task_mode != "controlled_action":
+                raise TaskExecutionContextError("approval_current_binding_invalid")
+            current_auth, _ = self._evidence_validator.validate_plan_in_session(
+                session,
+                task=task,
+                plan=plan,
+                request_id=request_id,
+                require_non_empty=True,
+            )
+            if principal_fingerprint(current_auth) != approval.principal_hash:
+                raise TaskExecutionContextError("approval_principal_changed")
+        except TaskExecutionContextError as exc:
+            raise ApprovalServiceError(exc.code) from exc
 
     def reject(
         self,

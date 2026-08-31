@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
+from typing import Callable
 
 import pytest
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -21,29 +23,41 @@ from rag_kb.infrastructure.database.models import (
     AgentCapabilityLeaseRow,
     AgentTaskRow,
     PrincipalRow,
+    TaskResumeCommandRow,
     TenantRow,
 )
 from rag_kb.infrastructure.database.task_repository import (
     DatabaseTaskRepository,
+    ResumeCommandLease,
     TaskRepositoryError,
+    _command_from_row,
 )
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
 from rag_kb.observability import Observability, current_run_id, current_trace_headers
 
 
 class ScriptedAgent:
-    def __init__(self, snapshots: tuple[object, ...], result: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        snapshots: tuple[object, ...],
+        result: dict[str, object] | None = None,
+        *,
+        before_invoke: Callable[[dict[str, object]], None] | None = None,
+    ) -> None:
         self._snapshots = iter(snapshots)
         self._result = result
+        self._before_invoke = before_invoke
         self.invocations: list[tuple[object, dict[str, object], object]] = []
         self.state_configs: list[dict[str, object]] = []
 
     def get_state(self, config: dict[str, object]) -> object:
-        self.state_configs.append(config)
+        self.state_configs.append(deepcopy(config))
         return next(self._snapshots)
 
     def invoke(self, input_value: object, config: dict[str, object], *, context: object) -> dict[str, object]:
-        self.invocations.append((input_value, config, context))
+        if self._before_invoke is not None:
+            self._before_invoke(config)
+        self.invocations.append((input_value, deepcopy(config), context))
         return self._result or {}
 
 
@@ -60,8 +74,56 @@ class Tools:
         return None
 
 
-def _snapshot(*, values: dict[str, object] | None = None, interrupts=(), next=()):
-    return SimpleNamespace(values=values or {}, interrupts=interrupts, next=next)
+def _snapshot(
+    *,
+    values: dict[str, object] | None = None,
+    interrupts=(),
+    next=(),
+    checkpoint_ns: str = "",
+    checkpoint_id: str = "checkpoint-a",
+):
+    return SimpleNamespace(
+        values=values or {},
+        interrupts=interrupts,
+        next=next,
+        config={
+            "configurable": {
+                "thread_id": "task-a",
+                "checkpoint_ns": checkpoint_ns,
+                "checkpoint_id": checkpoint_id,
+            }
+        },
+    )
+
+
+def _mark_resume_checkpoint(database, repository, config: dict[str, object]) -> None:
+    """测试替身模拟 FencedPostgresSaver 的首次 checkpoint 同事务 marker。"""
+    configurable = config.get("configurable")
+    if not isinstance(configurable, dict):
+        return
+    command_id = configurable.get("checkpoint_resume_command_id")
+    command_generation = configurable.get("checkpoint_resume_command_lease_generation")
+    if command_id is None and command_generation is None:
+        return
+    assert isinstance(command_id, str)
+    assert isinstance(command_generation, int)
+    worker_id = configurable["checkpoint_worker_id"]
+    assert isinstance(worker_id, str)
+    with database.sessions.begin() as session:
+        command = session.get(TaskResumeCommandRow, command_id)
+        assert command is not None
+        task = session.get(AgentTaskRow, command.task_id)
+        assert task is not None
+        repository.mark_resume_command_applied_in_session(
+            session,
+            lease=ResumeCommandLease(
+                command=_command_from_row(command),
+                task_lease=repository._resume_task_lease(task, worker_id=worker_id),
+                worker_id=worker_id,
+                command_lease_generation=command_generation,
+            ),
+            checkpoint_id="resume-checkpoint-a",
+        )
 
 
 @pytest.fixture()
@@ -255,6 +317,44 @@ def test_run_once_records_bounded_claim_results_without_changing_errors(
     assert "https://private" not in payload
 
 
+def test_equal_eligible_work_rotates_between_resume_and_initial_task(setup, monkeypatch) -> None:
+    database, repository, auth, results = setup
+    worker = _worker(database, repository, auth, results, ScriptedAgent(()))
+    eligible_at = datetime.now(UTC)
+    task_lease = SimpleNamespace(state=SimpleNamespace(task_mode=TaskMode.RESEARCH))
+    resume_lease = SimpleNamespace(task_lease=task_lease)
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        repository,
+        "resume_command_candidates",
+        lambda *, limit: (SimpleNamespace(command_id="command-a", eligible_at=eligible_at),),
+    )
+    monkeypatch.setattr(
+        repository,
+        "next_claimable_task_eligible_at",
+        lambda **_kwargs: eligible_at,
+    )
+
+    def claim_resume_command(**_kwargs):
+        calls.append("resume")
+        return resume_lease
+
+    def claim_next(**_kwargs):
+        calls.append("task")
+        return task_lease
+
+    monkeypatch.setattr(repository, "claim_resume_command", claim_resume_command)
+    monkeypatch.setattr(repository, "claim_next", claim_next)
+
+    first = worker._claim_next_work()
+    second = worker._claim_next_work()
+
+    assert first == (task_lease, resume_lease)
+    assert second == (task_lease, None)
+    assert calls == ["resume", "task"]
+
+
 def test_task_claim_metric_is_noop_when_metrics_are_disabled() -> None:
     observability = Observability(
         enabled=False,
@@ -423,7 +523,10 @@ def test_worker_preserves_result_when_finish_commit_acknowledgement_is_lost(setu
 
 def test_user_clarification_resumes_same_thread_without_persisting_answer(setup) -> None:
     database, repository, auth, results = setup
-    interrupt = SimpleNamespace(value={"kind": "user_clarification", "question": "需要哪个部门？"})
+    interrupt = SimpleNamespace(
+        value={"kind": "user_clarification", "question": "需要哪个部门？"},
+        id="interrupt-a",
+    )
     waiting_agent = ScriptedAgent((_snapshot(interrupts=(interrupt,)),))
     waiting = _worker(database, repository, auth, results, waiting_agent).run_once()
     paused = repository.get_task(auth=auth, task_id="task-a")
@@ -437,26 +540,28 @@ def test_user_clarification_resumes_same_thread_without_persisting_answer(setup)
 
     final = _refusal()
     resume_agent = ScriptedAgent(
-        (_snapshot(interrupts=(interrupt,)), _snapshot(values=final)), result=final
+        (_snapshot(interrupts=(interrupt,)), _snapshot(values=final)),
+        result=final,
+        before_invoke=lambda config: _mark_resume_checkpoint(database, repository, config),
     )
-    outcome = _worker(database, repository, auth, results, resume_agent).resume_for_user(
+    command = repository.enqueue_user_resume_command(
         auth=auth,
         task_id="task-a",
         expected_state_version=paused.state_version,
         answer="人力资源部",
     )
+    outcome = _worker(database, repository, auth, results, resume_agent).run_once()
 
-    command = resume_agent.invocations[0][0]
+    resume = resume_agent.invocations[0][0]
     assert outcome.status == "finished"
-    assert getattr(command, "resume") == {"answer": "人力资源部"}
-    assert resume_agent.invocations[0][1]["configurable"] == _fence_config(generation=2)
-    assert all(
-        config["configurable"] == _fence_config(generation=2)
-        for config in (
-            *resume_agent.state_configs,
-            *(item[1] for item in resume_agent.invocations),
-        )
-    )
+    assert getattr(resume, "resume") == {"answer": "人力资源部"}
+    invoke_config = resume_agent.invocations[0][1]["configurable"]
+    assert invoke_config == {
+        **_fence_config(generation=2),
+        "checkpoint_resume_command_id": command.command_id,
+        "checkpoint_resume_command_lease_generation": 1,
+    }
+    assert resume_agent.state_configs[-1]["configurable"] == _fence_config(generation=2)
 
 
 def test_worker_syncs_completed_checkpoint_without_reinvoking_agent(setup) -> None:
@@ -501,6 +606,66 @@ def test_long_agent_invoke_renews_task_lease_in_background(setup) -> None:
 
     assert outcome.status == "finished"
     assert repository.renewals >= 3
+
+
+def test_long_resume_invoke_renews_both_leases_after_marker(setup) -> None:
+    database, _repository, auth, results = setup
+    renewed_after_marker = Event()
+
+    class RenewingRepository(DatabaseTaskRepository):
+        def __init__(self, database) -> None:
+            super().__init__(database)
+            self.post_marker_renewals = 0
+
+        def refresh_resume_command_lease(self, *args, **kwargs):
+            refreshed = super().refresh_resume_command_lease(*args, **kwargs)
+            if refreshed.command.applied_checkpoint_id is not None:
+                self.post_marker_renewals += 1
+                renewed_after_marker.set()
+            return refreshed
+
+    class LongResumeAgent(ScriptedAgent):
+        def invoke(self, input_value, config, *, context):
+            if self._before_invoke is not None:
+                self._before_invoke(config)
+            assert renewed_after_marker.wait(timeout=2)
+            self.invocations.append((input_value, deepcopy(config), context))
+            return self._result or {}
+
+    repository = RenewingRepository(database)
+    interrupt = SimpleNamespace(
+        value={"kind": "user_clarification", "question": "需要哪个部门？"},
+        id="interrupt-long",
+    )
+    waiting = _worker(
+        database,
+        repository,
+        auth,
+        results,
+        ScriptedAgent((_snapshot(interrupts=(interrupt,)),)),
+        lease_seconds=1,
+    ).run_once()
+    assert waiting.status == "waiting_for_user"
+    paused = repository.get_task(auth=auth, task_id="task-a")
+    repository.enqueue_user_resume_command(
+        auth=auth,
+        task_id="task-a",
+        expected_state_version=paused.state_version,
+        answer="人力资源部",
+    )
+    final = _refusal()
+    agent = LongResumeAgent(
+        (_snapshot(interrupts=(interrupt,)), _snapshot(values=final)),
+        result=final,
+        before_invoke=lambda config: _mark_resume_checkpoint(database, repository, config),
+    )
+
+    outcome = _worker(
+        database, repository, auth, results, agent, lease_seconds=1
+    ).run_once()
+
+    assert outcome.status == "finished"
+    assert repository.post_marker_renewals >= 1
 
 
 def test_background_lease_failure_returns_stale_without_finishing_task(setup) -> None:

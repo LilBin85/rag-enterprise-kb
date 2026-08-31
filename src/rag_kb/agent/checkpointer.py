@@ -31,6 +31,8 @@ from langgraph.checkpoint.serde._msgpack import STRICT_MSGPACK_ENABLED
 _TASK_CHECKPOINT_MSGPACK_TYPES = (("rag_kb.agent.result", "TaskResultCandidate"),)
 _CHECKPOINT_SAVER_VERSION = "3.1.2"
 _CHECKPOINT_STALE_CODE = "task_checkpoint_lease_stale"
+_RESUME_COMMAND_ID_KEY = "checkpoint_resume_command_id"
+_RESUME_COMMAND_GENERATION_KEY = "checkpoint_resume_command_lease_generation"
 
 
 class TaskCheckpointError(RuntimeError):
@@ -102,15 +104,40 @@ class FencedPostgresSaver(BaseCheckpointSaver):
             protocol_version = None
         return task_id, tenant_id, worker_id, generation, capability_name, protocol_version
 
+    @staticmethod
+    def _resume_command_fields(config: dict[str, Any]) -> tuple[str, int] | None:
+        configurable = config.get("configurable")
+        if not isinstance(configurable, dict):
+            raise TaskCheckpointError("task_checkpoint_fencing_config_invalid")
+        command_id = configurable.get(_RESUME_COMMAND_ID_KEY)
+        generation = configurable.get(_RESUME_COMMAND_GENERATION_KEY)
+        if command_id is None and generation is None:
+            return None
+        if (
+            not isinstance(command_id, str)
+            or not command_id
+            or len(command_id) > 64
+            or isinstance(generation, bool)
+            or not isinstance(generation, int)
+            or generation < 1
+        ):
+            raise TaskCheckpointError("task_checkpoint_fencing_config_invalid")
+        return command_id, generation
+
     def _verify_lease_in_transaction(
         self, config: dict[str, Any]
-    ) -> tuple[str, str, str, int, str | None, str | None]:
+    ) -> tuple[
+        tuple[str, str, str, int, str | None, str | None],
+        tuple[str, int] | None,
+    ]:
         fields = self._fencing_fields(config)
         task_id, tenant_id, worker_id, generation, capability_name, protocol_version = fields
+        resume = self._resume_command_fields(config)
         with self._connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT task_id, required_capability_name, required_protocol_version
+                SELECT task_id, required_capability_name, required_protocol_version,
+                       state_version, lease_generation, active_resume_command_id
                 FROM agent_tasks
                 WHERE task_id = %s
                   AND tenant_id = %s
@@ -134,19 +161,207 @@ class FencedPostgresSaver(BaseCheckpointSaver):
                 or required_protocol_version != "m1-fenced-v2"
             ):
                 raise TaskCheckpointError(_CHECKPOINT_STALE_CODE)
-            return task_id, tenant_id, worker_id, generation, None, None
-        if (
+            fields = (task_id, tenant_id, worker_id, generation, None, None)
+        elif (
             capability_name != required_capability_name
             or protocol_version != required_protocol_version
         ):
             raise TaskCheckpointError(_CHECKPOINT_STALE_CODE)
-        return fields
+        if resume is None:
+            return fields, None
+        if capability_name is None or protocol_version is None:
+            raise TaskCheckpointError(_CHECKPOINT_STALE_CODE)
+
+        command_id, command_generation = resume
+        with self._connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT worker_id
+                FROM agent_capability_leases
+                WHERE capability_name = %s
+                  AND protocol_version = %s
+                  AND worker_id = %s
+                  AND lease_expires_at > clock_timestamp()
+                FOR UPDATE
+                """,
+                (capability_name, protocol_version, worker_id),
+            )
+            if cursor.fetchone() is None:
+                raise TaskCheckpointError(_CHECKPOINT_STALE_CODE)
+
+            # 先无锁读取 locator，随后严格 task -> approval -> command 加锁。
+            # locator 本身不构成授权或领取事实，command 锁后会全部重核。
+            cursor.execute(
+                """
+                SELECT kind, approval_id
+                FROM task_resume_commands
+                WHERE tenant_id = %s AND command_id = %s
+                """,
+                (tenant_id, command_id),
+            )
+            locator = cursor.fetchone()
+            if locator is None or locator["kind"] not in {
+                "user_clarification",
+                "tool_approval",
+            }:
+                raise TaskCheckpointError(_CHECKPOINT_STALE_CODE)
+            approval_id = locator["approval_id"]
+            if locator["kind"] == "tool_approval":
+                if not isinstance(approval_id, str) or not approval_id:
+                    raise TaskCheckpointError(_CHECKPOINT_STALE_CODE)
+                cursor.execute(
+                    """
+                    SELECT approval_id
+                    FROM approvals
+                    WHERE tenant_id = %s AND approval_id = %s
+                    FOR UPDATE
+                    """,
+                    (tenant_id, approval_id),
+                )
+                if cursor.fetchone() is None:
+                    raise TaskCheckpointError(_CHECKPOINT_STALE_CODE)
+            elif approval_id is not None:
+                raise TaskCheckpointError(_CHECKPOINT_STALE_CODE)
+
+            cursor.execute(
+                """
+                SELECT command_id, applied_checkpoint_id,
+                       claimed_task_state_version, claimed_task_lease_generation
+                FROM task_resume_commands
+                WHERE tenant_id = %s
+                  AND command_id = %s
+                  AND task_id = %s
+                  AND status = 'claimed'
+                  AND lease_owner = %s
+                  AND lease_generation = %s
+                  AND lease_expires_at > clock_timestamp()
+                  AND expected_protocol_version = %s
+                FOR UPDATE
+                """,
+                (
+                    tenant_id,
+                    command_id,
+                    task_id,
+                    worker_id,
+                    command_generation,
+                    required_protocol_version,
+                ),
+            )
+            command = cursor.fetchone()
+            if command is None:
+                raise TaskCheckpointError(_CHECKPOINT_STALE_CODE)
+            if (
+                task["active_resume_command_id"] == command_id
+                and command["applied_checkpoint_id"] is None
+                and command["claimed_task_state_version"] == task["state_version"]
+                and command["claimed_task_lease_generation"] == task["lease_generation"]
+            ):
+                return fields, resume
+            if (
+                task["active_resume_command_id"] is None
+                and command["applied_checkpoint_id"] is not None
+                and command["claimed_task_lease_generation"] == task["lease_generation"]
+            ):
+                # LangGraph 在同一次 invoke 的后续 superstep 继续传递原
+                # configurable；应用 marker 已提交后只需普通 task fence。
+                return fields, None
+            raise TaskCheckpointError(_CHECKPOINT_STALE_CODE)
+        return fields, resume
+
+    def _mark_resume_command_applied_in_transaction(
+        self,
+        *,
+        fields: tuple[str, str, str, int, str | None, str | None],
+        resume: tuple[str, int],
+        checkpoint_id: object,
+    ) -> None:
+        if not isinstance(checkpoint_id, str) or not checkpoint_id.strip() or len(checkpoint_id) > 150:
+            raise TaskCheckpointError(_CHECKPOINT_STALE_CODE)
+        task_id, tenant_id, worker_id, generation, _capability_name, _protocol_version = fields
+        command_id, command_generation = resume
+        task_state_version = self._task_state_version_for_resume(fields, command_id)
+        with self._connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE task_resume_commands
+                SET applied_checkpoint_id = %s,
+                    applied_at = clock_timestamp(),
+                    updated_at = clock_timestamp()
+                WHERE tenant_id = %s
+                  AND command_id = %s
+                  AND task_id = %s
+                  AND status = 'claimed'
+                  AND lease_owner = %s
+                  AND lease_generation = %s
+                  AND lease_expires_at > clock_timestamp()
+                  AND applied_checkpoint_id IS NULL
+                  AND claimed_task_state_version = %s
+                  AND claimed_task_lease_generation = %s
+                """,
+                (
+                    checkpoint_id,
+                    tenant_id,
+                    command_id,
+                    task_id,
+                    worker_id,
+                    command_generation,
+                    task_state_version,
+                    generation,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise TaskCheckpointError(_CHECKPOINT_STALE_CODE)
+            cursor.execute(
+                """
+                UPDATE agent_tasks
+                SET active_resume_command_id = NULL,
+                    updated_at = clock_timestamp()
+                WHERE tenant_id = %s
+                  AND task_id = %s
+                  AND status = 'running'
+                  AND lease_owner = %s
+                  AND lease_generation = %s
+                  AND lease_expires_at > clock_timestamp()
+                  AND active_resume_command_id = %s
+                """,
+                (tenant_id, task_id, worker_id, generation, command_id),
+            )
+            if cursor.rowcount != 1:
+                raise TaskCheckpointError(_CHECKPOINT_STALE_CODE)
+
+    def _task_state_version_for_resume(
+        self,
+        fields: tuple[str, str, str, int, str | None, str | None],
+        command_id: str,
+    ) -> int:
+        """在已持有 task 行锁的同一事务回读交叉 state-version fence。"""
+        task_id, tenant_id, worker_id, generation, _capability_name, _protocol_version = fields
+        with self._connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT state_version
+                FROM agent_tasks
+                WHERE tenant_id = %s
+                  AND task_id = %s
+                  AND status = 'running'
+                  AND lease_owner = %s
+                  AND lease_generation = %s
+                  AND active_resume_command_id = %s
+                """,
+                (tenant_id, task_id, worker_id, generation, command_id),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            raise TaskCheckpointError(_CHECKPOINT_STALE_CODE)
+        return int(row["state_version"])
 
     @staticmethod
     def _merge_next_config(
         config: dict[str, Any],
         saved: dict[str, Any],
         fields: tuple[str, str, str, int, str | None, str | None],
+        *,
+        resume_applied: bool = False,
     ) -> dict[str, Any]:
         task_id, tenant_id, worker_id, generation, capability_name, protocol_version = fields
         configurable = dict(config.get("configurable", {}))
@@ -166,14 +381,31 @@ class FencedPostgresSaver(BaseCheckpointSaver):
                     "checkpoint_required_protocol_version": protocol_version,
                 }
             )
+        if resume_applied:
+            configurable.pop(_RESUME_COMMAND_ID_KEY, None)
+            configurable.pop(_RESUME_COMMAND_GENERATION_KEY, None)
         return {**config, **saved, "configurable": configurable}
 
     def put(self, config, checkpoint, metadata, new_versions):
         def write():
             with self._lock, self._connection.transaction():
-                fields = self._verify_lease_in_transaction(config)
-                saved = self._saver.put(config, checkpoint, metadata, new_versions)
-            return self._merge_next_config(config, saved, fields)
+                fields, resume = self._verify_lease_in_transaction(config)
+                checkpoint_metadata = dict(metadata)
+                if resume is not None:
+                    checkpoint_metadata["resume_command_id"] = resume[0]
+                saved = self._saver.put(config, checkpoint, checkpoint_metadata, new_versions)
+                if resume is not None:
+                    self._mark_resume_command_applied_in_transaction(
+                        fields=fields,
+                        resume=resume,
+                        checkpoint_id=checkpoint.get("id"),
+                    )
+            return self._merge_next_config(
+                config,
+                saved,
+                fields,
+                resume_applied=resume is not None,
+            )
 
         return self._observe_write("checkpoint.put", write)
 

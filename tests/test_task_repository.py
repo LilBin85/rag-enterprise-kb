@@ -199,6 +199,9 @@ def test_pause_and_resume_store_only_interrupt_summary(database) -> None:
     paused = repository.pause_for_user(
         lease,
         question="需要哪个部门？",
+        checkpoint_ns="",
+        checkpoint_id="checkpoint-pause",
+        interrupt_id="interrupt-pause",
         run_id="trace-a",
     )
     assert paused.status is TaskStatus.WAITING_FOR_USER
@@ -207,6 +210,9 @@ def test_pause_and_resume_store_only_interrupt_summary(database) -> None:
         row = session.get(AgentTaskRow, "task-a")
         assert row is not None
         assert row.interrupt_summary == "需要哪个部门？"
+        assert row.interrupt_checkpoint_ns == ""
+        assert row.interrupt_checkpoint_id == "checkpoint-pause"
+        assert row.interrupt_id == "interrupt-pause"
 
     resumed = repository.claim_user_resume(
         auth=auth(),
@@ -238,6 +244,9 @@ def test_resume_replaces_the_pending_producer_trace_context(database) -> None:
         paused = repository.pause_for_user(
             lease,
             question="需要哪个部门？",
+            checkpoint_ns="",
+            checkpoint_id="checkpoint-trace",
+            interrupt_id="interrupt-trace",
             run_id="run-a",
         )
 
@@ -292,6 +301,9 @@ def test_waiting_deadline_reaper_fails_task_once_and_blocks_resume(database) -> 
     paused = repository.pause_for_user(
         lease,
         question="需要哪个部门？",
+        checkpoint_ns="",
+        checkpoint_id="checkpoint-expiry",
+        interrupt_id="interrupt-expiry",
         run_id="trace-a",
     )
     clock.value += timedelta(seconds=601)
@@ -336,6 +348,9 @@ def test_resume_deadline_is_conditionally_checked_at_state_transition(database) 
     paused = repository.pause_for_user(
         lease,
         question="需要哪个部门？",
+        checkpoint_ns="",
+        checkpoint_id="checkpoint-deadline",
+        interrupt_id="interrupt-deadline",
         run_id="trace-a",
     )
     with database.sessions.begin() as session:
@@ -618,6 +633,9 @@ def test_m2_user_resume_requires_exact_live_worker_capability(database) -> None:
     paused = repository.pause_for_user(
         lease,
         question="需要哪个部门？",
+        checkpoint_ns="",
+        checkpoint_id="checkpoint-m2",
+        interrupt_id="interrupt-m2",
         run_id="trace-m2",
     )
 

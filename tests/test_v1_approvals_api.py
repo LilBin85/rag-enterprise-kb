@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from inspect import getsource
 from types import SimpleNamespace
 
 import pytest
@@ -14,10 +15,11 @@ from rag_kb.domain.identity import Principal
 from rag_kb.infrastructure.auth.providers import DemoTokenIdentityProvider
 from rag_kb.infrastructure.database.task_repository import TaskRepositoryError
 from rag_kb.web.app import create_app
+from rag_kb.web.routers import approvals as approvals_router
 from rag_kb.web.dependencies import (
     build_approval_service,
     build_identity_provider,
-    build_task_resume_worker,
+    build_task_repository,
 )
 
 
@@ -54,6 +56,8 @@ class FakeApprovalService:
     def __init__(self) -> None:
         self.binding = _binding()
         self.summary = "等待人工审批：报告产物「安全标题」"
+        self.calls: list[dict[str, object]] = []
+        self.next_error: Exception | None = None
 
     def list_details(self, *, tenant_id: str, status: str | None, task_id: str | None):
         if tenant_id != "tenant-a" or (
@@ -67,35 +71,27 @@ class FakeApprovalService:
             raise ApprovalServiceError("approval_not_found")
         return SimpleNamespace(binding=self.binding, summary=self.summary)
 
-
-class FakeApprovalWorker:
-    def __init__(self, service: FakeApprovalService) -> None:
-        self._service = service
-        self.calls: list[dict[str, object]] = []
-        self.next_error: Exception | None = None
-        self.next_result: object | None = None
-
-    def resume_for_approval(self, **kwargs: object) -> object:
+    def decide_and_enqueue(self, **kwargs: object) -> object:
         if self.next_error is not None:
             error = self.next_error
             self.next_error = None
             raise error
-        if self.next_result is not None:
-            result = self.next_result
-            self.next_result = None
-            return result
         decision = kwargs["decision"]
-        binding = self._service.binding
+        binding = self.binding
         if decision == "approve":
             if binding.status == "rejected":
                 raise ApprovalServiceError("approval_decision_conflict")
-            self._service.binding = binding.model_copy(
-                update={"status": "approved", "approved_by": "approver-a", "approved_at": datetime.now(UTC)}
+            self.binding = binding.model_copy(
+                update={
+                    "status": "approved",
+                    "approved_by": "approver-a",
+                    "approved_at": datetime.now(UTC),
+                }
             )
         else:
             if binding.status in {"approved", "executed"}:
                 raise ApprovalServiceError("approval_decision_conflict")
-            self._service.binding = binding.model_copy(
+            self.binding = binding.model_copy(
                 update={
                     "status": "rejected",
                     "rejected_by": "approver-a",
@@ -104,14 +100,13 @@ class FakeApprovalWorker:
                 }
             )
         self.calls.append(kwargs)
-        return SimpleNamespace(status="finished")
+        return SimpleNamespace(command_id="command-1")
 
 
 @pytest.fixture()
 def setup_app():
     app = create_app()
     service = FakeApprovalService()
-    worker = FakeApprovalWorker(service)
     provider = DemoTokenIdentityProvider(
         {
             "approver-token": Principal(
@@ -138,9 +133,9 @@ def setup_app():
     )
     app.dependency_overrides[build_identity_provider] = lambda: provider
     app.dependency_overrides[build_approval_service] = lambda: service
-    app.dependency_overrides[build_task_resume_worker] = lambda: worker
+    app.dependency_overrides[build_task_repository] = object
     with TestClient(app) as client:
-        yield client, service, worker
+        yield client, service
     app.dependency_overrides.clear()
 
 
@@ -149,7 +144,7 @@ def _headers(token: str = "approver-token") -> dict[str, str]:
 
 
 def test_approver_can_list_and_read_safe_detail(setup_app) -> None:
-    client, _service, _worker = setup_app
+    client, _service = setup_app
 
     listed = client.get("/v1/approvals?status=pending&task_id=task-1", headers=_headers())
     detail = client.get("/v1/approvals/approval-1", headers=_headers())
@@ -165,7 +160,7 @@ def test_approver_can_list_and_read_safe_detail(setup_app) -> None:
 
 
 def test_approvals_require_permission_and_hide_cross_tenant_existence(setup_app) -> None:
-    client, _service, _worker = setup_app
+    client, _service = setup_app
 
     denied = client.get("/v1/approvals", headers=_headers("owner-token"))
     cross = client.get("/v1/approvals/approval-1", headers=_headers("cross-token"))
@@ -174,8 +169,8 @@ def test_approvals_require_permission_and_hide_cross_tenant_existence(setup_app)
     assert cross.status_code == 404
 
 
-def test_decision_resumes_using_server_approval_binding_and_is_idempotent(setup_app) -> None:
-    client, service, worker = setup_app
+def test_decision_only_enqueues_server_approval_binding_and_is_idempotent(setup_app) -> None:
+    client, service = setup_app
     body = {"decision": "approve", "expected_task_state_version": 4}
 
     first = client.post("/v1/approvals/approval-1/decision", headers=_headers(), json=body)
@@ -186,17 +181,21 @@ def test_decision_resumes_using_server_approval_binding_and_is_idempotent(setup_
         json={"decision": "reject", "expected_task_state_version": 4},
     )
 
-    assert first.status_code == 200
-    assert repeated.status_code == 200
+    assert first.status_code == 202
+    assert repeated.status_code == 202
     assert opposite.status_code == 409
     assert service.binding.status == "approved"
-    assert [call["task_id"] for call in worker.calls] == ["task-1", "task-1"]
-    assert all(call["approval_id"] == "approval-1" for call in worker.calls)
-    assert all(call["expected_state_version"] == 4 for call in worker.calls)
+    assert first.json()["resume_command"] == {
+        "command_id": "command-1",
+        "status": "accepted",
+    }
+    assert repeated.json()["resume_command"] == first.json()["resume_command"]
+    assert all(call["approval_id"] == "approval-1" for call in service.calls)
+    assert all(call["expected_task_state_version"] == 4 for call in service.calls)
 
 
 def test_decision_rejects_server_field_injection_and_preserves_binding(setup_app) -> None:
-    client, service, worker = setup_app
+    client, service = setup_app
 
     response = client.post(
         "/v1/approvals/approval-1/decision",
@@ -220,27 +219,25 @@ def test_decision_rejects_server_field_injection_and_preserves_binding(setup_app
     assert response.status_code == 422
     assert "artifacts/private/sentinel" not in response.text
     assert service.binding.status == "pending"
-    assert worker.calls == []
+    assert service.calls == []
 
 
 def test_decision_routes_wrong_interrupt_and_self_approval_to_stable_errors(setup_app) -> None:
-    client, _service, worker = setup_app
-    worker.next_error = TaskRepositoryError("task_not_waiting_for_approval")
+    client, service = setup_app
+    service.next_error = TaskRepositoryError("task_not_waiting_for_approval")
 
     clarification = client.post(
         "/v1/approvals/approval-1/decision",
         headers=_headers(),
         json={"decision": "approve", "expected_task_state_version": 4},
     )
-    worker.next_error = ApprovalServiceError("approval_self_rejected")
+    service.next_error = ApprovalServiceError("approval_self_rejected")
     self_approval = client.post(
         "/v1/approvals/approval-1/decision",
         headers=_headers("self-token"),
         json={"decision": "approve", "expected_task_state_version": 4},
     )
-    worker.next_result = SimpleNamespace(
-        status="failed", error_code="task_interrupt_kind_invalid"
-    )
+    service.next_error = ApprovalServiceError("approval_resume_state_conflict")
     checkpoint_mismatch = client.post(
         "/v1/approvals/approval-1/decision",
         headers=_headers(),
@@ -252,16 +249,9 @@ def test_decision_routes_wrong_interrupt_and_self_approval_to_stable_errors(setu
     assert checkpoint_mismatch.status_code == 409
 
 
-def test_repeat_settled_decision_returns_current_status_after_claim_conflict(setup_app) -> None:
-    client, service, worker = setup_app
-    body = {"decision": "approve", "expected_task_state_version": 4}
+def test_decision_router_has_no_agent_execution_dependency() -> None:
+    source = getsource(approvals_router)
 
-    assert client.post("/v1/approvals/approval-1/decision", headers=_headers(), json=body).status_code == 200
-    worker.next_error = TaskRepositoryError("task_state_conflict")
-    repeated = client.post(
-        "/v1/approvals/approval-1/decision", headers=_headers(), json=body
-    )
-
-    assert repeated.status_code == 200
-    assert repeated.json()["status"] == "approved"
-    assert service.binding.status == "approved"
+    assert "build_task_resume_worker" not in source
+    assert "TaskWorker" not in source
+    assert "resume_for_approval" not in source

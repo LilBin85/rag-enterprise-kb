@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from rag_kb.agent.result import TaskResult
 from rag_kb.application.task_query_service import DatabaseTaskQueryService, TaskQueryError
 from rag_kb.application.task_result_service import TaskResultError, TaskResultService
-from rag_kb.application.task_worker import TaskWorker
 from rag_kb.application.artifact_content_service import (
     ArtifactContentError,
     ArtifactContentService,
@@ -21,15 +20,16 @@ from rag_kb.web.dependencies import (
     build_task_query_service,
     build_task_repository,
     build_task_result_service,
-    build_task_resume_worker,
     build_artifact_content_service,
     resolve_auth_context,
 )
 from rag_kb.web.schemas.tasks import (
     TaskCancelRequest,
     TaskContinueRequest,
+    TaskContinueResponse,
     TaskCreateRequest,
     TaskEventResponse,
+    ResumeCommandResponse,
     TaskResponse,
 )
 
@@ -160,25 +160,27 @@ def get_result(
         raise HTTPException(status_code=409, detail="任务结果不可用") from None
 
 
-@router.post("/{task_id}/continue", response_model=TaskResponse)
+@router.post("/{task_id}/continue", response_model=TaskContinueResponse, status_code=202)
 def continue_task(
     task_id: str,
     request: TaskContinueRequest,
     auth: Annotated[AuthContext, Depends(resolve_auth_context)],
     repository: Annotated[DatabaseTaskRepository, Depends(build_task_repository)],
-    worker: Annotated[TaskWorker, Depends(build_task_resume_worker)],
-) -> TaskResponse:
+) -> TaskContinueResponse:
     _require(auth, Permission.TASK_READ)
     try:
-        worker.resume_for_user(
+        command = repository.enqueue_user_resume_command(
             auth=auth,
             task_id=task_id,
             expected_state_version=request.expected_state_version,
             answer=request.answer,
         )
-        return _task_response(
-            state=repository.get_task(auth=auth, task_id=task_id),
-            now=repository.current_time(),
+        return TaskContinueResponse(
+            **_task_response(
+                state=repository.get_task(auth=auth, task_id=task_id),
+                now=repository.current_time(),
+            ).model_dump(),
+            resume_command=ResumeCommandResponse(command_id=command.command_id),
         )
     except TaskRepositoryError as exc:
         raise _repository_error(exc) from exc

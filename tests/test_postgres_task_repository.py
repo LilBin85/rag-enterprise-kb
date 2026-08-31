@@ -14,6 +14,7 @@ from sqlalchemy import text
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.tasks import TaskMode, TaskStatus
 from rag_kb.infrastructure.database import build_database
+from rag_kb.infrastructure.database.models import AgentTaskRow
 from rag_kb.infrastructure.database.task_repository import (
     DatabaseTaskRepository,
     RESEARCH_AGENT_CAPABILITY_NAME,
@@ -25,6 +26,120 @@ from rag_kb.infrastructure.database.task_repository import (
 
 
 POSTGRES_TEST_URL = os.environ.get("RAG_KB_TEST_POSTGRES_URL")
+
+
+@pytest.mark.skipif(not POSTGRES_TEST_URL, reason="postgres_test_url_unconfigured")
+def test_postgres_resume_command_claim_has_one_winner_and_dual_lease_recovery() -> None:
+    """真实 PostgreSQL 验证 SKIP LOCKED 候选重读与双 lease fencing。"""
+    assert POSTGRES_TEST_URL is not None
+    database = build_database(POSTGRES_TEST_URL)
+    suffix = uuid4().hex
+    tenant_id = f"resume-command-{suffix}"
+    user_id = f"owner-{suffix}"
+    task_id = f"task-{suffix}"
+    auth = AuthContext(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        attributes={"permissions": ["task:create", "task:read"]},
+        request_id=f"request-{suffix}",
+    )
+    repository = DatabaseTaskRepository(database)
+    try:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO tenants (tenant_id, name, active, created_at) "
+                    "VALUES (:tenant, :name, TRUE, CURRENT_TIMESTAMP)"
+                ),
+                {"tenant": tenant_id, "name": tenant_id},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO principals "
+                    "(tenant_id, user_id, roles, attributes, active, created_at) "
+                    "VALUES (:tenant, :user, CAST('[]' AS jsonb), "
+                    "CAST(:attributes AS jsonb), TRUE, CURRENT_TIMESTAMP)"
+                ),
+                {
+                    "tenant": tenant_id,
+                    "user": user_id,
+                    "attributes": json.dumps(auth.attributes),
+                },
+            )
+        repository.create_task(
+            auth=auth,
+            goal="恢复命令并发领取",
+            task_mode=TaskMode.RESEARCH,
+            task_id=task_id,
+        )
+        with database.sessions.begin() as session:
+            task = session.get(AgentTaskRow, task_id)
+            assert task is not None
+            task.status = TaskStatus.WAITING_FOR_USER.value
+            task.interrupt_kind = "user_clarification"
+            task.interrupt_summary = "请选择范围"
+            task.interrupt_ref = None
+            task.interrupt_checkpoint_ns = "resume-ns"
+            task.interrupt_checkpoint_id = "resume-checkpoint"
+            task.interrupt_id = "resume-interrupt"
+            task.interrupt_approval_id = None
+            task.lease_owner = None
+            task.lease_expires_at = None
+        command = repository.enqueue_user_resume_command(
+            auth=auth,
+            task_id=task_id,
+            expected_state_version=1,
+            answer="财务范围",
+        )
+
+        def claim(index: int):
+            return DatabaseTaskRepository(database).claim_resume_command(
+                command_id=command.command_id,
+                worker_id=f"resume-worker-{index}-{suffix}",
+                lease_seconds=30,
+            )
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            claims = tuple(executor.map(claim, range(4)))
+        winners = tuple(item for item in claims if item is not None)
+        assert len(winners) == 1
+        first = winners[0]
+        with database.engine.begin() as connection:
+            expired_at = datetime.now(UTC) - timedelta(seconds=1)
+            connection.execute(
+                text(
+                    "UPDATE agent_tasks SET lease_expires_at = :expired "
+                    "WHERE tenant_id = :tenant AND task_id = :task"
+                ),
+                {"expired": expired_at, "tenant": tenant_id, "task": task_id},
+            )
+            connection.execute(
+                text(
+                    "UPDATE task_resume_commands SET lease_expires_at = :expired "
+                    "WHERE tenant_id = :tenant AND command_id = :command"
+                ),
+                {"expired": expired_at, "tenant": tenant_id, "command": command.command_id},
+            )
+        recovered = repository.claim_resume_command(
+            command_id=command.command_id,
+            worker_id=f"resume-recovery-{suffix}",
+            lease_seconds=30,
+        )
+        assert recovered is not None
+        assert recovered.task_lease.state.state_version == first.task_lease.state.state_version
+        assert recovered.task_lease.lease_generation == first.task_lease.lease_generation + 1
+        assert recovered.command_lease_generation == first.command_lease_generation + 1
+    finally:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM task_resume_commands WHERE tenant_id = :tenant"),
+                {"tenant": tenant_id},
+            )
+            connection.execute(
+                text("DELETE FROM tenants WHERE tenant_id = :tenant"),
+                {"tenant": tenant_id},
+            )
+        database.engine.dispose()
 
 
 @pytest.mark.skipif(not POSTGRES_TEST_URL, reason="postgres_test_url_unconfigured")

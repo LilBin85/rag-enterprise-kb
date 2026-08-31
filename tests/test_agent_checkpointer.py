@@ -133,3 +133,35 @@ def test_checkpoint_failure_is_safe_telemetry_without_checkpoint_contents() -> N
     assert 'kind="fencing"' in payload
     assert secret not in payload
     assert secret not in rendered_spans
+
+
+def test_resume_checkpoint_fence_requires_a_complete_command_pair_and_drops_it_after_marker() -> None:
+    config = {
+        "configurable": {
+            "thread_id": "task-a",
+            "checkpoint_tenant_id": "tenant-a",
+            "checkpoint_worker_id": "worker-a",
+            "checkpoint_lease_generation": 2,
+            "checkpoint_required_capability_name": "task-agent",
+            "checkpoint_required_protocol_version": "m2-fenced-v1",
+            "checkpoint_resume_command_id": "command-a",
+            "checkpoint_resume_command_lease_generation": 3,
+        }
+    }
+
+    assert FencedPostgresSaver._resume_command_fields(config) == ("command-a", 3)
+    with pytest.raises(TaskCheckpointError, match="task_checkpoint_fencing_config_invalid"):
+        FencedPostgresSaver._resume_command_fields(
+            {"configurable": {"checkpoint_resume_command_id": "command-a"}}
+        )
+
+    next_config = FencedPostgresSaver._merge_next_config(
+        config,
+        {"configurable": {"checkpoint_id": "checkpoint-after-resume"}},
+        ("task-a", "tenant-a", "worker-a", 2, "task-agent", "m2-fenced-v1"),
+        resume_applied=True,
+    )
+    configurable = next_config["configurable"]
+    assert configurable["checkpoint_id"] == "checkpoint-after-resume"
+    assert "checkpoint_resume_command_id" not in configurable
+    assert "checkpoint_resume_command_lease_generation" not in configurable

@@ -383,13 +383,31 @@ class AgentTaskRow(Base):
         CheckConstraint(
             "(status = 'waiting_for_user' AND interrupt_kind = 'user_clarification' "
             "AND interrupt_summary IS NOT NULL AND length(trim(interrupt_summary)) > 0 "
-            "AND interrupt_ref IS NULL) "
+            "AND interrupt_ref IS NULL AND ((interrupt_checkpoint_ns IS NULL "
+            "AND interrupt_checkpoint_id IS NULL AND interrupt_id IS NULL "
+            "AND interrupt_approval_id IS NULL) OR (interrupt_checkpoint_ns IS NOT NULL "
+            "AND interrupt_checkpoint_id IS NOT NULL AND length(trim(interrupt_checkpoint_id)) > 0 "
+            "AND interrupt_id IS NOT NULL AND length(trim(interrupt_id)) > 0 "
+            "AND interrupt_approval_id IS NULL))) "
             "OR (status = 'waiting_for_approval' AND interrupt_kind = 'tool_approval' "
             "AND interrupt_summary IS NOT NULL AND length(trim(interrupt_summary)) > 0 "
-            "AND interrupt_ref IS NOT NULL AND length(trim(interrupt_ref)) > 0) "
+            "AND interrupt_ref IS NOT NULL AND length(trim(interrupt_ref)) > 0 "
+            "AND ((interrupt_checkpoint_ns IS NULL AND interrupt_checkpoint_id IS NULL "
+            "AND interrupt_id IS NULL AND interrupt_approval_id IS NULL) "
+            "OR (interrupt_checkpoint_ns IS NOT NULL "
+            "AND interrupt_checkpoint_id IS NOT NULL AND length(trim(interrupt_checkpoint_id)) > 0 "
+            "AND interrupt_id IS NOT NULL AND length(trim(interrupt_id)) > 0 "
+            "AND interrupt_approval_id IS NOT NULL AND length(trim(interrupt_approval_id)) > 0))) "
             "OR (status NOT IN ('waiting_for_user', 'waiting_for_approval') "
-            "AND interrupt_kind IS NULL AND interrupt_summary IS NULL AND interrupt_ref IS NULL)",
+            "AND interrupt_kind IS NULL AND interrupt_summary IS NULL AND interrupt_ref IS NULL "
+            "AND interrupt_checkpoint_ns IS NULL AND interrupt_checkpoint_id IS NULL "
+            "AND interrupt_id IS NULL AND interrupt_approval_id IS NULL)",
             name="interrupt_complete",
+        ),
+        CheckConstraint(
+            "active_resume_command_id IS NULL OR "
+            "(status = 'running' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL)",
+            name="active_resume_command_complete",
         ),
         CheckConstraint(
             "length(trim(required_capability_name)) > 0 "
@@ -479,6 +497,13 @@ class AgentTaskRow(Base):
     interrupt_kind: Mapped[str | None] = mapped_column(String(32))
     interrupt_summary: Mapped[str | None] = mapped_column(Text)
     interrupt_ref: Mapped[str | None] = mapped_column(String(200))
+    # A2 过渡期允许四列全空的历史 pause 行；新恢复命令仓储只接受全量绑定。
+    interrupt_checkpoint_ns: Mapped[str | None] = mapped_column(String(200))
+    interrupt_checkpoint_id: Mapped[str | None] = mapped_column(String(150))
+    interrupt_id: Mapped[str | None] = mapped_column(String(100))
+    interrupt_approval_id: Mapped[str | None] = mapped_column(String(64))
+    # 不设置 FK，避免 task_resume_commands -> agent_tasks 的级联 FK 形成循环。
+    active_resume_command_id: Mapped[str | None] = mapped_column(String(64))
     result_kind: Mapped[str | None] = mapped_column(String(32))
     result_ref: Mapped[str | None] = mapped_column(String(500))
     result_hash: Mapped[str | None] = mapped_column(String(80))
@@ -487,6 +512,150 @@ class AgentTaskRow(Base):
     checkpoint_purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     result_purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     content_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
+class TaskResumeCommandRow(Base):
+    """API 到 task Worker 的最小耐久恢复 inbox；正文不会出现在事件或日志中。"""
+
+    __tablename__ = "task_resume_commands"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "task_id"],
+            ["agent_tasks.tenant_id", "agent_tasks.task_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "actor_principal_id"],
+            ["principals.tenant_id", "principals.user_id"],
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "approval_id"],
+            ["approvals.tenant_id", "approvals.approval_id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "tenant_id", "idempotency_key", name="uq_task_resume_commands_tenant_idempotency"
+        ),
+        UniqueConstraint(
+            "tenant_id", "resume_target_key", name="uq_task_resume_commands_tenant_target"
+        ),
+        CheckConstraint(
+            "kind IN ('user_clarification', 'tool_approval')",
+            name="kind_valid",
+        ),
+        CheckConstraint(
+            "actor_kind IN ('user', 'service')",
+            name="actor_kind_valid",
+        ),
+        CheckConstraint("expected_task_state_version > 0", name="expected_state_version_positive"),
+        CheckConstraint("attempt_count >= 0", name="attempt_count_nonnegative"),
+        CheckConstraint("lease_generation >= 0", name="lease_generation_nonnegative"),
+        CheckConstraint("expires_at > created_at", name="expires_after_created"),
+        CheckConstraint("next_attempt_at <= expires_at", name="next_attempt_before_expiry"),
+        CheckConstraint(
+            "(kind = 'user_clarification' AND approval_id IS NULL AND decision IS NULL "
+            "AND ((status IN ('pending', 'claimed') AND payload_body IS NOT NULL "
+            "AND length(trim(payload_body)) > 0) OR (status IN ('consumed', 'failed', 'expired') "
+            "AND payload_body IS NULL))) OR (kind = 'tool_approval' "
+            "AND approval_id IS NOT NULL AND length(trim(approval_id)) > 0 "
+            "AND decision IN ('approved', 'rejected') "
+            "AND (payload_body IS NULL OR length(trim(payload_body)) > 0))",
+            name="kind_payload_complete",
+        ),
+        CheckConstraint(
+            "(status = 'pending' AND lease_owner IS NULL AND lease_expires_at IS NULL "
+            "AND claimed_at IS NULL AND claimed_task_state_version IS NULL "
+            "AND claimed_task_lease_generation IS NULL) OR (status = 'claimed' "
+            "AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL AND claimed_at IS NOT NULL "
+            "AND claimed_task_state_version IS NOT NULL AND claimed_task_state_version > 0 "
+            "AND claimed_task_lease_generation IS NOT NULL AND claimed_task_lease_generation > 0) "
+            "OR (status IN ('consumed', 'failed', 'expired') AND lease_owner IS NULL "
+            "AND lease_expires_at IS NULL)",
+            name="lease_complete",
+        ),
+        CheckConstraint(
+            "(applied_checkpoint_id IS NULL AND applied_at IS NULL) OR "
+            "(applied_checkpoint_id IS NOT NULL AND length(trim(applied_checkpoint_id)) > 0 "
+            "AND applied_at IS NOT NULL)",
+            name="apply_marker_complete",
+        ),
+        CheckConstraint(
+            "applied_checkpoint_id IS NULL OR status IN ('claimed', 'consumed')",
+            name="apply_marker_status_valid",
+        ),
+        CheckConstraint(
+            "(status = 'consumed' AND consumed_at IS NOT NULL AND failed_at IS NULL "
+            "AND expired_at IS NULL) OR (status = 'failed' AND consumed_at IS NULL "
+            "AND failed_at IS NOT NULL AND expired_at IS NULL) OR (status = 'expired' "
+            "AND consumed_at IS NULL AND failed_at IS NULL AND expired_at IS NOT NULL) "
+            "OR (status IN ('pending', 'claimed') AND consumed_at IS NULL "
+            "AND failed_at IS NULL AND expired_at IS NULL)",
+            name="terminal_timestamp_complete",
+        ),
+        CheckConstraint(
+            "status IN ('consumed', 'failed', 'expired') OR body_purged_at IS NULL",
+            name="body_purge_status_valid",
+        ),
+        CheckConstraint(
+            "(status IN ('consumed', 'failed', 'expired') AND payload_body IS NULL "
+            "AND body_purged_at IS NOT NULL) OR (status IN ('pending', 'claimed') "
+            "AND body_purged_at IS NULL)",
+            name="body_purge_complete",
+        ),
+        CheckConstraint(
+            "(status IN ('pending', 'claimed') AND failure_code IS NULL) OR "
+            "(status IN ('consumed', 'failed', 'expired') AND (failure_code IS NULL "
+            "OR length(trim(failure_code)) > 0))",
+            name="failure_code_valid",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'claimed', 'consumed', 'failed', 'expired')",
+            name="status_valid",
+        ),
+        Index("ix_task_resume_commands_claim", "status", "next_attempt_at", "created_at"),
+        Index("ix_task_resume_commands_recovery", "status", "lease_expires_at", "created_at"),
+        Index("ix_task_resume_commands_task_status", "tenant_id", "task_id", "status"),
+    )
+
+    command_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_principal_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    actor_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    expected_task_state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    expected_interrupt_checkpoint_ns: Mapped[str] = mapped_column(String(200), nullable=False)
+    expected_interrupt_checkpoint_id: Mapped[str] = mapped_column(String(150), nullable=False)
+    expected_interrupt_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    expected_protocol_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    approval_id: Mapped[str | None] = mapped_column(String(64))
+    decision: Mapped[str | None] = mapped_column(String(32))
+    payload_body: Mapped[str | None] = mapped_column(Text)
+    payload_sha256: Mapped[str] = mapped_column(String(80), nullable=False)
+    resume_target_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lease_owner: Mapped[str | None] = mapped_column(String(200))
+    lease_generation: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claimed_task_state_version: Mapped[int | None] = mapped_column(Integer)
+    claimed_task_lease_generation: Mapped[int | None] = mapped_column(BigInteger)
+    applied_checkpoint_id: Mapped[str | None] = mapped_column(String(150))
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_code: Mapped[str | None] = mapped_column(String(100))
+    body_purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 

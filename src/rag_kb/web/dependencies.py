@@ -30,7 +30,7 @@ from rag_kb.infrastructure.vectorstore.qdrant_document_index import QdrantDocume
 from rag_kb.observability import normalize_request_id
 
 
-EXPECTED_DATABASE_REVISION = "20260829_0014"
+EXPECTED_DATABASE_REVISION = "20260831_0015"
 
 
 class ReadinessFailure(RuntimeError):

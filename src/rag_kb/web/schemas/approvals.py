@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from rag_kb.web.schemas.tasks import ResumeCommandResponse
+
 
 ApprovalStatus = Literal["pending", "approved", "rejected", "expired", "executed"]
 
@@ -39,3 +41,9 @@ class ApprovalResponse(BaseModel):
     rejected_by: str | None = None
     rejected_at: datetime | None = None
     rejection_reason: str | None = None
+
+
+class ApprovalDecisionResponse(ApprovalResponse):
+    """审批决定已耐久接受；不表示 Worker 已恢复或工具已执行。"""
+
+    resume_command: ResumeCommandResponse | None = None

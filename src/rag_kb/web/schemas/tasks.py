@@ -1,7 +1,7 @@
 """任务 HTTP 契约；不暴露图节点或 checkpoint 载荷。"""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -49,6 +49,21 @@ class TaskResponse(BaseModel):
     interrupt_summary: str | None = None
     result_available: bool
     cancelled: bool
+
+
+class ResumeCommandResponse(BaseModel):
+    """已耐久接受的恢复命令；不回显正文或 checkpoint binding。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: str
+    status: Literal["accepted"] = "accepted"
+
+
+class TaskContinueResponse(TaskResponse):
+    """continue 的兼容任务响应，额外表达命令已入队。"""
+
+    resume_command: ResumeCommandResponse | None = None
 
 
 class TaskEventResponse(BaseModel):

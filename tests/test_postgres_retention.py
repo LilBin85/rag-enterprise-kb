@@ -659,7 +659,14 @@ def test_expire_waiting_task_uses_postgres_clock_and_writes_event(postgres_db) -
     )
     lease = repository.claim_next(worker_id="worker-a", lease_seconds=60)
     assert lease is not None
-    paused = repository.pause_for_user(lease, question="需要部门", run_id="trace")
+    paused = repository.pause_for_user(
+        lease,
+        question="需要部门",
+        checkpoint_ns="",
+        checkpoint_id="checkpoint-retention",
+        interrupt_id="interrupt-retention",
+        run_id="trace",
+    )
     with database.sessions.begin() as session:
         task = session.get(AgentTaskRow, ids.task_id)
         assert task is not None

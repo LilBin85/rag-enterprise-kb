@@ -990,11 +990,17 @@ def test_invalidated_approval_never_executes_adapter(stage, mutation: str) -> No
         approvals.approve(auth=stage.approver, approval_id=approval_id)
     _mutate(stage, mutation)
 
-    # 审批期失效在 decision 阶段（首次提交即失效）或幂等重放+最终门拒绝；
-    # 参数/版本漂移由 ToolExecutionService 最终门拒绝。
+    # 命令入队前已知的审批/身份/证据失效必须在 decision 事务 fail-closed；
+    # 参数/版本漂移仍由 ToolExecutionService 最终门拒绝。
     # 无论哪种路径：副作用必须为 0（D6 行 6）。
-    if mutation == "expiry":
-        with pytest.raises(ApprovalServiceError):
+    decision_failures = {
+        "expiry": "approval_expired",
+        "principal_changed": "task_auth_context_changed",
+        "acl_revoked": "evidence_authorization_stale",
+        "evidence_withdrawn": "evidence_ledger_binding_invalid",
+    }
+    if mutation in decision_failures:
+        with pytest.raises(ApprovalServiceError) as exc_info:
             worker.resume_for_approval(
                 auth=stage.approver,
                 task_id=stage.task_id,
@@ -1002,6 +1008,7 @@ def test_invalidated_approval_never_executes_adapter(stage, mutation: str) -> No
                 approval_id=approval_id,
                 decision="approve",
             )
+        assert exc_info.value.code == decision_failures[mutation]
     else:
         outcome = worker.resume_for_approval(
             auth=stage.approver,
@@ -1160,10 +1167,11 @@ def test_concurrent_decisions_single_action_on_postgres(stage) -> None:
     conflicts = [outcome for outcome in outcomes if isinstance(outcome, Exception)]
     assert len(finished) == 1
     assert len(conflicts) == 1
-    # 稳定冲突码：state_version CAS 或终态拒绝（后者由 winner 进度决定）。
+    # 稳定冲突码：state_version CAS、终态拒绝，或命令双领取失败。
     assert getattr(conflicts[0], "code", "") in {
         "task_state_conflict",
         "task_not_waiting_for_approval",
+        "task_resume_conflict",
     }
 
     assert adapter.calls == 1

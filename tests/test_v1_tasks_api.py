@@ -83,6 +83,10 @@ class FakeTaskRepository:
     def __init__(self) -> None:
         self.created: list[dict[str, object]] = []
         self.cancelled: list[dict[str, object]] = []
+        self.enqueued: list[dict[str, object]] = []
+        self._resume_commands: dict[
+            tuple[str, int], tuple[str, SimpleNamespace]
+        ] = {}
         self.current = _state()
         self.create_error: str | None = None
 
@@ -111,25 +115,35 @@ class FakeTaskRepository:
         )
         return self.current
 
-
-class FakeResumeWorker:
-    def __init__(self, repository: FakeTaskRepository) -> None:
-        self._repository = repository
-        self.calls: list[dict[str, object]] = []
-
-    def resume_for_user(self, **kwargs: object) -> object:
-        if self._repository.current.interrupt_kind != "user_clarification":
+    def enqueue_user_resume_command(self, **kwargs: object) -> SimpleNamespace:
+        auth = kwargs["auth"]
+        task_id = kwargs["task_id"]
+        expected_state_version = kwargs["expected_state_version"]
+        answer = kwargs["answer"]
+        if (
+            task_id != "task-1"
+            or auth.tenant_id != "tenant-a"
+            or auth.user_id != "owner-a"
+        ):
+            raise TaskRepositoryError("task_not_found")
+        if self.current.interrupt_kind != "user_clarification":
             raise TaskRepositoryError("task_resume_kind_invalid")
-        if kwargs["expected_state_version"] != self._repository.current.state_version:
+        if expected_state_version != self.current.state_version:
             raise TaskRepositoryError("task_state_conflict")
-        self.calls.append(kwargs)
-        self._repository.current = _state(
-            status=TaskStatus.REFUSED,
-            state_version=self._repository.current.state_version + 1,
-            result_ref="task-results/task-1/result.json",
-            result_hash="sha256:" + "a" * 64,
-        )
-        return SimpleNamespace(status="finished")
+        target = (task_id, expected_state_version)
+        existing = self._resume_commands.get(target)
+        if existing is not None:
+            if existing[0] == answer:
+                return existing[1]
+            raise TaskRepositoryError("task_resume_conflict")
+        command = SimpleNamespace(command_id=f"resume-command-{len(self.enqueued) + 1}")
+        self.enqueued.append(kwargs)
+        self._resume_commands[target] = (answer, command)
+        return command
+
+
+def _forbidden_task_resume_worker() -> object:
+    raise AssertionError("continue 路由不得构造 TaskWorker、模型或 checkpointer")
 
 
 class FakeTaskQueryService:
@@ -186,10 +200,9 @@ class FakeResultService:
 
 
 @pytest.fixture()
-def setup_app() -> Iterator[tuple[TestClient, FakeTaskRepository, FakeResumeWorker]]:
+def setup_app() -> Iterator[tuple[TestClient, FakeTaskRepository]]:
     app = create_app()
     repository = FakeTaskRepository()
-    worker = FakeResumeWorker(repository)
     provider = DemoTokenIdentityProvider(
         {
             "owner-token": Principal(
@@ -202,15 +215,20 @@ def setup_app() -> Iterator[tuple[TestClient, FakeTaskRepository, FakeResumeWork
                 user_id="owner-b",
                 attributes={"permissions": ["task:read"]},
             ),
+            "denied-token": Principal(
+                tenant_id="tenant-a",
+                user_id="denied-a",
+                attributes={"permissions": []},
+            ),
         }
     )
     app.dependency_overrides[build_identity_provider] = lambda: provider
     app.dependency_overrides[build_task_repository] = lambda: repository
     app.dependency_overrides[build_task_query_service] = lambda: FakeTaskQueryService()
-    app.dependency_overrides[build_task_resume_worker] = lambda: worker
+    app.dependency_overrides[build_task_resume_worker] = _forbidden_task_resume_worker
     app.dependency_overrides[build_task_result_service] = lambda: FakeResultService()
     with TestClient(app) as client:
-        yield client, repository, worker
+        yield client, repository
     app.dependency_overrides.clear()
 
 
@@ -219,7 +237,7 @@ def _headers(token: str = "owner-token") -> dict[str, str]:
 
 
 def test_create_and_get_task_expose_only_business_lifecycle(setup_app) -> None:
-    client, repository, _ = setup_app
+    client, repository = setup_app
     created = client.post(
         "/v1/tasks",
         headers=_headers(),
@@ -237,7 +255,7 @@ def test_create_and_get_task_expose_only_business_lifecycle(setup_app) -> None:
 
 
 def test_create_rejects_non_research_task_modes(setup_app) -> None:
-    client, repository, _ = setup_app
+    client, repository = setup_app
     response = client.post(
         "/v1/tasks",
         headers=_headers(),
@@ -250,7 +268,7 @@ def test_create_rejects_non_research_task_modes(setup_app) -> None:
 def test_create_controlled_action_requires_enabled_gate_and_live_capability(
     setup_app, monkeypatch
 ) -> None:
-    client, repository, _ = setup_app
+    client, repository = setup_app
     monkeypatch.setattr(
         tasks_router,
         "get_settings",
@@ -285,7 +303,7 @@ def test_create_controlled_action_requires_enabled_gate_and_live_capability(
 def test_create_controlled_action_uses_server_protocol_and_rejects_injection(
     setup_app, monkeypatch
 ) -> None:
-    client, repository, _ = setup_app
+    client, repository = setup_app
     monkeypatch.setattr(
         tasks_router,
         "get_settings",
@@ -323,7 +341,7 @@ def test_create_controlled_action_uses_server_protocol_and_rejects_injection(
 
 
 def test_create_returns_503_without_compatible_worker_capability(setup_app) -> None:
-    client, repository, _ = setup_app
+    client, repository = setup_app
     repository.create_error = "research_agent_unavailable"
 
     response = client.post(
@@ -337,7 +355,7 @@ def test_create_returns_503_without_compatible_worker_capability(setup_app) -> N
 
 
 def test_result_is_read_from_server_side_reference(setup_app) -> None:
-    client, repository, _ = setup_app
+    client, repository = setup_app
     repository.current = _state(
         status=TaskStatus.REFUSED,
         result_ref="task-results/task-1/result.json",
@@ -353,7 +371,7 @@ def test_result_is_read_from_server_side_reference(setup_app) -> None:
 
 
 def test_result_contract_distinguishes_expired_unavailable_and_integrity(setup_app) -> None:
-    client, repository, _ = setup_app
+    client, repository = setup_app
     repository.current = _state(
         status=TaskStatus.REFUSED,
         result_ref="task-results/task-1/result.json",
@@ -398,8 +416,8 @@ def test_result_contract_distinguishes_expired_unavailable_and_integrity(setup_a
     assert client.get("/v1/tasks/task-1/result", headers=_headers()).status_code == 409
 
 
-def test_continue_passes_answer_only_to_controlled_worker_resume(setup_app) -> None:
-    client, repository, worker = setup_app
+def test_continue_only_enqueues_durable_command_without_worker_construction(setup_app) -> None:
+    client, repository = setup_app
     repository.current = _state(
         status=TaskStatus.WAITING_FOR_USER,
         interrupt_kind="user_clarification",
@@ -411,18 +429,36 @@ def test_continue_passes_answer_only_to_controlled_worker_resume(setup_app) -> N
         headers=_headers(),
         json={"answer": "人力资源部", "expected_state_version": 1},
     )
+    repeated = client.post(
+        "/v1/tasks/task-1/continue",
+        headers=_headers(),
+        json={"answer": "人力资源部", "expected_state_version": 1},
+    )
+    conflicting = client.post(
+        "/v1/tasks/task-1/continue",
+        headers=_headers(),
+        json={"answer": "财务部", "expected_state_version": 1},
+    )
 
-    assert response.status_code == 200
-    assert len(worker.calls) == 1
-    assert worker.calls[0]["task_id"] == "task-1"
-    assert worker.calls[0]["expected_state_version"] == 1
-    assert worker.calls[0]["answer"] == "人力资源部"
+    assert response.status_code == 202
+    assert repeated.status_code == 202
+    assert conflicting.status_code == 409
+    assert len(repository.enqueued) == 1
+    assert repository.enqueued[0]["task_id"] == "task-1"
+    assert repository.enqueued[0]["expected_state_version"] == 1
+    assert repository.enqueued[0]["answer"] == "人力资源部"
+    assert response.json()["resume_command"] == {
+        "command_id": "resume-command-1",
+        "status": "accepted",
+    }
+    assert repeated.json()["resume_command"] == response.json()["resume_command"]
     assert "answer" not in response.json()
-    assert response.json()["result_available"] is True
+    assert response.json()["status"] == "waiting_for_user"
+    assert response.json()["result_available"] is False
 
 
 def test_continue_rejects_injected_resume_fields_and_tool_approval(setup_app) -> None:
-    client, repository, worker = setup_app
+    client, repository = setup_app
     repository.current = _state(
         task_mode=TaskMode.CONTROLLED_ACTION,
         status=TaskStatus.WAITING_FOR_APPROVAL,
@@ -450,11 +486,47 @@ def test_continue_rejects_injected_resume_fields_and_tool_approval(setup_app) ->
 
     assert wrong_route.status_code == 409
     assert injected.status_code == 422
-    assert worker.calls == []
+    assert repository.enqueued == []
+
+
+def test_continue_preserves_permission_tenant_version_and_length_boundaries(setup_app) -> None:
+    client, repository = setup_app
+    repository.current = _state(
+        status=TaskStatus.WAITING_FOR_USER,
+        interrupt_kind="user_clarification",
+        interrupt_summary="需要哪个部门？",
+    )
+
+    denied = client.post(
+        "/v1/tasks/task-1/continue",
+        headers=_headers("denied-token"),
+        json={"answer": "人力资源部", "expected_state_version": 1},
+    )
+    cross_tenant = client.post(
+        "/v1/tasks/task-1/continue",
+        headers=_headers("outsider-token"),
+        json={"answer": "人力资源部", "expected_state_version": 1},
+    )
+    stale = client.post(
+        "/v1/tasks/task-1/continue",
+        headers=_headers(),
+        json={"answer": "人力资源部", "expected_state_version": 2},
+    )
+    too_long = client.post(
+        "/v1/tasks/task-1/continue",
+        headers=_headers(),
+        json={"answer": "a" * 2_001, "expected_state_version": 1},
+    )
+
+    assert denied.status_code == 403
+    assert cross_tenant.status_code == 404
+    assert stale.status_code == 409
+    assert too_long.status_code == 422
+    assert repository.enqueued == []
 
 
 def test_cancel_events_and_cross_tenant_errors_are_stable(setup_app) -> None:
-    client, repository, _ = setup_app
+    client, repository = setup_app
     events = client.get("/v1/tasks/task-1/events", headers=_headers())
     cross_tenant = client.get("/v1/tasks/task-1", headers=_headers("outsider-token"))
     cancelled = client.post(

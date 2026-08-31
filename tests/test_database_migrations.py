@@ -32,6 +32,7 @@ EXPECTED_TABLES = {
     "plan_revisions",
     "principals",
     "task_events",
+    "task_resume_commands",
     "tenants",
     "tool_calls",
 }
@@ -665,7 +666,7 @@ def test_m2_protocol_and_artifact_lifecycle_round_trip_preserves_history(tmp_pat
     }
 
     command.upgrade(config, "head")
-    assert EXPECTED_DATABASE_REVISION == "20260829_0014"
+    assert EXPECTED_DATABASE_REVISION == "20260831_0015"
     inspector = inspect(database.engine)
     assert "required_protocol_version" in {
         item["name"] for item in inspector.get_columns("agent_tasks")
