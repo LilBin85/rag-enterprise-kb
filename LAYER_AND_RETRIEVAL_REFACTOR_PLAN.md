@@ -484,7 +484,7 @@ upload_reconciler
 - Checkpoint 兼容：已持久化 MsgPack checkpoint 仍以 `rag_kb.agent.result.TaskResultCandidate` 路径引用类型，shim re-export + serde 白名单双路径（旧路径读、新路径写）保证旧数据可继续反序列化；新增路径仅扩展 serde allowlist，不改 checkpoint 协议、prompt、工具 Schema 或预算。
 - 实际依赖收缩：application→agent 从 3 条降至 0 条；总违规从 3 条降至 0 条；`TEMPORARY_ALLOWLIST` 清空，架构棘轮进入零豁免状态。新增 `test_agent_layer_consumes_stable_application_contract` 锁定 worker/shim 与 application 契约的依赖方向。
 - 验证证据：`compileall src scripts tests` 通过；checkpoint serde、验收报告、架构、task agent、worker/approval/tool 恢复等定向回归 25+159 passed（含 serde 白名单双路径 round-trip）；全量本地回归 542 passed、45 skipped；`git diff --check` 通过。
-- 遗留风险：45 项真实 PostgreSQL/Qdrant 集成因 `RAG_KB_TEST_POSTGRES_URL` 未配置或相关服务不可用跳过；F1 最终回归（全仓依赖图扫描、隐私扫描、E2E/Compose 证据）待执行。
+- 遗留风险：45 项真实 PostgreSQL/Qdrant 集成因 `RAG_KB_TEST_POSTGRES_URL` 未配置或相关服务不可用跳过；F1 最终回归已完成，结果见 F1 当前执行记录。
 
 ### L6：收口 application/agent 小型循环
 
@@ -541,8 +541,8 @@ upload_reconciler
 | L2 Fast Query 持久化端口 | 已完成 | `KnowledgeQueryLifecyclePort` 与数据库 adapter | 78 项 Fast Query/API/ACL/Worker/架构测试通过；8 项 PostgreSQL 测试因环境未配置跳过 | 真实 PostgreSQL fencing/撤权回归待可用环境 |
 | L3 文档摄取投影边界 | 已完成 | document/indexing/object-store ports 与 `DatabaseDocumentLifecycle` | 171 项定向测试通过，4 项真实集成因环境跳过；编译、Compose、diff 通过 | 真实 PostgreSQL/Qdrant 回归待可用环境 |
 | L4 查询结果正文边界 | 已完成 | `application.ports.task_read` 与 `DatabaseTask*Reader` | 186 项定向测试通过，19 项真实 PostgreSQL 集成因环境跳过；编译、Compose、diff 通过 | L6 尚余 4 条 application→agent 依赖 |
-| L5 高风险任务事务边界 | 已完成 | retention/approval/tool/task worker ports | L5.4 已清零 application→infrastructure/SQLAlchemy；L6 后全量本地历史结果 542 passed、45 skipped | F1 复核发现两条旧维护路径锁序不一致，待最小修复与真实 PostgreSQL 回归 |
-| L6 Agent 小环收口 | 已完成 | `application.agent_contract` 与 agent shim/serde 双路径 allowlist | 全量本地 542 passed、45 项真实集成因环境跳过；编译、diff、serde round-trip 通过 | F1 最终回归待执行 |
+| L5 高风险任务事务边界 | 已完成 | retention/approval/tool/task worker ports | L5.4 已清零 application→infrastructure/SQLAlchemy；L6 后全量本地历史结果 542 passed、45 skipped | F1 最终回归已完成；R1/R2/R3 按本轮范围保持待执行 |
+| L6 Agent 小环收口 | 已完成 | `application.agent_contract` 与 agent shim/serde 双路径 allowlist | 全量本地 542 passed、45 项真实集成因环境跳过；编译、diff、serde round-trip 通过 | F1 最终回归已完成；R1/R2/R3 按本轮范围保持待执行 |
 | R3 文档与观测 | 待执行 | 路径选择说明 | - | - |
 | F1 最终回归 | 已完成 | 零 allowlist 与验收证据 | 静态门禁、27 项定向集、编译/diff、65 项 integration、588 项全量、真实 M1/M2 与 BGE-M3 检索 benchmark 均通过；`TaskWorker` 直接使用 LangGraph/LangChain 经决策允许 | R1/R2/R3 按本轮范围保持待执行 |
 
