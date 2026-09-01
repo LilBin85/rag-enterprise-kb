@@ -7,14 +7,14 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
-from rag_kb.application.ingestion_worker import ClaimedIngestionJob
+from rag_kb.application.ports.indexing import ClaimedIngestionJob, DocumentParserPort
+from rag_kb.application.ports.object_store import ObjectStorePort
 from rag_kb.domain.indexing import (
     ParsedChunk,
     ParsedDocument,
     compute_chunk_manifest_digest,
 )
 from rag_kb.ingestion import ParsedItem, _split_long_paragraph, parse_document, parse_markdown
-from rag_kb.infrastructure.object_store import LocalObjectStore
 
 
 class DocumentParseError(RuntimeError):
@@ -91,12 +91,12 @@ def _chunk_items(items: list[ParsedItem], *, version_id: str, max_chars: int) ->
     return tuple(chunks)
 
 
-class LocalDocumentParser:
+class LocalDocumentParser(DocumentParserPort):
     """对象存储读取、原始哈希验证、格式解析与确定性切块的适配器。"""
 
     def __init__(
         self,
-        object_store: LocalObjectStore,
+        object_store: ObjectStorePort,
         *,
         max_chars: int = 800,
         document_parser: Callable[[Path], list[ParsedItem]] = parse_document,

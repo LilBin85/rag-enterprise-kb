@@ -29,6 +29,9 @@ from rag_kb.domain.fingerprints import canonical_fingerprint
 from rag_kb.domain.tasks import TaskBudgets, TaskMode
 from rag_kb.domain.tools import ApprovalPolicy, ToolMode
 from rag_kb.infrastructure.database import Base, build_database
+from rag_kb.infrastructure.database.approval_lifecycle import (
+    DatabaseApprovalLifecycle,
+)
 from rag_kb.infrastructure.database.models import (
     ACLGrantRow,
     AgentTaskRow,
@@ -43,6 +46,9 @@ from rag_kb.infrastructure.database.models import (
     ToolCallRow,
 )
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository, TaskLease
+from rag_kb.infrastructure.database.tool_execution_lifecycle import (
+    DatabaseToolExecutionLifecycle,
+)
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
 from rag_kb.observability import Observability
@@ -175,7 +181,7 @@ def _arguments(content: str = "body") -> dict[str, object]:
 
 
 def _approved(database, requester, approver, arguments=None):
-    service = ApprovalService(database)
+    service = ApprovalService(DatabaseApprovalLifecycle(database))
     binding = service.request(auth=requester, task_id="task-1", plan_revision=1, plan_digest=_binding(database)[0], evidence_digest=_binding(database)[1], evidence_ids=("evidence-1",), tool_name="create_report_artifact", tool_version="1.0.0", arguments=arguments or _arguments(), expires_at=datetime.now(UTC) + timedelta(minutes=5))
     return service, service.approve(auth=approver, approval_id=binding.approval_id)
 
@@ -198,7 +204,7 @@ def _binding(database):
 
 def _executor(database, registry, approvals) -> ToolExecutionService:
     return ToolExecutionService(
-        database,
+        DatabaseToolExecutionLifecycle(database),
         registry,
         approvals,
         tool_results=LocalObjectStore(Path(database.engine.url.database).parent / "tool-results"),
@@ -223,21 +229,43 @@ def _telemetry() -> tuple[Observability, InMemorySpanExporter]:
 def test_any_approval_binding_change_invalidates_execution(stage5) -> None:
     database, requester, approver, _, _lease = stage5
     service, binding = _approved(database, requester, approver)
-    changes = ({"task_id": "other-task"}, {"plan_revision": 2}, {"plan_digest": "sha256:other"}, {"evidence_digest": "sha256:other"}, {"tool_version": "2.0"}, {"arguments_hash": "sha256:other"})
+    adapter = _CountingAdapter()
+    executor = _executor(
+        database,
+        ToolRegistry(adapters={"create_report_artifact": adapter}),
+        service,
+    )
+    changes = (
+        {"task_id": "other-task"},
+        {"plan_revision": 2},
+        {"plan_digest": "sha256:other"},
+        {"evidence_digest": "sha256:other"},
+        {"arguments": _arguments("other")},
+    )
     for change in changes:
         plan_digest, evidence_digest = _binding(database)
-        values = dict(auth=requester, approval_id=binding.approval_id, task_id="task-1", plan_revision=1, plan_digest=plan_digest, evidence_digest=evidence_digest, evidence_ids=("evidence-1",), tool_name="create_report_artifact", tool_version="1.0.0", arguments_hash=binding.canonical_arguments_hash)
-        values.update(change)
-        with database.sessions() as session, pytest.raises(
-            ApprovalServiceError,
-            match="approval_(binding|evidence_exact_set)_invalid",
-        ):
-            service.validate_in_session(session, **values)
+        request = ToolExecutionRequest(
+            auth=requester,
+            approval_id=binding.approval_id,
+            task_id="task-1",
+            plan_revision=1,
+            plan_digest=plan_digest,
+            evidence_digest=evidence_digest,
+            evidence_ids=("evidence-1",),
+            tool_name="create_report_artifact",
+            arguments=_arguments(),
+            worker_id="worker-1",
+            lease_generation=1,
+            idempotency_key="binding-check",
+        )
+        with pytest.raises(ToolExecutionError):
+            executor.execute(replace(request, **change))
+    assert adapter.calls == 0
 
 
 def test_approval_requires_authorized_approver_and_write_is_idempotent(stage5) -> None:
     database, requester, approver, _, lease = stage5
-    service = ApprovalService(database)
+    service = ApprovalService(DatabaseApprovalLifecycle(database))
     plan_digest, evidence_digest = _binding(database)
     pending = service.request(auth=requester, task_id="task-1", plan_revision=1, plan_digest=plan_digest, evidence_digest=evidence_digest, evidence_ids=("evidence-1",), tool_name="create_report_artifact", tool_version="1.0.0", arguments=_arguments(), expires_at=datetime.now(UTC) + timedelta(minutes=5))
     with pytest.raises(ApprovalServiceError, match="approver_permission_denied"):
@@ -301,7 +329,7 @@ def test_same_approval_can_be_consumed_once_even_with_a_new_idempotency_key(stag
     executor = _executor(database, ToolRegistry(adapters={"create_report_artifact": _VerifiedAdapter()}), service)
     first = executor.execute(_request(requester, binding.approval_id, lease, key="key-1"))
     assert first.status == "succeeded"
-    with pytest.raises(ApprovalServiceError, match="approval_not_approved"):
+    with pytest.raises(ToolExecutionError, match="approval_not_approved"):
         executor.execute(_request(requester, binding.approval_id, lease, key="key-2"))
 
 
@@ -334,7 +362,7 @@ def test_non_controlled_task_cannot_request_write_approval(stage5) -> None:
         task.task_mode = TaskMode.RESEARCH.value
     plan_digest, evidence_digest = _binding(database)
     with pytest.raises(ApprovalServiceError, match="approval_plan_binding_invalid"):
-        ApprovalService(database).request(
+        ApprovalService(DatabaseApprovalLifecycle(database)).request(
             auth=requester,
             task_id="task-1",
             plan_revision=1,
@@ -377,7 +405,10 @@ def test_stale_worker_is_fenced_before_adapter_call(stage5) -> None:
 def test_expired_approval_is_persisted_and_same_binding_can_be_requested_again(stage5) -> None:
     database, requester, approver, _, _lease = stage5
     clock = [datetime.now(UTC)]
-    service = ApprovalService(database, now=lambda: clock[0])
+    service = ApprovalService(
+        DatabaseApprovalLifecycle(database, now=lambda: clock[0]),
+        now=lambda: clock[0],
+    )
     binding = service.request(
         auth=requester,
         task_id="task-1",
@@ -585,7 +616,7 @@ def test_timeout_replaces_stuck_executor_for_next_call(stage5) -> None:
     executor = _executor(
         database,
         ToolRegistry([definition], adapters={"create_report_artifact": adapter}),
-        ApprovalService(database),
+        ApprovalService(DatabaseApprovalLifecycle(database)),
     )
 
     try:
@@ -643,7 +674,11 @@ def test_expired_running_sweeper_persists_unknown_without_adapter_execution(stag
             )
         )
     adapter = _CountingAdapter()
-    service = _executor(database, ToolRegistry(adapters={"create_report_artifact": adapter}), ApprovalService(database))
+    service = _executor(
+        database,
+        ToolRegistry(adapters={"create_report_artifact": adapter}),
+        ApprovalService(DatabaseApprovalLifecycle(database)),
+    )
     assert service.expire_stale_running() == 1
     with database.sessions() as session:
         call = session.scalar(select(ToolCallRow).where(ToolCallRow.tool_call_id == tool_call_id))
@@ -708,7 +743,7 @@ def _request_with_checkpoint_binding(
 
 def test_request_rejects_unknown_tool_and_forged_version(stage5) -> None:
     database, requester, _approver, _, _lease = stage5
-    service = ApprovalService(database)
+    service = ApprovalService(DatabaseApprovalLifecycle(database))
     base = _request_with_checkpoint_binding(database, requester)
 
     with pytest.raises(ApprovalServiceError, match="tool_not_registered"):
@@ -791,7 +826,7 @@ def test_initiator_cannot_self_approve(stage5) -> None:
         task.lease_expires_at = datetime.now(UTC) + timedelta(seconds=60)
         task.lease_generation = 1
 
-    service = ApprovalService(database)
+    service = ApprovalService(DatabaseApprovalLifecycle(database))
     snapshot = canonical_evidence_snapshot(("evidence-self",), require_non_empty=True)
     plan = {"steps": ["report"], "evidence_ids": ["evidence-self"]}
     plan_digest = canonical_fingerprint("task_plan", plan)
@@ -844,7 +879,7 @@ def test_initiator_cannot_self_approve(stage5) -> None:
 
 def test_checkpoint_binding_persists_and_resync_reuses_active_approval(stage5) -> None:
     database, requester, _approver, _, _lease = stage5
-    service = ApprovalService(database)
+    service = ApprovalService(DatabaseApprovalLifecycle(database))
     base = _request_with_checkpoint_binding(database, requester)
 
     first = service.request(**base, checkpoint_binding=_checkpoint_binding())
@@ -882,7 +917,7 @@ def test_checkpoint_binding_persists_and_resync_reuses_active_approval(stage5) -
 
 def test_checkpoint_binding_conflict_fails_closed(stage5) -> None:
     database, requester, _approver, _, _lease = stage5
-    service = ApprovalService(database)
+    service = ApprovalService(DatabaseApprovalLifecycle(database))
     base = _request_with_checkpoint_binding(database, requester)
     service.request(**base, checkpoint_binding=_checkpoint_binding())
 
@@ -897,7 +932,7 @@ def test_checkpoint_binding_conflict_fails_closed(stage5) -> None:
 
 def test_legacy_active_approval_adopts_checkpoint_binding(stage5) -> None:
     database, requester, _approver, _, _lease = stage5
-    service = ApprovalService(database)
+    service = ApprovalService(DatabaseApprovalLifecycle(database))
     base = _request_with_checkpoint_binding(database, requester)
 
     legacy = service.request(**base)
@@ -920,7 +955,7 @@ def test_checkpoint_binding_change_does_not_consume_same_approval(
     stage5, field: str, value: str
 ) -> None:
     database, requester, _approver, _, _lease = stage5
-    service = ApprovalService(database)
+    service = ApprovalService(DatabaseApprovalLifecycle(database))
     base = _request_with_checkpoint_binding(database, requester)
     first = service.request(**base, checkpoint_binding=_checkpoint_binding())
     # 不同 checkpoint 事实 = 不同 action：新 approval，不消费第一条。
@@ -941,7 +976,7 @@ def test_checkpoint_binding_change_does_not_consume_same_approval(
 
 def test_ensure_action_binding_creates_minimal_immutable_plan(stage5) -> None:
     database, requester, _approver, _, _lease = stage5
-    service = ApprovalService(database)
+    service = ApprovalService(DatabaseApprovalLifecycle(database))
     binding = _checkpoint_binding()
 
     action = service.ensure_action_binding(
@@ -997,7 +1032,7 @@ def test_ensure_action_binding_creates_minimal_immutable_plan(stage5) -> None:
 
 def test_ensure_action_binding_rejects_unknown_tool(stage5) -> None:
     database, requester, _approver, _, _lease = stage5
-    service = ApprovalService(database)
+    service = ApprovalService(DatabaseApprovalLifecycle(database))
     with pytest.raises(ApprovalServiceError, match="tool_not_registered"):
         service.ensure_action_binding(
             auth=requester,
@@ -1010,7 +1045,7 @@ def test_ensure_action_binding_rejects_unknown_tool(stage5) -> None:
 
 def test_ensure_action_binding_rejects_invalid_checkpoint_binding(stage5) -> None:
     database, requester, _approver, _, _lease = stage5
-    service = ApprovalService(database)
+    service = ApprovalService(DatabaseApprovalLifecycle(database))
     with pytest.raises(ApprovalServiceError, match="approval_checkpoint_binding_invalid"):
         service.ensure_action_binding(
             auth=requester,
@@ -1055,7 +1090,10 @@ def test_binding_tampering_keeps_write_adapter_unexecuted(
     """两个 WRITE 工具参数化覆盖执行绑定；任一字段被篡改时 adapter 调用为 0。"""
     database, requester, approver, _, lease = stage5
     clock = [datetime.now(UTC)]
-    service = ApprovalService(database, now=lambda: clock[0])
+    service = ApprovalService(
+        DatabaseApprovalLifecycle(database, now=lambda: clock[0]),
+        now=lambda: clock[0],
+    )
     plan_digest, evidence_digest = _binding(database)
     # evidence 维度会触发 preflight 失败 → _reject_stale_approval 自动拒绝路径；
     # checkpoint 绑定行的自动拒绝审计字段（批次 0 已知缺口，批次 2 修复）尚未接线，
@@ -1147,7 +1185,7 @@ def test_valid_checkpoint_bound_approval_executes_exactly_once(
 ) -> None:
     """对照组：绑定完整未篡改时，两个 WRITE 工具各恰好执行一次。"""
     database, requester, approver, _, lease = stage5
-    service = ApprovalService(database)
+    service = ApprovalService(DatabaseApprovalLifecycle(database))
     plan_digest, evidence_digest = _binding(database)
     binding = service.request(
         auth=requester,
@@ -1221,7 +1259,7 @@ def test_stale_checkpoint_bound_approval_auto_rejection_writes_audit(stage5) -> 
     对绑定行触发 ck_approvals_rejected_audit_complete IntegrityError。
     """
     database, requester, approver, _, lease = stage5
-    service = ApprovalService(database)
+    service = ApprovalService(DatabaseApprovalLifecycle(database))
     plan_digest, evidence_digest = _binding(database)
     pending = service.request(
         auth=requester,
@@ -1264,7 +1302,7 @@ def test_approve_time_binding_invalidation_writes_reject_audit(stage5) -> None:
     审批者是触发拒绝的真实主体，rejected_by 取审批者。
     """
     database, requester, approver, _, _lease = stage5
-    service = ApprovalService(database)
+    service = ApprovalService(DatabaseApprovalLifecycle(database))
     plan_digest, evidence_digest = _binding(database)
     pending = service.request(
         auth=requester,
@@ -1300,7 +1338,7 @@ def test_repeat_same_decision_is_idempotent_and_opposite_decision_conflicts(    
 ) -> None:
     """相同 decision 幂等返回当前状态；相反 decision 返回稳定冲突错误。"""
     database, requester, approver, _, _lease = stage5
-    service = ApprovalService(database)
+    service = ApprovalService(DatabaseApprovalLifecycle(database))
     plan_digest, evidence_digest = _binding(database)
     common = dict(
         auth=requester,

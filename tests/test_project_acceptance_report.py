@@ -18,7 +18,9 @@ def _strict_msgpack() -> dict[str, object]:
         "runtime_flag": True,
         "serializer": "JsonPlusSerializer",
         "pickle_fallback": False,
-        "allowed_msgpack_modules": ["rag_kb.agent.result.TaskResultCandidate"],
+        "allowed_msgpack_modules": sorted(
+            report_builder._STRICT_MSGPACK_ALLOWLIST
+        ),
     }
 
 
@@ -288,7 +290,9 @@ def test_m1_e2e_requires_the_exact_live_research_trace(tmp_path: Path, monkeypat
         "runtime_flag": True,
         "serializer": "JsonPlusSerializer",
         "pickle_fallback": False,
-        "allowed_msgpack_modules": ["rag_kb.agent.result.TaskResultCandidate"],
+        "allowed_msgpack_modules": sorted(
+            report_builder._STRICT_MSGPACK_ALLOWLIST
+        ),
     }
     assert report["tool"]["values"]["tool_trace"] == [
         "list_document_versions",

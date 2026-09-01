@@ -7,13 +7,14 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import and_, or_, select
 
-from rag_kb.application.ingestion_worker import (
+from rag_kb.application.ports.documents import DocumentRegistryConflict
+from rag_kb.application.ports.indexing import (
     ClaimedIngestionJob,
-    DocumentRegistryIngestionJobPort,
+    ClaimedProjectionRepair,
+    ProjectionReconcilePort,
 )
-from rag_kb.application.projection_reconciler import ClaimedProjectionRepair
 from rag_kb.domain.indexing import IndexReceipt, compute_chunk_manifest_digest
-from rag_kb.infrastructure.database.document_repository import DocumentRegistryConflict
+from rag_kb.infrastructure.database.document_lifecycle import DatabaseDocumentLifecycle
 from rag_kb.infrastructure.database.models import (
     ChunkMetadataRow,
     DocumentRow,
@@ -24,11 +25,11 @@ from rag_kb.infrastructure.database.session import Database
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
 
 
-class DatabaseProjectionReconcilePort:
+class DatabaseProjectionReconcilePort(ProjectionReconcilePort):
     def __init__(self, database: Database, *, now=None) -> None:
         self._database = database
         self._now = now or (lambda: datetime.now(UTC))
-        self._guard = DocumentRegistryIngestionJobPort(database, now=self._now)
+        self._guard = DatabaseDocumentLifecycle(database, now=self._now)
 
     def claim_next(
         self, *, worker_id: str, lease_seconds: int

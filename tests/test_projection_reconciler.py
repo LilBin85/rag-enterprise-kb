@@ -6,11 +6,8 @@ from datetime import UTC, datetime, timedelta
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from rag_kb.application.ingestion_worker import ClaimedIngestionJob
-from rag_kb.application.projection_reconciler import (
-    ClaimedProjectionRepair,
-    ProjectionReconciler,
-)
+from rag_kb.application.ports.indexing import ClaimedIngestionJob, ClaimedProjectionRepair
+from rag_kb.application.projection_reconciler import ProjectionReconciler
 from rag_kb.domain.indexing import (
     IndexReceipt,
     ParsedChunk,

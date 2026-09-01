@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import threading
 from dataclasses import dataclass
@@ -13,21 +12,25 @@ from uuid import uuid4
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 from opentelemetry import context as otel_context
-from sqlalchemy import func, select
-
-from rag_kb.agent.context import AgentRunContext
-from rag_kb.agent.result import (
+from rag_kb.application.agent_contract import (
+    CONTROLLED_WRITE_TOOL_NAMES,
     AgentResultStore,
-    ArtifactSummary,
+    AgentRunContext,
     TaskResultCandidate,
     build_controlled_task_result,
     build_task_result,
 )
-from rag_kb.agent.tools import CONTROLLED_WRITE_TOOL_NAMES
 from rag_kb.application.approval_service import (
     ApprovalCheckpointBinding,
     ApprovalService,
     stable_write_action_key,
+)
+from rag_kb.application.ports.task_worker import (
+    ResumeCommandLease,
+    TaskLease,
+    TaskWorkerLifecyclePort,
+    TaskWorkerPersistenceError,
+    TaskWorkerSettlementPort,
 )
 from rag_kb.application.tool_execution_service import (
     _STALE_TOOL_CODES,
@@ -42,18 +45,6 @@ from rag_kb.domain.resume_commands import (
     ResumeCommandKind,
 )
 from rag_kb.domain.tasks import TaskBudgets, TaskMode, TaskStatus
-from rag_kb.infrastructure.database.evidence_repository import (
-    EvidenceLedgerConflict,
-    EvidenceLedgerRepository,
-)
-from rag_kb.infrastructure.database.models import AgentTaskRow, ArtifactRow, ToolCallRow
-from rag_kb.infrastructure.database.task_repository import (
-    DatabaseTaskRepository,
-    ResumeCommandLease,
-    TaskLease,
-    TaskRepositoryError,
-)
-from rag_kb.infrastructure.object_store.local import LocalObjectStore
 from rag_kb.observability import (
     bind_run_id,
     clear_run_id,
@@ -180,20 +171,18 @@ class TaskWorker:
     def __init__(
         self,
         *,
-        repository: DatabaseTaskRepository,
+        repository: TaskWorkerLifecyclePort,
         auth_contexts: TaskAuthContextPort,
         agent_for: Callable[[TaskBudgets], Any],
         results: AgentResultStore,
-        evidence: EvidenceLedgerRepository,
+        settlement: TaskWorkerSettlementPort,
         tools: ToolExecutionService,
-        database,
         worker_id: str,
         lease_seconds: int = 300,
         capability_name: str | None = None,
         protocol_version: str | None = None,
         controlled_agent_for: Callable[[TaskBudgets], Any] | None = None,
         approvals: ApprovalService | None = None,
-        objects: LocalObjectStore | None = None,
         close=None,
     ) -> None:
         if (
@@ -208,9 +197,8 @@ class TaskWorker:
         self._auth_contexts = auth_contexts
         self._agent_for = agent_for
         self._results = results
-        self._evidence = evidence
+        self._settlement = settlement
         self._tools = tools
-        self._database = database
         self._worker_id = worker_id
         self._lease_seconds = lease_seconds
         self._capability_name = capability_name
@@ -219,8 +207,6 @@ class TaskWorker:
         # 未配置时受控任务保持 fail-closed，M1 Research 轨迹不变。
         self._controlled_agent_for = controlled_agent_for
         self._approvals = approvals
-        # 受控任务 settle 前 artifact 正文 hash 校验所需的对象存储。
-        self._objects = objects
         self._close = close
         self._accepting_tasks = True
         # 同一 eligible_at 时轮换，不让持续到达的任一类工作饿死另一类。
@@ -359,7 +345,7 @@ class TaskWorker:
             **self._claim_kwargs(),
         )
         if resume_lease is None:
-            raise TaskRepositoryError("task_resume_conflict")
+            raise TaskWorkerPersistenceError("task_resume_conflict")
         return self._run_claimed(
             resume_lease.task_lease,
             resume_lease=resume_lease,
@@ -433,14 +419,13 @@ class TaskWorker:
             expected_task_state_version=expected_state_version,
             decision=decision,
             reason=reason,
-            repository=self._repository,
         )
         resume_lease = self._repository.claim_resume_command(
             command_id=command.command_id,
             **self._claim_kwargs(),
         )
         if resume_lease is None:
-            raise TaskRepositoryError("task_resume_conflict")
+            raise TaskWorkerPersistenceError("task_resume_conflict")
         return self._run_claimed(
             resume_lease.task_lease,
             resume_lease=resume_lease,
@@ -496,7 +481,7 @@ class TaskWorker:
                         run_id=run_id,
                         resume_lease=resume_lease,
                     )
-                except TaskRepositoryError as exc:
+                except TaskWorkerPersistenceError as exc:
                     if exc.code not in _STALE_REPOSITORY_CODES:
                         stale_code = (
                             self._fail_resume_safely(
@@ -1223,21 +1208,16 @@ class TaskWorker:
                 )
             except ValueError as exc:
                 raise TaskWorkerError("task_evidence_candidate_invalid") from exc
-            with self._database.sessions() as session:
-                try:
-                    citations = self._evidence.citations_from_ledger(
-                        session,
-                        task_id=lease.state.task_id,
-                        evidence_ids=snapshot.evidence_ids,
-                        auth=auth,
-                    )
-                except EvidenceLedgerConflict as exc:
-                    raise TaskWorkerError("task_evidence_revalidation_failed") from exc
+            citations = self._settlement.revalidate_citations(
+                task_id=lease.state.task_id,
+                evidence_ids=snapshot.evidence_ids,
+                auth=auth,
+            )
 
         if lease.state.task_mode is TaskMode.CONTROLLED_ACTION:
             artifacts = ()
             if candidate.artifact_ids:
-                artifacts = self._verified_artifacts(
+                artifacts = self._settlement.verify_artifacts(
                     tenant_id=auth.tenant_id,
                     task_id=lease.state.task_id,
                     artifact_ids=candidate.artifact_ids,
@@ -1300,85 +1280,18 @@ class TaskWorker:
             if isinstance(messages, (list, tuple))
             else 0
         )
-        with self._database.sessions() as session:
-            tool_calls = session.scalar(
-                select(func.count())
-                .select_from(ToolCallRow)
-                .where(
-                    ToolCallRow.tenant_id == tenant_id,
-                    ToolCallRow.task_id == task_id,
-                )
-            )
-        return {"model_calls": model_calls, "tool_calls": int(tool_calls or 0)}
-
-    def _verified_artifacts(
-        self,
-        *,
-        tenant_id: str,
-        task_id: str,
-        artifact_ids: tuple[str, ...],
-    ) -> tuple[ArtifactSummary, ...]:
-        """settle 前逐个校验产物归属与一致性；任一失败 fail-closed。
-
-        校验项：tenant/task 归属、status=ready、对象正文 sha256 与
-        content_hash 一致。候选声明之外的产物不会被注入最终结果。
-        """
-        if self._objects is None:
-            raise TaskWorkerError("task_artifact_binding_invalid")
-        with self._database.sessions() as session:
-            rows = {
-                row.artifact_id: row
-                for row in session.scalars(
-                    select(ArtifactRow).where(
-                        ArtifactRow.tenant_id == tenant_id,
-                        ArtifactRow.task_id == task_id,
-                        ArtifactRow.artifact_id.in_(artifact_ids),
-                    )
-                )
-            }
-        summaries: list[ArtifactSummary] = []
-        for artifact_id in artifact_ids:
-            row = rows.get(artifact_id)
-            if row is None or row.status != "ready":
-                raise TaskWorkerError("task_artifact_binding_invalid")
-            try:
-                content = self._objects.read(row.storage_key)
-            except (OSError, ValueError):
-                raise TaskWorkerError("task_artifact_binding_invalid") from None
-            digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
-            if digest != row.content_hash:
-                raise TaskWorkerError("task_artifact_binding_invalid")
-            summaries.append(
-                ArtifactSummary(
-                    artifact_id=row.artifact_id,
-                    artifact_type=row.artifact_type,
-                    content_hash=row.content_hash,
-                    status="ready",
-                )
-            )
-        return tuple(summaries)
+        tool_calls = self._settlement.tool_call_count(
+            tenant_id=tenant_id, task_id=task_id
+        )
+        return {"model_calls": model_calls, "tool_calls": tool_calls}
 
     def _delete_unbound_task_result(self, result_ref: str, task_id: str) -> None:
-        if self._task_result_is_bound(result_ref, task_id):
+        if self._settlement.is_task_result_bound(task_id=task_id, result_ref=result_ref):
             return
         try:
             self._results.delete_task_result(result_ref)
         except OSError:
             logger.error("未绑定任务结果补偿删除失败 task_id=%s", task_id)
-
-    def _task_result_is_bound(self, result_ref: str, task_id: str) -> bool:
-        try:
-            with self._database.sessions.begin() as session:
-                row = session.scalar(
-                    select(AgentTaskRow)
-                    .where(AgentTaskRow.task_id == task_id)
-                    .with_for_update()
-                )
-                return row is not None and row.result_ref == result_ref
-        except Exception:
-            # 提交确认丢失时不能猜测未绑定；保留对象交给孤儿扫描收敛。
-            logger.error("任务结果绑定状态确认失败 task_id=%s", task_id)
-            return True
 
     def _fail_safely(self, lease: TaskLease, code: str, run_id: str) -> str | None:
         try:
@@ -1388,7 +1301,7 @@ class TaskWorker:
                 error_code=code[:100],
                 run_id=run_id,
             )
-        except TaskRepositoryError as exc:
+        except TaskWorkerPersistenceError as exc:
             if exc.code in _STALE_REPOSITORY_CODES:
                 return exc.code
             logger.error("Research Agent 终态同步失败 task_id=%s", lease.state.task_id)
@@ -1420,7 +1333,7 @@ class TaskWorker:
                     resume_lease,
                     failure_code=code,
                 )
-        except TaskRepositoryError as exc:
+        except TaskWorkerPersistenceError as exc:
             if exc.code in _STALE_REPOSITORY_CODES:
                 return exc.code
             logger.error("恢复命令终态同步失败 task_id=%s", lease.state.task_id)

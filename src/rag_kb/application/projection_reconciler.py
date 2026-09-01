@@ -6,17 +6,17 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import timedelta
 from time import perf_counter
-from typing import Protocol
 
 from opentelemetry import context as otel_context
 
-from rag_kb.application.ingestion_worker import (
+from rag_kb.application.lease_heartbeat import LeaseHeartbeat
+from rag_kb.application.ports.indexing import (
     ClaimedIngestionJob,
+    ClaimedProjectionRepair,
     DocumentIndexPort,
     DocumentParserPort,
-    _LeaseHeartbeat,
+    ProjectionReconcilePort,
 )
-from rag_kb.domain.indexing import IndexReceipt
 from rag_kb.observability import (
     current_observability,
     error_category_for,
@@ -28,40 +28,10 @@ from rag_kb.observability import (
 
 
 @dataclass(frozen=True)
-class ClaimedProjectionRepair:
-    job: ClaimedIngestionJob
-    reconcile_lease_generation: int
-
-
-@dataclass(frozen=True)
 class ProjectionReconcileResult:
     status: str
     document_id: str | None = None
     error_code: str | None = None
-
-
-class ProjectionReconcilePort(Protocol):
-    def claim_next(
-        self, *, worker_id: str, lease_seconds: int
-    ) -> ClaimedProjectionRepair | None: ...
-
-    def projection_guard(self, claim: ClaimedProjectionRepair): ...
-
-    def projection_is_bound(self, claim: ClaimedProjectionRepair) -> bool: ...
-
-    def renew(self, claim: ClaimedProjectionRepair, *, lease_seconds: int) -> None: ...
-
-    def prepare_rebuild(self, claim: ClaimedProjectionRepair) -> ClaimedProjectionRepair: ...
-
-    def complete(
-        self,
-        claim: ClaimedProjectionRepair,
-        receipt: IndexReceipt,
-        *,
-        audit_after: timedelta,
-    ) -> None: ...
-
-    def fail(self, claim: ClaimedProjectionRepair, *, retry_after: timedelta) -> None: ...
 
 
 class ProjectionReconciler:
@@ -128,7 +98,7 @@ class ProjectionReconciler:
                             parent_context=heartbeat_context,
                         )
 
-                heartbeat = _LeaseHeartbeat(
+                heartbeat = LeaseHeartbeat(
                     (lambda: renew(claim, lease_seconds=self._lease_seconds))
                     if renew is not None
                     else None,

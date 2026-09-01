@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+import hashlib
+import logging
+
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from rag_kb.application.ports.object_store import ObjectStorePort
+from rag_kb.application.ports.task_read import ArtifactSummary
+from rag_kb.application.ports.task_worker import TaskWorkerPersistenceError
 from rag_kb.domain.evidence import EvidenceSnapshot, canonical_evidence_snapshot
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.fingerprints import canonical_fingerprint
@@ -14,11 +20,17 @@ from rag_kb.infrastructure.database.evidence_repository import (
 )
 from rag_kb.infrastructure.database.models import (
     AgentTaskRow,
+    ArtifactRow,
     GroupMembershipRow,
     PlanRevisionRow,
     PrincipalRow,
+    ToolCallRow,
 )
 from rag_kb.infrastructure.database.session import Database
+from rag_kb.models import Citation
+
+
+logger = logging.getLogger(__name__)
 
 
 class TaskExecutionContextError(RuntimeError):
@@ -217,3 +229,105 @@ class DatabaseTaskEvidencePort:
         except EvidenceLedgerConflict as exc:
             raise TaskExecutionContextError(str(exc)) from exc
         return snapshot
+
+
+class DatabaseTaskWorkerSettlement:
+    """收敛 TaskWorker 完成期的数据库和对象存储操作。"""
+
+    def __init__(
+        self,
+        database: Database,
+        objects: ObjectStorePort,
+        *,
+        evidence_repository: EvidenceLedgerRepository | None = None,
+    ) -> None:
+        self._database = database
+        self._objects = objects
+        self._evidence = evidence_repository or EvidenceLedgerRepository()
+
+    def revalidate_citations(
+        self,
+        *,
+        task_id: str,
+        evidence_ids: tuple[str, ...],
+        auth: AuthContext,
+    ) -> tuple[Citation, ...]:
+        with self._database.sessions() as session:
+            try:
+                return self._evidence.citations_from_ledger(
+                    session,
+                    task_id=task_id,
+                    evidence_ids=evidence_ids,
+                    auth=auth,
+                )
+            except EvidenceLedgerConflict as exc:
+                raise TaskWorkerPersistenceError(
+                    "task_evidence_revalidation_failed"
+                ) from exc
+
+    def tool_call_count(self, *, tenant_id: str, task_id: str) -> int:
+        with self._database.sessions() as session:
+            count = session.scalar(
+                select(func.count())
+                .select_from(ToolCallRow)
+                .where(
+                    ToolCallRow.tenant_id == tenant_id,
+                    ToolCallRow.task_id == task_id,
+                )
+            )
+        return int(count or 0)
+
+    def verify_artifacts(
+        self,
+        *,
+        tenant_id: str,
+        task_id: str,
+        artifact_ids: tuple[str, ...],
+    ) -> tuple[ArtifactSummary, ...]:
+        """校验候选声明的每个产物，不把对象路径泄漏给应用层。"""
+        with self._database.sessions() as session:
+            rows = {
+                row.artifact_id: row
+                for row in session.scalars(
+                    select(ArtifactRow).where(
+                        ArtifactRow.tenant_id == tenant_id,
+                        ArtifactRow.task_id == task_id,
+                        ArtifactRow.artifact_id.in_(artifact_ids),
+                    )
+                )
+            }
+        summaries: list[ArtifactSummary] = []
+        for artifact_id in artifact_ids:
+            row = rows.get(artifact_id)
+            if row is None or row.status != "ready":
+                raise TaskWorkerPersistenceError("task_artifact_binding_invalid")
+            try:
+                content = self._objects.read(row.storage_key)
+            except (OSError, ValueError):
+                raise TaskWorkerPersistenceError("task_artifact_binding_invalid") from None
+            digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
+            if digest != row.content_hash:
+                raise TaskWorkerPersistenceError("task_artifact_binding_invalid")
+            summaries.append(
+                ArtifactSummary(
+                    artifact_id=row.artifact_id,
+                    artifact_type=row.artifact_type,
+                    content_hash=row.content_hash,
+                    status="ready",
+                )
+            )
+        return tuple(summaries)
+
+    def is_task_result_bound(self, *, task_id: str, result_ref: str) -> bool:
+        try:
+            with self._database.sessions.begin() as session:
+                row = session.scalar(
+                    select(AgentTaskRow)
+                    .where(AgentTaskRow.task_id == task_id)
+                    .with_for_update()
+                )
+                return row is not None and row.result_ref == result_ref
+        except Exception:
+            # 提交确认丢失时不能猜测未绑定；保留对象交给孤儿扫描收敛。
+            logger.error("任务结果绑定状态确认失败 task_id=%s", task_id)
+            return True

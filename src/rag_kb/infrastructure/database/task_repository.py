@@ -7,7 +7,7 @@ LangGraph PostgreSQL checkpointer（thread_id = task_id），本仓储不复制�
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from uuid import uuid4
 
 from sqlalchemy import case, delete, func, or_, select, text, update
@@ -15,6 +15,11 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 
+from rag_kb.application.ports.task_worker import (
+    ResumeCommandLease,
+    TaskLease,
+    TaskWorkerPersistenceError,
+)
 from rag_kb.domain.identity import AuthContext, Permission
 from rag_kb.domain.fingerprints import canonical_fingerprint
 from rag_kb.domain.resume_commands import (
@@ -58,12 +63,6 @@ from rag_kb.observability import (
 )
 
 
-class TaskRepositoryError(RuntimeError):
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
-
-
 _TERMINAL_STATUSES = frozenset(
     {
         TaskStatus.SUCCEEDED,
@@ -77,6 +76,8 @@ RESEARCH_AGENT_CAPABILITY_NAME = M1_RESEARCH_AGENT_CAPABILITY_NAME
 RESEARCH_AGENT_PROTOCOL_VERSION = M1_RESEARCH_AGENT_PROTOCOL_VERSION
 TASK_AGENT_CAPABILITY_NAME = _TASK_AGENT_CAPABILITY_NAME
 TASK_AGENT_PROTOCOL_VERSION = _TASK_AGENT_PROTOCOL_VERSION
+# 保留既有导入路径，实际错误契约归 application 所有。
+TaskRepositoryError = TaskWorkerPersistenceError
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -86,31 +87,11 @@ def _aware(value: datetime | None) -> datetime | None:
 
 
 @dataclass(frozen=True)
-class TaskLease:
-    state: TaskState
-    worker_id: str
-    lease_generation: int
-    budgets: TaskBudgets
-    pending_traceparent: str | None = None
-    pending_tracestate: str | None = None
-
-
-@dataclass(frozen=True)
 class TaskQueueSnapshot:
     task_mode: str
     status: str
     depth: int
     oldest_age_seconds: float
-
-
-@dataclass(frozen=True)
-class ResumeCommandLease:
-    """同一事务领取的 task/command 双 lease；正文不参与 repr。"""
-
-    command: ResumeCommand = field(repr=False)
-    task_lease: TaskLease = field(repr=False)
-    worker_id: str
-    command_lease_generation: int
 
 
 def _command_from_row(row: TaskResumeCommandRow) -> ResumeCommand:

@@ -19,6 +19,7 @@ from rag_kb.application.query_service import KnowledgeQueryService, _SYNC_LEASE_
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.retrieval import RetrievalCandidate, RetrievalResult
 from rag_kb.infrastructure.database import Base, build_database
+from rag_kb.infrastructure.database.knowledge_query_lifecycle import DatabaseKnowledgeQueryLifecycle
 from rag_kb.infrastructure.database.models import (
     ACLGrantRow,
     AgentTaskRow,
@@ -155,6 +156,10 @@ class FakeModel:
         return self.verdict
 
 
+def _service(database: Database, retriever: FakeRetriever, model: FakeModel) -> KnowledgeQueryService:
+    return KnowledgeQueryService(DatabaseKnowledgeQueryLifecycle(database), retriever, model)
+
+
 def _result(candidate: RetrievalCandidate | None = None) -> RetrievalResult:
     return RetrievalResult(
         query_fingerprint="query-fingerprint",
@@ -188,7 +193,7 @@ def _telemetry() -> tuple[Observability, InMemorySpanExporter]:
 def test_answer_retrieves_once_records_ledger_and_returns_ledger_citations(database: Database) -> None:
     retriever = FakeRetriever(_result(_candidate()))
     model = FakeModel()
-    result = KnowledgeQueryService(database, retriever, model).query("差旅怎么报销", _auth())
+    result = _service(database, retriever, model).query("差旅怎么报销", _auth())
 
     assert result.verdict == "answer"
     assert retriever.calls == 1
@@ -208,7 +213,7 @@ def test_answer_retrieves_once_records_ledger_and_returns_ledger_citations(datab
 )
 def test_forged_or_duplicate_model_chunk_ids_fail_closed(database: Database, verdict: Verdict) -> None:
     retriever = FakeRetriever(_result(_candidate()))
-    result = KnowledgeQueryService(database, retriever, FakeModel(verdict)).query("问题", _auth())
+    result = _service(database, retriever, FakeModel(verdict)).query("问题", _auth())
 
     assert result.verdict == "refusal"
     assert result.citations == ()
@@ -218,7 +223,7 @@ def test_forged_or_duplicate_model_chunk_ids_fail_closed(database: Database, ver
 
 def test_model_exception_fails_task_and_no_answer(database: Database) -> None:
     retriever = FakeRetriever(_result(_candidate()))
-    result = KnowledgeQueryService(database, retriever, FakeModel(error=RuntimeError("model down"))).query(
+    result = _service(database, retriever, FakeModel(error=RuntimeError("model down"))).query(
         "问题", _auth()
     )
 
@@ -235,13 +240,13 @@ def test_query_telemetry_distinguishes_answer_refusal_and_failure_without_conten
     secret = "Bearer fake-token private-question private-answer object/path"
     try:
         with observability.activate():
-            assert KnowledgeQueryService(
+            assert _service(
                 database, FakeRetriever(_result(_candidate())), FakeModel()
             ).query(secret, _auth()).verdict == "answer"
-            assert KnowledgeQueryService(
+            assert _service(
                 database, FakeRetriever(_result()), FakeModel()
             ).query(secret, _auth()).verdict == "refusal"
-            assert KnowledgeQueryService(
+            assert _service(
                 database,
                 FakeRetriever(_result(_candidate())),
                 FakeModel(error=RuntimeError(secret)),
@@ -264,7 +269,7 @@ def test_query_telemetry_distinguishes_answer_refusal_and_failure_without_conten
 def test_no_candidate_skips_model_and_task_creation(database: Database) -> None:
     retriever = FakeRetriever(_result())
     model = FakeModel()
-    result = KnowledgeQueryService(database, retriever, model).query("无资料问题", _auth())
+    result = _service(database, retriever, model).query("无资料问题", _auth())
 
     assert result.verdict == "refusal"
     assert result.refusal is not None and result.refusal.kind == "no_authorized_evidence"
@@ -286,7 +291,7 @@ def test_sync_task_is_leased_during_request_and_released_at_terminal(database: D
             assert task.status == "running"
 
     retriever = FakeRetriever(_result(_candidate()))
-    result = KnowledgeQueryService(
+    result = _service(
         database, retriever, FakeModel(on_answer=inspect_lease)
     ).query("问题", _auth())
 
@@ -299,7 +304,7 @@ def test_sync_task_is_leased_during_request_and_released_at_terminal(database: D
 
 def test_sync_task_lease_released_on_failure(database: Database) -> None:
     retriever = FakeRetriever(_result(_candidate()))
-    result = KnowledgeQueryService(
+    result = _service(
         database, retriever, FakeModel(error=RuntimeError("model down"))
     ).query("问题", _auth())
 
@@ -325,7 +330,7 @@ def test_late_sync_answer_cannot_overwrite_recovered_terminal_task(database: Dat
                 )
             )
 
-    result = KnowledgeQueryService(
+    result = _service(
         database,
         FakeRetriever(_result(_candidate())),
         FakeModel(on_answer=recover_task),
@@ -398,7 +403,7 @@ def test_revoked_after_model_cannot_produce_citation(database: Database) -> None
         with database.sessions.begin() as session:
             session.query(ACLGrantRow).filter_by(grant_id="grant-alice").delete()
 
-    result = KnowledgeQueryService(database, retriever, FakeModel(on_answer=revoke)).query("问题", _auth())
+    result = _service(database, retriever, FakeModel(on_answer=revoke)).query("问题", _auth())
 
     assert result.verdict == "refusal"
     assert result.refusal is not None and result.refusal.kind == "conflicting_evidence"

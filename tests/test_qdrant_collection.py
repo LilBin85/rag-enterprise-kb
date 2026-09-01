@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import pytest
 from qdrant_client.http import models
 
+from rag_kb.application.ports.indexing import DocumentIndexError
 from rag_kb.infrastructure.vectorstore.qdrant_collection import (
-    DocumentIndexError,
     ensure_document_collection,
     validate_document_collection,
 )

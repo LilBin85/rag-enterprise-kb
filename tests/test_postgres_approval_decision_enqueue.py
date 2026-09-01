@@ -17,6 +17,9 @@ from rag_kb.application.approval_service import (
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.tasks import TaskMode, TaskStatus
 from rag_kb.infrastructure.database import build_database
+from rag_kb.infrastructure.database.approval_lifecycle import (
+    DatabaseApprovalLifecycle,
+)
 from rag_kb.infrastructure.database.models import (
     AgentTaskRow,
     ApprovalRow,
@@ -150,8 +153,11 @@ def test_postgres_decision_enqueue_failure_rolls_back_both_rows(monkeypatch) -> 
 
         repository = DatabaseTaskRepository(database)
         service = ApprovalService(
-            database,
-            evidence_validator=_StableEvidenceValidator(owner),
+            DatabaseApprovalLifecycle(
+                database,
+                evidence_validator=_StableEvidenceValidator(owner),
+                resume_repository=repository,
+            )
         )
         original_enqueue = repository.enqueue_resume_command_in_session
 
@@ -167,7 +173,6 @@ def test_postgres_decision_enqueue_failure_rolls_back_both_rows(monkeypatch) -> 
                 expected_task_state_version=4,
                 decision="approve",
                 reason=None,
-                repository=repository,
             )
 
         with database.sessions() as session:

@@ -21,8 +21,8 @@ from rag_kb.infrastructure.database.models import (
     PrincipalRow,
     TenantRow,
 )
+from rag_kb.infrastructure.database.document_lifecycle import DocumentRegistryIngestionJobPort
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
-from rag_kb.application.ingestion_worker import DocumentRegistryIngestionJobPort
 from rag_kb.observability import Observability
 
 
@@ -129,7 +129,9 @@ def _patch_build_chain(monkeypatch, events: list[str], *, agent_build_error: Exc
         lambda _db: object(),
     )
     monkeypatch.setattr(worker_module, "AgentResultStore", lambda _o: object())
-    monkeypatch.setattr(worker_module, "EvidenceLedgerRepository", lambda: object())
+    monkeypatch.setattr(
+        worker_module, "DatabaseTaskWorkerSettlement", lambda *_args, **_kwargs: object()
+    )
     monkeypatch.setattr(
         worker_module,
         "_CapabilityLeaseHeartbeat",

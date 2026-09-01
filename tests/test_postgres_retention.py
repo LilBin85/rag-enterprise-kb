@@ -34,6 +34,9 @@ from rag_kb.application.tool_registry import ToolRegistry, builtin_tool_definiti
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.tasks import TaskMode, TaskStatus
 from rag_kb.infrastructure.database import build_database
+from rag_kb.infrastructure.database.approval_lifecycle import (
+    DatabaseApprovalLifecycle,
+)
 from rag_kb.infrastructure.database.models import (
     AgentTaskRow,
     ApprovalRow,
@@ -45,6 +48,10 @@ from rag_kb.infrastructure.database.models import (
     ToolCallRow,
 )
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
+from rag_kb.infrastructure.database.task_retention import DatabaseTaskRetentionLifecycle
+from rag_kb.infrastructure.database.tool_execution_lifecycle import (
+    DatabaseToolExecutionLifecycle,
+)
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
 
 
@@ -277,8 +284,7 @@ def test_controlled_artifact_purge_uses_postgres_clock_and_preserves_approval(po
             {"tenant_id": ids.tenant_id, "task_id": task_id},
         )
     retention = TaskRetentionService(
-        database=database,
-        repository=repository,
+        lifecycle=DatabaseTaskRetentionLifecycle(database, repository),
         objects=objects,
         results=AgentResultStore(objects),
         orphan_grace_seconds=60,
@@ -314,14 +320,13 @@ def test_purge_expired_tool_results_keeps_succeeded_audit(postgres_db) -> None:
         item for item in builtin_tool_definitions() if item.name == "search_knowledge"
     )
     service = ToolExecutionService(
-        database,
+        DatabaseToolExecutionLifecycle(database),
         ToolRegistry([definition], adapters={"search_knowledge": _OkAdapter()}),
-        ApprovalService(database),
+        ApprovalService(DatabaseApprovalLifecycle(database)),
         tool_results=objects,
     )
     retention = TaskRetentionService(
-        database=database,
-        repository=repository,
+        lifecycle=DatabaseTaskRetentionLifecycle(database, repository),
         objects=objects,
         results=AgentResultStore(objects),
         orphan_grace_seconds=60,
@@ -432,8 +437,7 @@ def test_purge_finished_task_content_removes_checkpoint_and_result(postgres_db) 
             task.content_expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
         retention = TaskRetentionService(
-            database=database,
-            repository=repository,
+            lifecycle=DatabaseTaskRetentionLifecycle(database, repository),
             objects=objects,
             results=AgentResultStore(objects),
             checkpointer=checkpointer,
@@ -487,8 +491,7 @@ def test_purge_finished_task_content_retries_failed_result_delete(
     _expire_task_content(database, tenant_id=ids.tenant_id, task_id=ids.task_id)
     checkpointer = _RecordingCheckpointer()
     retention = TaskRetentionService(
-        database=database,
-        repository=repository,
+        lifecycle=DatabaseTaskRetentionLifecycle(database, repository),
         objects=objects,
         results=results,
         checkpointer=checkpointer,
@@ -539,8 +542,7 @@ def test_purge_finished_task_content_marks_failed_without_result_once(postgres_d
     _expire_task_content(database, tenant_id=ids.tenant_id, task_id=ids.task_id)
     checkpointer = _RecordingCheckpointer()
     retention = TaskRetentionService(
-        database=database,
-        repository=repository,
+        lifecycle=DatabaseTaskRetentionLifecycle(database, repository),
         objects=objects,
         results=AgentResultStore(objects),
         checkpointer=checkpointer,
@@ -634,8 +636,7 @@ def test_purge_orphaned_result_objects_respects_grace_references_and_live_deadli
         )
     assert running_lease.state.status is TaskStatus.RUNNING
     retention = TaskRetentionService(
-        database=database,
-        repository=repository,
+        lifecycle=DatabaseTaskRetentionLifecycle(database, repository, now=lambda: now),
         objects=objects,
         results=AgentResultStore(objects),
         orphan_grace_seconds=60,
@@ -673,8 +674,7 @@ def test_expire_waiting_task_uses_postgres_clock_and_writes_event(postgres_db) -
         task.deadline = datetime.now(UTC) - timedelta(seconds=1)
 
     retention = TaskRetentionService(
-        database=database,
-        repository=repository,
+        lifecycle=DatabaseTaskRetentionLifecycle(database, repository),
         objects=objects,
         results=AgentResultStore(objects),
         orphan_grace_seconds=60,

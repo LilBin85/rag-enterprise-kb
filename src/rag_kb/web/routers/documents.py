@@ -17,12 +17,9 @@ from rag_kb.application.document_service import (
     DocumentUploadResult,
     IngestionJobResult,
 )
+from rag_kb.application.ports.documents import DocumentRegistryConflict, IdempotencyConflict
 from rag_kb.config import get_settings
 from rag_kb.domain.identity import AuthContext
-from rag_kb.infrastructure.database.document_repository import (
-    DocumentRegistryConflict,
-    IdempotencyConflict,
-)
 from rag_kb.web.dependencies import build_document_service, resolve_auth_context
 from rag_kb.web.schemas.documents import DocumentUploadMetadata
 

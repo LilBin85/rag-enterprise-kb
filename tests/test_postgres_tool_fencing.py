@@ -26,6 +26,9 @@ from rag_kb.application.tool_registry import ToolRegistry, builtin_tool_definiti
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.tasks import TaskMode
 from rag_kb.infrastructure.database import build_database
+from rag_kb.infrastructure.database.approval_lifecycle import (
+    DatabaseApprovalLifecycle,
+)
 from rag_kb.infrastructure.database.models import (
     AgentTaskRow,
     PrincipalRow,
@@ -37,6 +40,9 @@ from rag_kb.infrastructure.database.task_execution import (
     TaskExecutionContextError,
 )
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
+from rag_kb.infrastructure.database.tool_execution_lifecycle import (
+    DatabaseToolExecutionLifecycle,
+)
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
 
 
@@ -106,9 +112,9 @@ def postgres_research(tmp_path: Path):
     )
     objects = LocalObjectStore(tmp_path / "tool-results")
     service = ToolExecutionService(
-        database,
+        DatabaseToolExecutionLifecycle(database),
         ToolRegistry([definition], adapters={"search_knowledge": adapter}),
-        ApprovalService(database),
+        ApprovalService(DatabaseApprovalLifecycle(database)),
         tool_results=objects,
     )
     try:
@@ -175,7 +181,7 @@ def test_tool_execution_uses_database_clock_not_skewed_service_clock(postgres_re
     database, repository, service, _adapter, _objects, ids = postgres_research
     lease = repository.claim_next(worker_id="worker-a", lease_seconds=60)
     assert lease is not None
-    service._now = lambda: datetime(2100, 1, 1, tzinfo=UTC)
+    service._lifecycle._now = lambda: datetime(2100, 1, 1, tzinfo=UTC)
 
     result = service.execute(_request(ids, lease, "clock-skew-call"))
 
@@ -313,7 +319,8 @@ def test_final_identity_gate_serializes_role_revocation(postgres_research, monke
     final_gate_locked = Event()
     release_final_gate = Event()
     gate_calls = 0
-    original_gate = service._require_current_execution_context
+    lifecycle = service._lifecycle
+    original_gate = lifecycle._require_current_execution_context
 
     def hold_final_gate(*args, **kwargs):
         nonlocal gate_calls
@@ -324,7 +331,7 @@ def test_final_identity_gate_serializes_role_revocation(postgres_research, monke
             assert release_final_gate.wait(timeout=5)
         return value
 
-    monkeypatch.setattr(service, "_require_current_execution_context", hold_final_gate)
+    monkeypatch.setattr(lifecycle, "_require_current_execution_context", hold_final_gate)
     outcome: dict[str, object] = {}
 
     def execute() -> None:

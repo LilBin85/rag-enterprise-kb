@@ -11,6 +11,7 @@ from rag_kb.application.document_service import DocumentService
 from rag_kb.domain.identity import AuthContext, Permission
 from rag_kb.domain.retrieval import RetrievalCandidate
 from rag_kb.infrastructure.database import Base, build_database
+from rag_kb.infrastructure.database.document_lifecycle import DatabaseDocumentLifecycle
 from rag_kb.infrastructure.database.acl_repository import (
     ACLRepository,
     DatabaseAuthorizationPort,
@@ -235,7 +236,10 @@ def fixture_db(tmp_path: Path) -> Database:
 
 
 def test_creator_default_user_grant_and_resource_acl(fixture_db: Database, tmp_path: Path) -> None:
-    service = DocumentService(fixture_db, LocalObjectStore(tmp_path / "objects"))
+    service = DocumentService(
+        DatabaseDocumentLifecycle(fixture_db),
+        LocalObjectStore(tmp_path / "objects"),
+    )
     owner = auth("user-a", permissions=("document:write", "document:read", "knowledge:read"))
     result = service.register_upload(
         document_id="created-by-user",

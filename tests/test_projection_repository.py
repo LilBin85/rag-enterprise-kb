@@ -4,9 +4,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from rag_kb.application.ports.documents import DocumentRegistryConflict
 from rag_kb.domain.indexing import IndexReceipt, compute_chunk_manifest_digest
 from rag_kb.infrastructure.database.base import Base
-from rag_kb.infrastructure.database.document_repository import DocumentRegistryConflict
 from rag_kb.infrastructure.database.models import (
     ChunkMetadataRow,
     DocumentRow,

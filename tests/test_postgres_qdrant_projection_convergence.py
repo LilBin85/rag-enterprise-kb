@@ -15,15 +15,16 @@ from qdrant_client.http import models
 from sqlalchemy import text
 
 from rag_kb.application.document_service import DocumentService
-from rag_kb.application.ingestion_worker import (
-    ClaimedIngestionJob,
-    DocumentRegistryIngestionJobPort,
-    IngestionWorker,
-)
+from rag_kb.application.ingestion_worker import IngestionWorker
+from rag_kb.application.ports.indexing import ClaimedIngestionJob, DocumentIndexError
 from rag_kb.application.projection_reconciler import ProjectionReconciler
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.indexing import IndexReceipt, ParsedDocument
 from rag_kb.infrastructure.database import build_database
+from rag_kb.infrastructure.database.document_lifecycle import (
+    DatabaseDocumentLifecycle,
+    DocumentRegistryIngestionJobPort,
+)
 from rag_kb.infrastructure.database.acl_repository import DatabaseAuthorizationPort
 from rag_kb.infrastructure.database.index_projection_metadata import (
     DatabaseDocumentIndexMetadataPort,
@@ -41,10 +42,7 @@ from rag_kb.infrastructure.object_store import LocalObjectStore
 from rag_kb.infrastructure.vectorstore.qdrant_authorized_search import (
     QdrantAuthorizedSearch,
 )
-from rag_kb.infrastructure.vectorstore.qdrant_document_index import (
-    DocumentIndexError,
-    QdrantDocumentIndex,
-)
+from rag_kb.infrastructure.vectorstore.qdrant_document_index import QdrantDocumentIndex
 
 
 POSTGRES_TEST_URL = os.environ.get("RAG_KB_TEST_POSTGRES_URL")
@@ -216,7 +214,7 @@ def test_delayed_old_publish_is_exactly_filtered_and_reconciler_converges(
         auth = _auth(tenant_id, user_id)
         object_store = LocalObjectStore(object_root)
         parser = LocalDocumentParser(object_store)
-        service = DocumentService(database, object_store)
+        service = DocumentService(DatabaseDocumentLifecycle(database), object_store)
         metadata = DatabaseDocumentIndexMetadataPort(database)
         embedder = DeterministicEmbedder()
 

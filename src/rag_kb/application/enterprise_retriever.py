@@ -6,17 +6,23 @@ import hashlib
 import math
 from contextlib import contextmanager
 from time import perf_counter
-from typing import Callable, Protocol, Sequence
+from typing import Callable, Sequence
 
 from rag_kb.application.evidence_sufficiency import DeterministicEvidenceSufficiencyPolicy
-from rag_kb.application.retrieval_fusion import (
+from rag_kb.application.ports.retrieval import (
+    AuthorizedVectorSearchPort,
+    AuthorizationSnapshotPort,
+    EvidenceSufficiencyPort,
     RankedChunk,
+    RerankerPort,
+    RetrieverPort,
+)
+from rag_kb.application.retrieval_fusion import (
     pack_context,
     reciprocal_rank_fusion,
 )
 from rag_kb.domain.identity import AuthContext, Permission
 from rag_kb.domain.retrieval import RetrievalResult
-from rag_kb.infrastructure.database.acl_repository import AuthorizedVersionSet
 from rag_kb.observability import (
     current_observability,
     error_category_for,
@@ -31,60 +37,6 @@ class RetrievalSecurityError(RuntimeError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
-
-
-class AuthorizationSnapshotPort(Protocol):
-    def authorized_active_versions(self, auth: AuthContext) -> AuthorizedVersionSet: ...
-
-    def revalidate_versions(
-        self,
-        auth: AuthContext,
-        version_ids: frozenset[str],
-    ) -> frozenset[str]: ...
-
-    def revalidate_candidates(
-        self,
-        auth: AuthContext,
-        candidates: Sequence[RankedChunk],
-    ) -> frozenset[tuple[str, str]]: ...
-
-
-class AuthorizedVectorSearchPort(Protocol):
-    def search_dense(
-        self,
-        query: str,
-        *,
-        tenant_id: str,
-        version_ids: frozenset[str],
-        projection_generations: frozenset[tuple[str, int]],
-        allowed_principals: frozenset[str],
-        limit: int,
-        principal_filter_required: bool = True,
-        score_threshold: float | None = None,
-    ) -> tuple[RankedChunk, ...]: ...
-
-    def search_sparse(
-        self,
-        query: str,
-        *,
-        tenant_id: str,
-        version_ids: frozenset[str],
-        projection_generations: frozenset[tuple[str, int]],
-        allowed_principals: frozenset[str],
-        limit: int,
-        principal_filter_required: bool = True,
-        score_threshold: float | None = None,
-    ) -> tuple[RankedChunk, ...]: ...
-
-
-class RerankerPort(Protocol):
-    def rerank(self, query: str, candidates: Sequence[RankedChunk]) -> tuple[RankedChunk, ...]: ...
-
-
-class EvidenceSufficiencyPort(Protocol):
-    def select_candidates(self, query: str, candidates: Sequence[object]) -> tuple[object, ...]: ...
-
-    def insufficiency_code(self, query: str, candidates: Sequence[object]) -> str | None: ...
 
 
 @contextmanager
@@ -127,7 +79,7 @@ def _record_candidate_count(stage: str, count: int) -> None:
         telemetry.record_retrieval_candidates(stage=stage, count=count)
 
 
-class EnterpriseRetriever:
+class EnterpriseRetriever(RetrieverPort):
     def __init__(
         self,
         authorization: AuthorizationSnapshotPort,

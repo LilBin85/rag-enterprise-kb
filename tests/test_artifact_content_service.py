@@ -25,6 +25,7 @@ from rag_kb.infrastructure.database.models import (
     ToolCallRow,
 )
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
+from rag_kb.infrastructure.database.task_read import DatabaseArtifactContentReader
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
 from rag_kb.web.app import create_app
 from rag_kb.web.dependencies import (
@@ -106,7 +107,9 @@ def stage(tmp_path: Path):
                 content_expires_at=now + timedelta(days=1),
             )
         )
-    service = ArtifactContentService(database, objects, now=lambda: now)
+    service = ArtifactContentService(
+        DatabaseArtifactContentReader(database, objects, now=lambda: now)
+    )
     return SimpleNamespace(
         database=database,
         now=now,

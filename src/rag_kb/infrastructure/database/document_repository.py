@@ -1,7 +1,6 @@
 """PostgreSQL/SQLite 语义一致的文档注册表与摄取任务仓储。"""
 
 import hashlib
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
 from uuid import uuid4
@@ -11,6 +10,15 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from rag_kb.application.ports.documents import (
+    DocumentDeletionReservation,
+    DocumentRegistryConflict,
+    DocumentSnapshot,
+    IdempotencyConflict,
+    PendingObjectReservation,
+    RegisteredUpload,
+)
+from rag_kb.application.ports.indexing import IngestionQueueSnapshot
 from rag_kb.domain.indexing import IndexReceipt, ParsedDocument, compute_chunk_manifest_digest
 from rag_kb.infrastructure.database.models import (
     ACLGrantRow,
@@ -23,68 +31,6 @@ from rag_kb.infrastructure.database.models import (
     PrincipalRow,
 )
 from rag_kb.observability import current_trace_headers
-
-
-class DocumentRegistryConflict(RuntimeError):
-    """文档注册冲突，同时保留可安全返回给调用方的恢复引用。"""
-
-    def __init__(self, message: str, *, recovery: "RegisteredUpload | None" = None) -> None:
-        super().__init__(message)
-        self.code = message
-        self.recovery = recovery
-
-
-class IdempotencyConflict(RuntimeError):
-    pass
-
-
-@dataclass(frozen=True)
-class RegisteredUpload:
-    tenant_id: str
-    document_id: str
-    version_id: str
-    version: int
-    job_id: str
-    source_object_key: str
-    lifecycle_status: str
-    ingestion_status: str
-    outcome: str = "created"
-
-
-@dataclass(frozen=True)
-class DocumentSnapshot:
-    tenant_id: str
-    document_id: str
-    title: str
-    department: str
-    status: str
-    versions: tuple[tuple[str, int, str], ...]
-
-
-@dataclass(frozen=True)
-class PendingObjectReservation:
-    tenant_id: str
-    user_id: str
-    idempotency_key: str
-    request_hash: str
-    source_object_key: str
-    content_hash: str
-
-
-@dataclass(frozen=True)
-class DocumentDeletionReservation:
-    tenant_id: str
-    document_id: str
-    source_object_keys: tuple[str, ...]
-    version_count: int
-    job_count: int
-
-
-@dataclass(frozen=True)
-class IngestionQueueSnapshot:
-    status: str
-    depth: int
-    oldest_age_seconds: float
 
 
 class DocumentRegistryRepository:

@@ -11,11 +11,8 @@ import pytest
 from sqlalchemy import select
 
 from rag_kb.application.document_service import DocumentService
-from rag_kb.application.ingestion_worker import (
-    ClaimedIngestionJob,
-    DocumentRegistryIngestionJobPort,
-    IngestionWorker,
-)
+from rag_kb.application.ingestion_worker import IngestionWorker
+from rag_kb.application.ports.indexing import ClaimedIngestionJob
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.indexing import (
     IndexReceipt,
@@ -24,6 +21,10 @@ from rag_kb.domain.indexing import (
     compute_chunk_manifest_digest,
 )
 from rag_kb.infrastructure.database import Base, Database, build_database
+from rag_kb.infrastructure.database.document_lifecycle import (
+    DatabaseDocumentLifecycle,
+    DocumentRegistryIngestionJobPort,
+)
 from rag_kb.infrastructure.database.models import (
     DocumentVersionRow,
     IngestionJobRow,
@@ -56,7 +57,13 @@ def _build_service(tmp_path) -> tuple[DocumentService, Database]:
                 attributes={},
             )
         )
-    return DocumentService(database, LocalObjectStore(tmp_path / "objects")), database
+    return (
+        DocumentService(
+            DatabaseDocumentLifecycle(database),
+            LocalObjectStore(tmp_path / "objects"),
+        ),
+        database,
+    )
 
 
 def _register(service: DocumentService, *, key: str, content: bytes, expect_existing: bool = False):

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from rag_kb.config import Settings, resolve_retrieval_limits
+from rag_kb.config import Settings, get_settings, resolve_retrieval_limits
 
 
 def test_limit_resolution_uses_common_default_or_explicit_values() -> None:
@@ -45,6 +45,17 @@ def test_empty_optional_retrieval_environment_values_use_defaults(monkeypatch) -
     assert settings.retrieval_candidate_k is None
     assert settings.retrieval_context_k is None
     assert settings.retrieval_score_threshold is None
+
+
+def test_settings_can_explicitly_skip_env_file(monkeypatch) -> None:
+    monkeypatch.setenv("RAG_KB_DISABLE_ENV_FILE", "1")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "environment-only")
+    get_settings.cache_clear()
+    try:
+        assert Settings().deepseek_api_key == "environment-only"
+        assert get_settings().deepseek_api_key == "environment-only"
+    finally:
+        get_settings.cache_clear()
 
 
 def test_runtime_environment_disables_torch_dynamo(monkeypatch) -> None:

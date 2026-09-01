@@ -13,14 +13,21 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select, text
 
-from rag_kb.application.approval_service import ApprovalService, ApprovalServiceError
-from rag_kb.application.tool_execution_service import ToolExecutionRequest, ToolExecutionService
+from rag_kb.application.approval_service import ApprovalService
+from rag_kb.application.tool_execution_service import (
+    ToolExecutionError,
+    ToolExecutionRequest,
+    ToolExecutionService,
+)
 from rag_kb.application.tool_registry import ToolRegistry
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.evidence import canonical_evidence_snapshot
 from rag_kb.domain.fingerprints import canonical_fingerprint
 from rag_kb.domain.tasks import TaskBudgets, TaskMode
 from rag_kb.infrastructure.database import build_database
+from rag_kb.infrastructure.database.approval_lifecycle import (
+    DatabaseApprovalLifecycle,
+)
 from rag_kb.infrastructure.database.models import (
     AgentTaskRow,
     ACLGrantRow,
@@ -35,6 +42,9 @@ from rag_kb.infrastructure.database.models import (
     ToolCallRow,
 )
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository, TaskLease
+from rag_kb.infrastructure.database.tool_execution_lifecycle import (
+    DatabaseToolExecutionLifecycle,
+)
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
 from rag_kb.infrastructure.tools.artifacts import LocalArtifactToolAdapter
@@ -164,7 +174,7 @@ def _prepare_protocol_stage(tmp_path: Path) -> SimpleNamespace:
         TaskBudgets(),
     )
 
-    approvals = ApprovalService(database)
+    approvals = ApprovalService(DatabaseApprovalLifecycle(database))
     pending = approvals.request(
         auth=requester,
         task_id=task_id,
@@ -215,7 +225,7 @@ def _cleanup_protocol_stage(env: SimpleNamespace) -> None:
 
 def _make_executor(env: SimpleNamespace, adapter) -> ToolExecutionService:
     return ToolExecutionService(
-        env.database,
+        DatabaseToolExecutionLifecycle(env.database),
         ToolRegistry(adapters={"create_report_artifact": adapter}),
         env.approvals,
         tool_results=LocalObjectStore(env.object_root / "tool-results"),
@@ -269,7 +279,7 @@ def test_postgres_approved_write_is_idempotent_and_consumed(tmp_path: Path) -> N
         assert duplicate.result["artifact_id"] == artifact_id
         assert "storage_key" not in duplicate.result
 
-        with pytest.raises(ApprovalServiceError, match="approval_not_approved"):
+        with pytest.raises(ToolExecutionError, match="approval_not_approved"):
             executor.execute(_protocol_request(env, key=f"second-key-{env.suffix}"))
 
         with env.database.sessions() as session:

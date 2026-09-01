@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from rag_kb.application.ingestion_worker import ClaimedIngestionJob
+from rag_kb.application.ports.indexing import ClaimedIngestionJob
 from rag_kb.domain.indexing import ParsedChunk, compute_chunk_manifest_digest
 from rag_kb.ingestion import ParsedItem
 from rag_kb.infrastructure.ingestion.local_document_parser import (

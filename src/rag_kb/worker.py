@@ -25,10 +25,7 @@ from rag_kb.agent.tools import (
     build_controlled_action_tools,
     build_research_tools,
 )
-from rag_kb.application.ingestion_worker import (
-    DocumentRegistryIngestionJobPort,
-    IngestionWorker,
-)
+from rag_kb.application.ingestion_worker import IngestionWorker
 from rag_kb.application.projection_reconciler import ProjectionReconciler
 from rag_kb.application.approval_service import ApprovalService
 from rag_kb.application.task_retention_service import TaskRetentionService
@@ -42,16 +39,27 @@ from rag_kb.domain.tasks import TaskBudgets
 from rag_kb.embedder import BgeM3Embedder
 from rag_kb.infrastructure.database import build_database
 from rag_kb.infrastructure.database.acl_repository import DatabaseAuthorizationPort
+from rag_kb.infrastructure.database.approval_lifecycle import (
+    DatabaseApprovalLifecycle,
+)
 from rag_kb.infrastructure.database.task_execution import (
     DatabaseTaskAuthContextPort,
     DatabaseTaskEvidencePort,
+    DatabaseTaskWorkerSettlement,
 )
-from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerRepository
+from rag_kb.infrastructure.database.task_retention import DatabaseTaskRetentionLifecycle
+from rag_kb.infrastructure.database.tool_execution_lifecycle import (
+    DatabaseToolExecutionLifecycle,
+)
 from rag_kb.infrastructure.database.task_repository import (
     DatabaseTaskRepository,
 )
 from rag_kb.infrastructure.database.index_projection_metadata import (
     DatabaseDocumentIndexMetadataPort,
+)
+from rag_kb.infrastructure.database.document_lifecycle import (
+    DatabaseDocumentLifecycle,
+    DocumentRegistryIngestionJobPort,
 )
 from rag_kb.infrastructure.database.projection_repository import (
     DatabaseProjectionReconcilePort,
@@ -308,7 +316,7 @@ def build_projection_reconciler(*, worker_id: str | None = None) -> ProjectionRe
 def build_upload_reconciler() -> UploadReservationReconciler:
     settings = get_settings()
     return UploadReservationReconciler(
-        build_database(settings.database_url),
+        DatabaseDocumentLifecycle(build_database(settings.database_url)),
         LocalObjectStore(settings.object_store_root),
     )
 
@@ -368,13 +376,26 @@ def build_task_worker(
         chunk_max_chars=settings.chunk_max_chars,
     )
     identity = worker_id or f"{socket.gethostname()}-task-{uuid4().hex[:12]}"
-    evidence_validator = DatabaseTaskEvidencePort(database)
-    approvals = ApprovalService(database, evidence_validator=evidence_validator)
-    tools = ToolExecutionService(
+    repository = DatabaseTaskRepository(
         database,
+        task_capability_name=settings.task_agent_capability_name,
+        task_capability_protocol_version=settings.task_agent_protocol_version,
+    )
+    evidence_validator = DatabaseTaskEvidencePort(database)
+    approvals = ApprovalService(
+        DatabaseApprovalLifecycle(
+            database,
+            evidence_validator=evidence_validator,
+            resume_repository=repository,
+        )
+    )
+    tools = ToolExecutionService(
+        DatabaseToolExecutionLifecycle(
+            database,
+            evidence_validator=evidence_validator,
+        ),
         registry,
         approvals,
-        evidence_validator=evidence_validator,
         tool_results=objects,
     )
     try:
@@ -421,11 +442,6 @@ def build_task_worker(
         tools.close()
         connection.close()
         raise
-    repository = DatabaseTaskRepository(
-        database,
-        task_capability_name=settings.task_agent_capability_name,
-        task_capability_protocol_version=settings.task_agent_protocol_version,
-    )
     capability: _CapabilityLeaseHeartbeat | None = None
 
     def close() -> None:
@@ -441,14 +457,12 @@ def build_task_worker(
         agent_for=agent_for,
         controlled_agent_for=controlled_agent_for,
         results=AgentResultStore(objects),
-        evidence=EvidenceLedgerRepository(),
+        settlement=DatabaseTaskWorkerSettlement(database, objects),
         tools=tools,
-        database=database,
         worker_id=identity,
         capability_name=settings.task_agent_capability_name,
         protocol_version=settings.task_agent_protocol_version,
         approvals=approvals,
-        objects=objects,
         close=close,
     )
     if publish_capability:
@@ -491,9 +505,9 @@ def build_task_retention() -> TaskRetentionService:
     except ValueError as exc:
         raise TaskAgentConfigurationError(str(exc)) from exc
     try:
+        repository = DatabaseTaskRepository(database)
         return TaskRetentionService(
-            database=database,
-            repository=DatabaseTaskRepository(database),
+            lifecycle=DatabaseTaskRetentionLifecycle(database, repository),
             objects=objects,
             results=AgentResultStore(objects),
             checkpointer=checkpointer,

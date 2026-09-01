@@ -99,6 +99,7 @@ def test_task_checkpoint_serializer_round_trips_structured_result_without_pickle
     assert serializer.pickle_fallback is False
     assert _TASK_CHECKPOINT_MSGPACK_TYPES == (
         ("rag_kb.agent.result", "TaskResultCandidate"),
+        ("rag_kb.application.agent_contract", "TaskResultCandidate"),
     )
     assert serializer._allowed_msgpack_modules == set(_TASK_CHECKPOINT_MSGPACK_TYPES)
     assert serializer.loads_typed(serializer.dumps_typed(candidate)) == candidate

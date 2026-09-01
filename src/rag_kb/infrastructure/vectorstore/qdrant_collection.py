@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from qdrant_client.http import models
 
+from rag_kb.application.ports.indexing import DocumentIndexError
+
 
 _PAYLOAD_INDEXES = (
     ("tenant_id", models.PayloadSchemaType.KEYWORD),
@@ -16,14 +18,6 @@ _PAYLOAD_INDEXES = (
     ("allowed_principals", models.PayloadSchemaType.KEYWORD),
     ("index_version", models.PayloadSchemaType.KEYWORD),
 )
-
-
-class DocumentIndexError(RuntimeError):
-    """仅传播固定安全错误码，绝不暴露底层 Qdrant 异常。"""
-
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
 
 
 def _get_collection_after_create(client, collection: str) -> object:

@@ -5,25 +5,18 @@ import hmac
 import json
 from dataclasses import replace
 from pathlib import Path
-from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
 
-from rag_kb.application.ingestion_worker import DocumentRegistryIngestionJobPort
-from rag_kb.domain.identity import AuthContext, Permission
-from rag_kb.ingestion import validate_upload
-from rag_kb.infrastructure.database.document_repository import (
-    DocumentRegistryRepository,
+from rag_kb.application.ports.documents import (
+    DocumentAccessDenied,
+    DocumentRegistryPort,
     RegisteredUpload,
 )
-from rag_kb.infrastructure.database.acl_repository import ACLRepository
-from rag_kb.infrastructure.database.session import Database
-from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
-from rag_kb.infrastructure.object_store.local import LocalObjectStore, ObjectConflictError
-
-
-class DocumentAccessDenied(PermissionError):
-    pass
+from rag_kb.application.ports.indexing import DocumentVectorDeletionPort
+from rag_kb.application.ports.object_store import ObjectConflictError, ObjectStorePort
+from rag_kb.domain.identity import AuthContext, Permission
+from rag_kb.ingestion import validate_upload
 
 
 class DocumentDeletionUnavailable(RuntimeError):
@@ -32,10 +25,6 @@ class DocumentDeletionUnavailable(RuntimeError):
 
 class DocumentDeletionFailed(RuntimeError):
     pass
-
-
-class DocumentVectorDeletionPort(Protocol):
-    def delete_document(self, *, tenant_id: str, document_id: str) -> None: ...
 
 
 class DocumentUploadResult(BaseModel):
@@ -89,18 +78,14 @@ class DocumentResult(BaseModel):
 class DocumentService:
     def __init__(
         self,
-        database: Database,
-        object_store: LocalObjectStore,
-        repository: DocumentRegistryRepository | None = None,
-        acl_repository: ACLRepository | None = None,
+        registry: DocumentRegistryPort,
+        object_store: ObjectStorePort,
+        *,
         vector_deleter: DocumentVectorDeletionPort | None = None,
     ) -> None:
-        self._database = database
+        self._registry = registry
         self._object_store = object_store
-        self._repository = repository or DocumentRegistryRepository()
-        self._acl_repository = acl_repository or ACLRepository()
         self._vector_deleter = vector_deleter
-        self._projection_guard = DocumentRegistryIngestionJobPort(database)
 
     def register_upload(
         self,
@@ -136,44 +121,20 @@ class DocumentService:
             expect_existing=expect_existing,
         )
         # 上传和删除共享文档锁，避免删除提交后迟到的上传留下无数据库引用的原文对象。
-        with self._projection_guard.document_projection_guard(auth.tenant_id, document_id):
+        with self._registry.document_projection_guard(auth.tenant_id, document_id):
             # 跨数据库和对象存储不伪装成单事务：先提交可恢复预留，再写对象，最后
             # 将任务转为 pending。任一提交结果不确定时都保留对象/预留供同键重试收敛。
-            with UnitOfWork(self._database) as work:
-                assert work.session is not None
-                if not self._repository.principal_exists(
-                    work.session,
-                    tenant_id=auth.tenant_id,
-                    user_id=auth.user_id,
-                ):
-                    raise DocumentAccessDenied("principal_not_registered")
-                if expect_existing and not self._acl_repository.document_is_allowed(
-                    work.session,
-                    auth=auth,
-                    document_id=document_id,
-                    permission=Permission.DOCUMENT_WRITE,
-                ):
-                    raise DocumentAccessDenied("document_write_denied")
-                allow_existing_recovery = self._acl_repository.document_is_allowed(
-                    work.session,
-                    auth=auth,
-                    document_id=document_id,
-                    permission=Permission.DOCUMENT_READ,
-                )
-                reservation, needs_object_write = self._repository.reserve_pending_upload(
-                    work.session,
-                    tenant_id=auth.tenant_id,
-                    user_id=auth.user_id,
-                    document_id=document_id,
-                    title=title,
-                    department=department,
-                    source_file_name=source_file_name,
-                    content_hash=content_hash,
-                    idempotency_key=idempotency_key,
-                    request_hash=request_hash,
-                    expect_existing=expect_existing,
-                    allow_existing_recovery=allow_existing_recovery,
-                )
+            reservation, needs_object_write = self._registry.reserve_pending_upload(
+                auth=auth,
+                document_id=document_id,
+                title=title,
+                department=department,
+                source_file_name=source_file_name,
+                content_hash=content_hash,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+                expect_existing=expect_existing,
+            )
             if needs_object_write:
                 try:
                     self._object_store.put_exclusive(reservation.source_object_key, content)
@@ -183,73 +144,51 @@ class DocumentService:
                     ).hexdigest()
                     if not hmac.compare_digest(existing_hash, content_hash):
                         raise ObjectConflictError("object_content_mismatch")
-                with UnitOfWork(self._database) as work:
-                    assert work.session is not None
-                    ready_reservation = self._repository.mark_object_ready(
-                        work.session,
-                        tenant_id=auth.tenant_id,
-                        user_id=auth.user_id,
-                        idempotency_key=idempotency_key,
-                        request_hash=request_hash,
-                    )
-                    if reservation.outcome != "created":
-                        ready_reservation = replace(ready_reservation, outcome=reservation.outcome)
-                    reservation = ready_reservation
+                ready_reservation = self._registry.mark_object_ready(
+                    tenant_id=auth.tenant_id,
+                    user_id=auth.user_id,
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                )
+                if reservation.outcome != "created":
+                    ready_reservation = replace(ready_reservation, outcome=reservation.outcome)
+                reservation = ready_reservation
         return self._result(reservation)
 
     def get_ingestion_job(self, job_id: str, auth: AuthContext) -> IngestionJobResult | None:
         if not auth.has_permission(Permission.DOCUMENT_READ):
             raise DocumentAccessDenied("document_read_denied")
-        with UnitOfWork(self._database) as work:
-            assert work.session is not None
-            job = self._repository.get_job(work.session, auth.tenant_id, job_id)
-            if job is None:
-                return None
-            version = self._repository.get_version(work.session, auth.tenant_id, job.version_id)
-            if version is None or not self._acl_repository.document_is_allowed(
-                work.session,
-                auth=auth,
-                document_id=version.document_id,
-                permission=Permission.DOCUMENT_READ,
-            ):
-                return None
-            return IngestionJobResult(
-                job_id=job.job_id,
-                version_id=job.version_id,
-                status=job.status,
-                attempts=job.attempts,
-                error_code=job.error_code,
-            )
+        job = self._registry.get_ingestion_job(auth=auth, job_id=job_id)
+        if job is None:
+            return None
+        return IngestionJobResult(
+            job_id=job.job_id,
+            version_id=job.version_id,
+            status=job.status,
+            attempts=job.attempts,
+            error_code=job.error_code,
+        )
 
     def get_document(self, document_id: str, auth: AuthContext) -> DocumentResult | None:
         if not auth.has_permission(Permission.DOCUMENT_READ):
             raise DocumentAccessDenied("document_read_denied")
-        with UnitOfWork(self._database) as work:
-            assert work.session is not None
-            snapshot = self._repository.get_document(work.session, auth.tenant_id, document_id)
-            if snapshot is None:
-                return None
-            if not self._acl_repository.document_is_allowed(
-                work.session,
-                auth=auth,
-                document_id=document_id,
-                permission=Permission.DOCUMENT_READ,
-            ):
-                return None
-            return DocumentResult(
-                document_id=snapshot.document_id,
-                title=snapshot.title,
-                department=snapshot.department,
-                status=snapshot.status,
-                versions=tuple(
-                    DocumentVersionResult(
-                        version_id=version_id,
-                        version=version,
-                        lifecycle_status=status,
-                    )
-                    for version_id, version, status in snapshot.versions
-                ),
-            )
+        snapshot = self._registry.get_document(auth=auth, document_id=document_id)
+        if snapshot is None:
+            return None
+        return DocumentResult(
+            document_id=snapshot.document_id,
+            title=snapshot.title,
+            department=snapshot.department,
+            status=snapshot.status,
+            versions=tuple(
+                DocumentVersionResult(
+                    version_id=version_id,
+                    version=version,
+                    lifecycle_status=status,
+                )
+                for version_id, version, status in snapshot.versions
+            ),
+        )
 
     def list_ingestion_jobs(
         self,
@@ -260,33 +199,23 @@ class DocumentService:
     ) -> tuple[IngestionJobResult, ...] | None:
         if not auth.has_permission(Permission.DOCUMENT_READ):
             raise DocumentAccessDenied("document_read_denied")
-        with UnitOfWork(self._database) as work:
-            assert work.session is not None
-            snapshot = self._repository.get_document(work.session, auth.tenant_id, document_id)
-            if snapshot is None:
-                return None
-            if not self._acl_repository.document_is_allowed(
-                work.session,
-                auth=auth,
-                document_id=document_id,
-                permission=Permission.DOCUMENT_READ,
-            ):
-                return None
-            return tuple(
-                IngestionJobResult(
-                    job_id=job.job_id,
-                    version_id=job.version_id,
-                    status=job.status,
-                    attempts=job.attempts,
-                    error_code=job.error_code,
-                )
-                for job in self._repository.list_jobs_for_document(
-                    work.session,
-                    tenant_id=auth.tenant_id,
-                    document_id=document_id,
-                    limit=limit,
-                )
+        jobs = self._registry.list_ingestion_jobs(
+            auth=auth,
+            document_id=document_id,
+            limit=limit,
+        )
+        if jobs is None:
+            return None
+        return tuple(
+            IngestionJobResult(
+                job_id=job.job_id,
+                version_id=job.version_id,
+                status=job.status,
+                attempts=job.attempts,
+                error_code=job.error_code,
             )
+            for job in jobs
+        )
 
     def delete_document(
         self,
@@ -297,28 +226,11 @@ class DocumentService:
             raise DocumentAccessDenied("document_write_denied")
         if self._vector_deleter is None:
             raise DocumentDeletionUnavailable("document_vector_deleter_unavailable")
-        with self._projection_guard.document_projection_guard(auth.tenant_id, document_id):
-            with UnitOfWork(self._database) as work:
-                assert work.session is not None
-                if not self._repository.principal_exists(
-                    work.session,
-                    tenant_id=auth.tenant_id,
-                    user_id=auth.user_id,
-                ):
-                    raise DocumentAccessDenied("principal_not_registered")
-                snapshot = self._repository.get_document(work.session, auth.tenant_id, document_id)
-                if snapshot is None or not self._acl_repository.document_is_allowed(
-                    work.session,
-                    auth=auth,
-                    document_id=document_id,
-                    permission=Permission.DOCUMENT_WRITE,
-                ):
-                    return None
-                reservation = self._repository.prepare_document_deletion(
-                    work.session,
-                    tenant_id=auth.tenant_id,
-                    document_id=document_id,
-                )
+        with self._registry.document_projection_guard(auth.tenant_id, document_id):
+            reservation = self._registry.prepare_document_deletion(
+                auth=auth,
+                document_id=document_id,
+            )
             if reservation is None:
                 return None
             try:
@@ -333,13 +245,10 @@ class DocumentService:
                     self._object_store.delete_exact(source_object_key)
             except Exception as exc:
                 raise DocumentDeletionFailed("document_object_cleanup_failed") from exc
-            with UnitOfWork(self._database) as work:
-                assert work.session is not None
-                finalized = self._repository.finalize_document_deletion(
-                    work.session,
-                    tenant_id=reservation.tenant_id,
-                    document_id=reservation.document_id,
-                )
+            finalized = self._registry.finalize_document_deletion(
+                tenant_id=reservation.tenant_id,
+                document_id=reservation.document_id,
+            )
         if not finalized:
             raise DocumentDeletionFailed("document_deletion_finalize_missing")
         return DocumentDeletionResult(

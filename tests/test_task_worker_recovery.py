@@ -18,7 +18,6 @@ from rag_kb.application.task_worker import TaskWorker, TaskWorkerResult
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.tasks import TaskBudgets, TaskMode, TaskStatus
 from rag_kb.infrastructure.database import Base, build_database
-from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerRepository
 from rag_kb.infrastructure.database.models import (
     AgentCapabilityLeaseRow,
     AgentTaskRow,
@@ -26,6 +25,7 @@ from rag_kb.infrastructure.database.models import (
     TaskResumeCommandRow,
     TenantRow,
 )
+from rag_kb.infrastructure.database.task_execution import DatabaseTaskWorkerSettlement
 from rag_kb.infrastructure.database.task_repository import (
     DatabaseTaskRepository,
     ResumeCommandLease,
@@ -72,6 +72,11 @@ class AuthContexts:
 class Tools:
     def close(self) -> None:
         return None
+
+
+def _settlement(database) -> DatabaseTaskWorkerSettlement:
+    root = Path(database.engine.url.database).parent / "objects"
+    return DatabaseTaskWorkerSettlement(database, LocalObjectStore(root))
 
 
 def _snapshot(
@@ -165,9 +170,8 @@ def _worker(
         auth_contexts=AuthContexts(auth),
         agent_for=agent_for or (lambda _budgets: agent),
         results=results,
-        evidence=EvidenceLedgerRepository(),
+        settlement=_settlement(database),
         tools=Tools(),
-        database=database,
         worker_id="worker-a",
         lease_seconds=lease_seconds,
     )
@@ -715,9 +719,8 @@ def test_close_runs_injected_cleanup_after_tool_close_fails(setup) -> None:
         auth_contexts=AuthContexts(auth),
         agent_for=lambda _budgets: ScriptedAgent(()),
         results=results,
-        evidence=EvidenceLedgerRepository(),
+        settlement=_settlement(database),
         tools=FailingTools(),
-        database=database,
         worker_id="worker-a",
         close=lambda: cleaned.append("closed"),
     )

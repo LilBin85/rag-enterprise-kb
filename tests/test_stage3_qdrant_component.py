@@ -8,13 +8,10 @@ from datetime import UTC, datetime
 
 import pytest
 
-from rag_kb.application.ingestion_worker import ClaimedIngestionJob
+from rag_kb.application.ports.indexing import ClaimedIngestionJob, DocumentIndexMetadata
 from rag_kb.domain.indexing import ParsedChunk, ParsedDocument, compute_chunk_manifest_digest
 from rag_kb.infrastructure.vectorstore.qdrant_authorized_search import QdrantAuthorizedSearch
-from rag_kb.infrastructure.vectorstore.qdrant_document_index import (
-    DocumentIndexMetadata,
-    QdrantDocumentIndex,
-)
+from rag_kb.infrastructure.vectorstore.qdrant_document_index import QdrantDocumentIndex
 
 
 def _hash(value: str) -> str:

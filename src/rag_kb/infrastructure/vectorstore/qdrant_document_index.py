@@ -16,17 +16,21 @@ from typing import Protocol
 
 from qdrant_client.http import models
 
-from rag_kb.application.ingestion_worker import ClaimedIngestionJob, DocumentIndexPort
+from rag_kb.application.ports.indexing import (
+    ClaimedIngestionJob,
+    DocumentIndexError,
+    DocumentIndexMetadata,
+    DocumentIndexMetadataPort,
+    DocumentIndexPort,
+    DocumentVectorDeletionPort,
+)
 from rag_kb.domain.indexing import (
     IndexReceipt,
     ParsedChunk,
     ParsedDocument,
     compute_chunk_manifest_digest,
 )
-from rag_kb.infrastructure.vectorstore.qdrant_collection import (
-    DocumentIndexError,
-    ensure_document_collection,
-)
+from rag_kb.infrastructure.vectorstore.qdrant_collection import ensure_document_collection
 
 
 _POINT_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "rag-enterprise-kb/document-index-v2")
@@ -35,22 +39,11 @@ _CJK_PATTERN = re.compile(r"[\u3400-\u9fff]+")
 _PRINCIPAL_TYPES = frozenset({"user", "group", "role"})
 
 
-@dataclass(frozen=True)
-class DocumentIndexMetadata:
-    title: str
-    department: str
-    allowed_principals: tuple[str, ...]
-
-
-class DocumentIndexMetadataPort(Protocol):
-    def get_metadata(self, job: ClaimedIngestionJob) -> DocumentIndexMetadata: ...
-
-
 class DenseEmbedderPort(Protocol):
     def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]: ...
 
 
-class QdrantDocumentDeletion:
+class QdrantDocumentDeletion(DocumentVectorDeletionPort):
     """按租户和文档标识删除新版 collection 中的全部向量。"""
 
     def __init__(self, client, *, collection: str = "kb_chunks_v2") -> None:

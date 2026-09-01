@@ -8,9 +8,8 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from rag_kb.application.enterprise_retriever import EnterpriseRetriever, RetrievalSecurityError
-from rag_kb.application.retrieval_fusion import RankedChunk
+from rag_kb.application.ports.retrieval import AuthorizedVersionSet, RankedChunk
 from rag_kb.domain.identity import AuthContext
-from rag_kb.infrastructure.database.acl_repository import AuthorizedVersionSet
 from rag_kb.observability import Observability
 
 

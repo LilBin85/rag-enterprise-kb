@@ -11,10 +11,13 @@ import pytest
 from sqlalchemy import func, select, text
 
 from rag_kb.application.document_service import DocumentService
-from rag_kb.application.ingestion_worker import DocumentRegistryIngestionJobPort
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.indexing import IndexReceipt
 from rag_kb.infrastructure.database import build_database
+from rag_kb.infrastructure.database.document_lifecycle import (
+    DatabaseDocumentLifecycle,
+    DocumentRegistryIngestionJobPort,
+)
 from rag_kb.infrastructure.database.models import (
     DocumentVersionRow,
     IdempotencyRecordRow,
@@ -45,7 +48,7 @@ def test_postgres_concurrent_upload_and_activation(tmp_path: Path) -> None:
         request_id=f"request-{suffix}",
     )
     object_store = LocalObjectStore(tmp_path / "objects")
-    service = DocumentService(database, object_store)
+    service = DocumentService(DatabaseDocumentLifecycle(database), object_store)
 
     try:
         with database.engine.begin() as connection:

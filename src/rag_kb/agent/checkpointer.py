@@ -28,7 +28,12 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.serde._msgpack import STRICT_MSGPACK_ENABLED
 
 
-_TASK_CHECKPOINT_MSGPACK_TYPES = (("rag_kb.agent.result", "TaskResultCandidate"),)
+# TaskResultCandidate 契约定义在 application；已持久化 checkpoint 的 MsgPack
+# serde 仍按旧路径 rag_kb.agent.result 引用，两条路径都必须保持可反序列化。
+_TASK_CHECKPOINT_MSGPACK_TYPES = (
+    ("rag_kb.agent.result", "TaskResultCandidate"),
+    ("rag_kb.application.agent_contract", "TaskResultCandidate"),
+)
 _CHECKPOINT_SAVER_VERSION = "3.1.2"
 _CHECKPOINT_STALE_CODE = "task_checkpoint_lease_stale"
 _RESUME_COMMAND_ID_KEY = "checkpoint_resume_command_id"

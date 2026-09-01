@@ -39,6 +39,9 @@ from rag_kb.application.tool_registry import ToolRegistry, builtin_tool_definiti
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.tasks import TaskMode, TaskState, TaskStatus
 from rag_kb.infrastructure.database import Base, build_database
+from rag_kb.infrastructure.database.approval_lifecycle import (
+    DatabaseApprovalLifecycle,
+)
 from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerConflict
 from rag_kb.infrastructure.database.models import (
     AgentTaskRow,
@@ -47,6 +50,10 @@ from rag_kb.infrastructure.database.models import (
     ToolCallRow,
 )
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
+from rag_kb.infrastructure.database.task_read import DatabaseTaskResultReader
+from rag_kb.infrastructure.database.tool_execution_lifecycle import (
+    DatabaseToolExecutionLifecycle,
+)
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
 from rag_kb.models import Citation
 
@@ -282,9 +289,9 @@ def test_read_tool_success_is_persisted_and_idempotent_readback(tmp_path: Path) 
     adapter = ReadAdapter()
     definition = next(item for item in builtin_tool_definitions() if item.name == "search_knowledge")
     service = ToolExecutionService(
-        database,
+        DatabaseToolExecutionLifecycle(database),
         ToolRegistry([definition], adapters={"search_knowledge": adapter}),
-        ApprovalService(database),
+        ApprovalService(DatabaseApprovalLifecycle(database)),
         tool_results=LocalObjectStore(tmp_path / "tool-results"),
     )
     request = ToolExecutionRequest(
@@ -393,10 +400,12 @@ def test_result_read_revalidates_current_evidence_and_citation_binding() -> None
                 )
             )
 
-    service = TaskResultService(Database(), ResultStore(), Evidence((citation,)))
+    service = TaskResultService(
+        DatabaseTaskResultReader(Database(), ResultStore(), Evidence((citation,)))
+    )
     assert service.read(auth=_auth(), state=state) == result
 
-    revoked = TaskResultService(Database(), ResultStore(), Evidence(()))
+    revoked = TaskResultService(DatabaseTaskResultReader(Database(), ResultStore(), Evidence(())))
     with pytest.raises(TaskResultError, match="task_result_binding_invalid"):
         revoked.read(auth=_auth(), state=state)
 
@@ -404,11 +413,11 @@ def test_result_read_revalidates_current_evidence_and_citation_binding() -> None
         ("duplicate_evidence_id", "task_result_binding_invalid"),
         ("evidence_authorization_stale", "task_result_evidence_unavailable"),
     ):
-        conflicted = TaskResultService(
+        conflicted = TaskResultService(DatabaseTaskResultReader(
             Database(),
             ResultStore(),
             Evidence(EvidenceLedgerConflict(conflict_code)),
-        )
+        ))
         with pytest.raises(TaskResultError, match=expected_code):
             conflicted.read(auth=_auth(), state=state)
 
@@ -432,7 +441,9 @@ def test_result_read_rejects_expired_body_before_object_read() -> None:
             raise AssertionError("expired result must not be read")
 
     database = SimpleNamespace(engine=SimpleNamespace(dialect=SimpleNamespace(name="sqlite")))
-    service = TaskResultService(database, ResultStore(), now=lambda: now)
+    service = TaskResultService(
+        DatabaseTaskResultReader(database, ResultStore(), now=lambda: now)
+    )
     with pytest.raises(TaskResultError, match="task_result_expired"):
         service.read(auth=_auth(), state=state)
 
@@ -502,7 +513,9 @@ def test_result_read_rechecks_task_binding_after_object_read(
                     row.result_ref = "task-results/task-a/rebound.json"
             return result
 
-    service = TaskResultService(database, ResultStore(), now=lambda: now)
+    service = TaskResultService(
+        DatabaseTaskResultReader(database, ResultStore(), now=lambda: now)
+    )
     with pytest.raises(TaskResultError, match=error_code):
         service.read(auth=_auth(), state=state)
 
@@ -535,11 +548,11 @@ def test_result_read_uses_postgres_clock_for_expiry() -> None:
         def read_task_result(self, _ref, _hash):
             raise AssertionError("expired result must not be read")
 
-    service = TaskResultService(
+    service = TaskResultService(DatabaseTaskResultReader(
         Database(),
         ResultStore(),
         now=lambda: database_now - timedelta(days=1),
-    )
+    ))
     with pytest.raises(TaskResultError, match="task_result_expired"):
         service.read(auth=_auth(), state=state)
 

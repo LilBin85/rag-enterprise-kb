@@ -5,6 +5,8 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
+from rag_kb.application.ports.object_store import ObjectConflictError, ObjectStorePort
+
 
 _RETENTION_PREFIXES = frozenset({"tool-results", "task-results", "artifacts"})
 
@@ -13,11 +15,7 @@ def _safe_object_component(value: str) -> bool:
     return bool(value) and value not in {".", ".."} and "/" not in value and "\\" not in value
 
 
-class ObjectConflictError(RuntimeError):
-    pass
-
-
-class LocalObjectStore:
+class LocalObjectStore(ObjectStorePort):
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)

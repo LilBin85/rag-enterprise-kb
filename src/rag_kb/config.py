@@ -100,6 +100,11 @@ class Settings(BaseSettings):
     # bge-m3 dense 向量维度(工作单元 3 使用)
     embedding_dim: int = 1024
 
+    def __init__(self, **values: object) -> None:
+        if os.environ.get("RAG_KB_DISABLE_ENV_FILE") == "1":
+            values.setdefault("_env_file", None)
+        super().__init__(**values)
+
     @model_validator(mode="after")
     def validate_retention_windows(self) -> "Settings":
         if (

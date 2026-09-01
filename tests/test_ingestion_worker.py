@@ -7,11 +7,8 @@ from threading import Event
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from rag_kb.application.ingestion_worker import (
-    ClaimedIngestionJob,
-    IngestionWorker,
-    PermanentIngestionError,
-)
+from rag_kb.application.ingestion_worker import IngestionWorker, PermanentIngestionError
+from rag_kb.application.ports.indexing import ClaimedIngestionJob
 from rag_kb.domain.indexing import (
     IndexReceipt,
     ParsedChunk,

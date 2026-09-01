@@ -15,12 +15,9 @@ from rag_kb.application.document_service import (
     DocumentVersionResult,
     IngestionJobResult,
 )
+from rag_kb.application.ports.documents import DocumentRegistryConflict, RegisteredUpload
 from rag_kb.domain.identity import AuthContext, Permission, Principal
 from rag_kb.infrastructure.auth.providers import DemoTokenIdentityProvider
-from rag_kb.infrastructure.database.document_repository import (
-    DocumentRegistryConflict,
-    RegisteredUpload,
-)
 from rag_kb.web.app import create_app
 from rag_kb.web.dependencies import build_document_service, build_identity_provider, resolve_auth_context
 from rag_kb.web.routers.documents import MAX_UPLOAD_METADATA_CHARS

@@ -8,7 +8,7 @@ from collections.abc import Sequence
 
 from qdrant_client.http import models
 
-from rag_kb.application.retrieval_fusion import RankedChunk
+from rag_kb.application.ports.retrieval import RankedChunk
 from rag_kb.infrastructure.vectorstore.qdrant_document_index import (
     DenseEmbedderPort,
     _normalize_principals,

@@ -203,7 +203,10 @@ def _check_serializer_is_strict() -> dict[str, object]:
     if not isinstance(serializer, JsonPlusSerializer) or serializer.pickle_fallback:
         raise SmokeError("checkpoint_pickle_fallback_must_be_disabled")
     allowlist = sorted(f"{module}.{name}" for module, name in _TASK_CHECKPOINT_MSGPACK_TYPES)
-    if allowlist != ["rag_kb.agent.result.TaskResultCandidate"]:
+    if allowlist != [
+        "rag_kb.agent.result.TaskResultCandidate",
+        "rag_kb.application.agent_contract.TaskResultCandidate",
+    ]:
         raise SmokeError("checkpoint_allowlist_invalid")
     return {
         "runtime_flag": True,

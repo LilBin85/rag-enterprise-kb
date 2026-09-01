@@ -189,7 +189,11 @@ def _strict_msgpack_evidence() -> dict[str, object]:
         not langgraph_msgpack.STRICT_MSGPACK_ENABLED
         or not isinstance(serializer, JsonPlusSerializer)
         or serializer.pickle_fallback
-        or allowlist != ["rag_kb.agent.result.TaskResultCandidate"]
+        or allowlist
+        != [
+            "rag_kb.agent.result.TaskResultCandidate",
+            "rag_kb.application.agent_contract.TaskResultCandidate",
+        ]
     ):
         raise SmokeError("strict_msgpack_invalid")
     return {
@@ -539,9 +543,15 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         from rag_kb.domain.identity import Principal
         from rag_kb.infrastructure.auth.providers import DemoTokenIdentityProvider
         from rag_kb.infrastructure.database import build_database
-        from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerRepository
-        from rag_kb.infrastructure.database.task_execution import DatabaseTaskAuthContextPort, DatabaseTaskEvidencePort
+        from rag_kb.infrastructure.database.approval_lifecycle import DatabaseApprovalLifecycle
+        from rag_kb.infrastructure.database.task_execution import (
+            DatabaseTaskAuthContextPort,
+            DatabaseTaskEvidencePort,
+            DatabaseTaskWorkerSettlement,
+        )
+        from rag_kb.infrastructure.database.task_read import DatabaseArtifactContentReader
         from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
+        from rag_kb.infrastructure.database.tool_execution_lifecycle import DatabaseToolExecutionLifecycle
         from rag_kb.infrastructure.ingestion.local_document_parser import LocalDocumentParser
         from rag_kb.infrastructure.object_store.local import LocalObjectStore
         from rag_kb.infrastructure.tools.artifacts import LocalArtifactToolAdapter
@@ -632,12 +642,21 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             }
         )
         evidence_validator = DatabaseTaskEvidencePort(database)
-        approvals = ApprovalService(database, registry=registry, evidence_validator=evidence_validator)
+        approvals = ApprovalService(
+            DatabaseApprovalLifecycle(
+                database,
+                evidence_validator=evidence_validator,
+                resume_repository=repository,
+            ),
+            registry=registry,
+        )
         tools = ToolExecutionService(
-            database,
+            DatabaseToolExecutionLifecycle(
+                database,
+                evidence_validator=evidence_validator,
+            ),
             registry,
             approvals,
-            evidence_validator=evidence_validator,
             tool_results=LocalObjectStore(object_root / "tool-results"),
         )
         provider = DemoTokenIdentityProvider(
@@ -652,7 +671,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         app.dependency_overrides[build_identity_provider] = lambda: provider
         app.dependency_overrides[build_task_repository] = lambda: repository
         app.dependency_overrides[build_approval_service] = lambda: approvals
-        app.dependency_overrides[build_artifact_content_service] = lambda: ArtifactContentService(database, objects)
+        app.dependency_overrides[build_artifact_content_service] = lambda: ArtifactContentService(DatabaseArtifactContentReader(database, objects))
 
         def make_worker(task_id: str, *, approved: bool = False, clarification: bool = False):
             messages = (
@@ -678,15 +697,13 @@ def run(args: argparse.Namespace) -> dict[str, object]:
                 agent_for=lambda _budgets: agent,
                 controlled_agent_for=lambda _budgets: agent,
                 results=AgentResultStore(objects),
-                evidence=EvidenceLedgerRepository(),
+                settlement=DatabaseTaskWorkerSettlement(database, objects),
                 tools=tools,
-                database=database,
                 worker_id=worker_id,
                 lease_seconds=300,
                 capability_name="task-agent",
                 protocol_version="m2-fenced-v1",
                 approvals=approvals,
-                objects=objects,
             )
             return worker, agent
 

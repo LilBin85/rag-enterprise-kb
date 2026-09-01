@@ -1,10 +1,11 @@
 """以 PostgreSQL 业务事实为准的文档 ACL 与当前版本查询。"""
 
-from dataclasses import dataclass
+from collections.abc import Sequence
 
 from sqlalchemy import and_, or_, select, tuple_
 from sqlalchemy.orm import Session
 
+from rag_kb.application.ports.retrieval import AuthorizedVersionSet, RankedChunk
 from rag_kb.domain.identity import AuthContext, Permission
 from rag_kb.infrastructure.database.models import (
     ACLGrantRow,
@@ -38,7 +39,7 @@ def _grants_permission(raw_permissions: object, permission: Permission) -> bool:
     return str(permission) in values or str(Permission.ADMIN) in values
 
 
-def _candidate_binding(candidate) -> tuple:
+def _candidate_binding(candidate: RankedChunk) -> tuple:
     return (
         candidate.tenant_id,
         candidate.version_id,
@@ -50,13 +51,6 @@ def _candidate_binding(candidate) -> tuple:
         candidate.source_file_name,
         candidate.projection_generation,
     )
-
-
-@dataclass(frozen=True)
-class AuthorizedVersionSet:
-    tenant_id: str
-    version_ids: frozenset[str]
-    projection_generations: frozenset[tuple[str, int]] = frozenset()
 
 
 class ACLRepository:
@@ -287,7 +281,7 @@ class DatabaseAuthorizationPort:
     def revalidate_candidates(
         self,
         auth: AuthContext,
-        candidates,
+        candidates: Sequence[RankedChunk],
     ) -> frozenset[tuple[str, str]]:
         """按 SQL 块元数据和当前 ACL 对 Qdrant 返回绑定做最终精确复核。"""
         if len(candidates) > 100:

@@ -14,6 +14,10 @@ from rag_kb.application.ingestion_worker import IngestionWorker
 from rag_kb.application.document_service import DocumentService
 from rag_kb.domain.identity import AuthContext
 from rag_kb.infrastructure.database import build_database
+from rag_kb.infrastructure.database.document_lifecycle import (
+    DatabaseDocumentLifecycle,
+    DocumentRegistryIngestionJobPort,
+)
 from rag_kb.infrastructure.database.acl_repository import DatabaseAuthorizationPort
 from rag_kb.infrastructure.database.index_projection_metadata import DatabaseDocumentIndexMetadataPort
 from rag_kb.infrastructure.database.models import DocumentVersionRow, IngestionJobRow
@@ -21,7 +25,6 @@ from rag_kb.infrastructure.ingestion.local_document_parser import LocalDocumentP
 from rag_kb.infrastructure.object_store import LocalObjectStore
 from rag_kb.infrastructure.vectorstore.qdrant_authorized_search import QdrantAuthorizedSearch
 from rag_kb.infrastructure.vectorstore.qdrant_document_index import QdrantDocumentIndex
-from rag_kb.application.ingestion_worker import DocumentRegistryIngestionJobPort
 
 
 POSTGRES_TEST_URL = os.environ.get("RAG_KB_TEST_POSTGRES_URL")
@@ -84,7 +87,7 @@ def test_postgres_qdrant_ingestion_and_authorized_retrieval(tmp_path: Path) -> N
                 ],
             )
 
-        service = DocumentService(database, object_store)
+        service = DocumentService(DatabaseDocumentLifecycle(database), object_store)
         registered = service.register_upload(
             document_id=document_id,
             title="Pipeline policy",

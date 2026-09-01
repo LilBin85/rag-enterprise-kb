@@ -27,6 +27,8 @@ from rag_kb.domain.identity import AuthContext, Principal
 from rag_kb.domain.retrieval import RetrievalCandidate, RetrievalResult
 from rag_kb.infrastructure.auth.providers import DemoTokenIdentityProvider
 from rag_kb.infrastructure.database import Base, build_database
+from rag_kb.infrastructure.database.document_lifecycle import DatabaseDocumentLifecycle
+from rag_kb.infrastructure.database.knowledge_query_lifecycle import DatabaseKnowledgeQueryLifecycle
 from rag_kb.infrastructure.database.models import (
     ACLGrantRow,
     ChunkMetadataRow,
@@ -270,7 +272,11 @@ def _document_service(
             )
         }
     )
-    return DocumentService(database, LocalObjectStore(root / "objects")), database, provider
+    return (
+        DocumentService(DatabaseDocumentLifecycle(database), LocalObjectStore(root / "objects")),
+        database,
+        provider,
+    )
 
 
 def _document_api_round(
@@ -543,7 +549,11 @@ def _query_service(root: Path, name: str) -> tuple[KnowledgeQueryService, object
         fused_score=1.0,
         text=text,
     )
-    return KnowledgeQueryService(database, _Retriever(candidate), _Model()), database
+    return KnowledgeQueryService(
+        DatabaseKnowledgeQueryLifecycle(database),
+        _Retriever(candidate),
+        _Model(),
+    ), database
 
 
 def _rag_round(root: Path, samples: int, warmup: int) -> list[tuple[float, float]]:

@@ -35,12 +35,19 @@ from rag_kb.domain.tasks import (
     TaskStatus,
 )
 from rag_kb.infrastructure.database import Base, build_database
+from rag_kb.infrastructure.database.approval_lifecycle import (
+    DatabaseApprovalLifecycle,
+)
 from rag_kb.infrastructure.database.models import (
     PrincipalRow,
     TenantRow,
     ToolCallRow,
 )
+from rag_kb.infrastructure.database.task_execution import DatabaseTaskWorkerSettlement
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
+from rag_kb.infrastructure.database.tool_execution_lifecycle import (
+    DatabaseToolExecutionLifecycle,
+)
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
 
 
@@ -243,7 +250,6 @@ class _DeadlineExpiresAfterInvokeRepository(DatabaseTaskRepository):
 def test_deadline_expiring_during_invoke_fails_task_without_succeeding(tmp_path: Path) -> None:
     from rag_kb.agent.result import AgentResultStore
     from rag_kb.application.task_worker import TaskWorker
-    from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerRepository
 
     database = build_database(f"sqlite+pysqlite:///{(tmp_path / 'deadline.sqlite3').as_posix()}")
     Base.metadata.create_all(database.engine)
@@ -256,14 +262,14 @@ def test_deadline_expiring_during_invoke_fails_task_without_succeeding(tmp_path:
     agent = _SnapshotAgent()
 
     repository = _DeadlineExpiresAfterInvokeRepository(database, agent)
+    objects = LocalObjectStore(tmp_path / "objects")
     worker = TaskWorker(
         repository=repository,
         auth_contexts=_AuthContexts(),
         agent_for=lambda _budgets: agent,
-        results=AgentResultStore(LocalObjectStore(tmp_path / "objects")),
-        evidence=EvidenceLedgerRepository(),
+        results=AgentResultStore(objects),
+        settlement=DatabaseTaskWorkerSettlement(database, objects),
         tools=SimpleNamespace(close=lambda: None),
-        database=database,
         worker_id="worker-a",
         lease_seconds=60,
     )
@@ -332,9 +338,9 @@ def test_read_tool_error_code_survives_into_execution_result(tmp_path: Path) -> 
         item for item in builtin_tool_definitions() if item.name == "search_knowledge"
     )
     service = ToolExecutionService(
-        database,
+        DatabaseToolExecutionLifecycle(database),
         ToolRegistry([definition], adapters={"search_knowledge": _ExplodingReadAdapter()}),
-        ApprovalService(database),
+        ApprovalService(DatabaseApprovalLifecycle(database)),
         tool_results=LocalObjectStore(tmp_path / "tool-results"),
     )
     try:
@@ -379,9 +385,9 @@ def test_tool_execution_does_not_swallow_keyboard_interrupt(tmp_path: Path) -> N
         item for item in builtin_tool_definitions() if item.name == "search_knowledge"
     )
     service = ToolExecutionService(
-        database,
+        DatabaseToolExecutionLifecycle(database),
         ToolRegistry([definition], adapters={"search_knowledge": InterruptingAdapter()}),
-        ApprovalService(database),
+        ApprovalService(DatabaseApprovalLifecycle(database)),
         tool_results=LocalObjectStore(tmp_path / "tool-results"),
     )
     try:
@@ -473,9 +479,9 @@ def test_sweeper_converges_read_to_failed_and_keeps_write_unknown(tmp_path: Path
             ]
         )
     service = ToolExecutionService(
-        database,
+        DatabaseToolExecutionLifecycle(database),
         ToolRegistry(adapters={}),
-        ApprovalService(database),
+        ApprovalService(DatabaseApprovalLifecycle(database)),
         tool_results=LocalObjectStore(tmp_path / "objects"),
     )
     try:
@@ -516,9 +522,9 @@ def test_expired_tool_result_readback_returns_non_retryable_failure(
         item for item in builtin_tool_definitions() if item.name == "search_knowledge"
     )
     service = ToolExecutionService(
-        database,
+        DatabaseToolExecutionLifecycle(database),
         ToolRegistry([definition], adapters={"search_knowledge": _OkAdapter()}),
-        ApprovalService(database),
+        ApprovalService(DatabaseApprovalLifecycle(database)),
         tool_results=LocalObjectStore(tmp_path / "tool-results"),
     )
     request = ToolExecutionRequest(

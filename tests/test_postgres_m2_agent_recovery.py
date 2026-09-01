@@ -44,7 +44,9 @@ from rag_kb.application.tool_registry import (
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.tasks import TaskBudgets, TaskMode, TaskStatus
 from rag_kb.infrastructure.database import build_database
-from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerRepository
+from rag_kb.infrastructure.database.approval_lifecycle import (
+    DatabaseApprovalLifecycle,
+)
 from rag_kb.infrastructure.database.models import (
     ACLGrantRow,
     AgentCapabilityLeaseRow,
@@ -60,7 +62,13 @@ from rag_kb.infrastructure.database.models import (
     TaskEventRow,
     ToolCallRow,
 )
-from rag_kb.infrastructure.database.task_execution import DatabaseTaskAuthContextPort
+from rag_kb.infrastructure.database.task_execution import (
+    DatabaseTaskAuthContextPort,
+    DatabaseTaskWorkerSettlement,
+)
+from rag_kb.infrastructure.database.tool_execution_lifecycle import (
+    DatabaseToolExecutionLifecycle,
+)
 from rag_kb.infrastructure.database.task_repository import (
     DatabaseTaskRepository,
     TaskLease,
@@ -439,9 +447,12 @@ def _build_chain(stage: _Stage, messages, hook=None, *, timeout_seconds: int | N
         definitions=definitions,
         adapters={"create_report_artifact": adapter},
     )
-    approvals = ApprovalService(stage.database, registry=registry)
+    approvals = ApprovalService(
+        DatabaseApprovalLifecycle(stage.database),
+        registry=registry,
+    )
     tools = ToolExecutionService(
-        stage.database,
+        DatabaseToolExecutionLifecycle(stage.database),
         registry,
         approvals,
         tool_results=LocalObjectStore(stage.object_root / "tool-results"),
@@ -458,6 +469,12 @@ def _build_chain(stage: _Stage, messages, hook=None, *, timeout_seconds: int | N
     return agent, adapter, approvals, proxy
 
 
+def _settlement(stage: _Stage) -> DatabaseTaskWorkerSettlement:
+    return DatabaseTaskWorkerSettlement(
+        stage.database, LocalObjectStore(stage.object_root)
+    )
+
+
 def _worker(stage: _Stage, agent, *, approvals, tools, repository=None) -> TaskWorker:
     return TaskWorker(
         repository=repository or stage.repository,
@@ -465,14 +482,12 @@ def _worker(stage: _Stage, agent, *, approvals, tools, repository=None) -> TaskW
         agent_for=lambda _budgets: agent,
         controlled_agent_for=lambda _budgets: agent,
         results=AgentResultStore(LocalObjectStore(stage.object_root / "task-results")),
-        evidence=EvidenceLedgerRepository(),
+        settlement=_settlement(stage),
         tools=tools,
-        database=stage.database,
         worker_id="worker-1",
         capability_name="task-agent",
         protocol_version="m2-fenced-v1",
         approvals=approvals,
-        objects=LocalObjectStore(stage.object_root),
     )
 
 
@@ -677,14 +692,12 @@ def test_window_a_crash_before_tool_node_recovers_executes_once(stage) -> None:
         agent_for=lambda _budgets: agent,
         controlled_agent_for=lambda _budgets: agent,
         results=AgentResultStore(LocalObjectStore(stage.object_root / "task-results")),
-        evidence=EvidenceLedgerRepository(),
+        settlement=_settlement(stage),
         tools=proxy,
-        database=stage.database,
         worker_id="worker-1",
         capability_name="task-agent",
         protocol_version="m2-fenced-v1",
         approvals=approvals,
-        objects=LocalObjectStore(stage.object_root),
     )
     worker = _worker(stage, agent, approvals=approvals, tools=proxy)
 
@@ -764,14 +777,12 @@ def test_window_b_crash_after_adapter_reads_result_ref_single_execution(stage) -
         agent_for=lambda _budgets: agent,
         controlled_agent_for=lambda _budgets: agent,
         results=AgentResultStore(LocalObjectStore(stage.object_root / "task-results")),
-        evidence=EvidenceLedgerRepository(),
+        settlement=_settlement(stage),
         tools=proxy,
-        database=stage.database,
         worker_id="worker-1",
         capability_name="task-agent",
         protocol_version="m2-fenced-v1",
         approvals=approvals,
-        objects=LocalObjectStore(stage.object_root),
     )
     worker = _worker(stage, agent, approvals=approvals, tools=proxy)
 
@@ -855,14 +866,12 @@ def test_window_c_checkpoint_done_summary_sync_idempotent(stage) -> None:
             results=AgentResultStore(
                 LocalObjectStore(stage.object_root / "task-results")
             ),
-            evidence=EvidenceLedgerRepository(),
+            settlement=_settlement(stage),
             tools=proxy,
-            database=stage.database,
             worker_id="worker-1",
             capability_name="task-agent",
             protocol_version="m2-fenced-v1",
             approvals=approvals,
-            objects=LocalObjectStore(stage.object_root),
         ).resume_for_approval(
             auth=stage.approver,
             task_id=stage.task_id,

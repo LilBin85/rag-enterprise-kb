@@ -11,17 +11,26 @@ from rag_kb.config import get_settings, task_budgets_from_settings
 from rag_kb.application.approval_service import ApprovalService
 from rag_kb.application.artifact_content_service import ArtifactContentService
 from rag_kb.application.query_service import KnowledgeQueryService
-from rag_kb.application.task_query_service import DatabaseTaskQueryService
+from rag_kb.application.task_query_service import TaskQueryService
 from rag_kb.application.task_result_service import TaskResultService
 from rag_kb.agent.result import AgentResultStore
 from rag_kb.application.document_service import DocumentService
 from rag_kb.domain.identity import AuthContext
 from rag_kb.infrastructure.auth.providers import DemoTokenIdentityProvider, IdentityProvider
 from rag_kb.infrastructure.database import build_database
+from rag_kb.infrastructure.database.document_lifecycle import DatabaseDocumentLifecycle
 from rag_kb.infrastructure.database.task_repository import (
     DatabaseTaskRepository,
 )
 from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerRepository
+from rag_kb.infrastructure.database.task_read import (
+    DatabaseArtifactContentReader,
+    DatabaseTaskQueryReader,
+    DatabaseTaskResultReader,
+)
+from rag_kb.infrastructure.database.approval_lifecycle import (
+    DatabaseApprovalLifecycle,
+)
 from rag_kb.infrastructure.object_store import LocalObjectStore
 from rag_kb.infrastructure.vectorstore.qdrant_collection import (
     validate_document_collection,
@@ -132,6 +141,9 @@ def build_knowledge_query_service() -> KnowledgeQueryService:
     from rag_kb.answerer import DeepSeekAnswerModel
     from rag_kb.application.enterprise_retriever import EnterpriseRetriever
     from rag_kb.config import resolve_retrieval_limits
+    from rag_kb.infrastructure.database.knowledge_query_lifecycle import (
+        DatabaseKnowledgeQueryLifecycle,
+    )
     from rag_kb.embedder import BgeM3Embedder
     from rag_kb.infrastructure.database.acl_repository import DatabaseAuthorizationPort
     from rag_kb.infrastructure.vectorstore.qdrant_authorized_search import QdrantAuthorizedSearch
@@ -155,14 +167,19 @@ def build_knowledge_query_service() -> KnowledgeQueryService:
         hybrid_enabled=settings.enable_hybrid_retrieval,
         dense_score_threshold=settings.retrieval_score_threshold,
     )
-    return KnowledgeQueryService(database, retriever, DeepSeekAnswerModel(settings))
+    return KnowledgeQueryService(
+        DatabaseKnowledgeQueryLifecycle(database),
+        retriever,
+        DeepSeekAnswerModel(settings),
+    )
 
 
 @lru_cache
 def build_document_service() -> DocumentService:
     settings = get_settings()
+    database = build_database(settings.database_url)
     return DocumentService(
-        build_database(settings.database_url),
+        DatabaseDocumentLifecycle(database),
         LocalObjectStore(settings.object_store_root),
         vector_deleter=QdrantDocumentDeletion(
             QdrantClient(url=settings.qdrant_url),
@@ -183,31 +200,37 @@ def build_task_repository() -> DatabaseTaskRepository:
 
 
 @lru_cache
-def build_task_query_service() -> DatabaseTaskQueryService:
-    return DatabaseTaskQueryService(build_database(get_settings().database_url))
+def build_task_query_service() -> TaskQueryService:
+    return TaskQueryService(DatabaseTaskQueryReader(build_database(get_settings().database_url)))
 
 
 @lru_cache
 def build_artifact_content_service() -> ArtifactContentService:
     settings = get_settings()
-    return ArtifactContentService(
+    return ArtifactContentService(DatabaseArtifactContentReader(
         build_database(settings.database_url),
         LocalObjectStore(settings.object_store_root),
-    )
+    ))
 
 
 def build_task_result_service() -> TaskResultService:
     settings = get_settings()
-    return TaskResultService(
+    return TaskResultService(DatabaseTaskResultReader(
         build_database(settings.database_url),
         AgentResultStore(LocalObjectStore(settings.object_store_root)),
         EvidenceLedgerRepository(),
-    )
+    ))
 
 
 @lru_cache
 def build_approval_service() -> ApprovalService:
-    return ApprovalService(build_database(get_settings().database_url))
+    database = build_database(get_settings().database_url)
+    return ApprovalService(
+        DatabaseApprovalLifecycle(
+            database,
+            resume_repository=build_task_repository(),
+        )
+    )
 
 
 def resolve_auth_context(

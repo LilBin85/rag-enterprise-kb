@@ -20,7 +20,15 @@ _M1_RESEARCH_TOOL_TRACE = [
     "search_knowledge",
     "fetch_evidence",
 ]
-_STRICT_MSGPACK_ALLOWLIST = ["rag_kb.agent.result.TaskResultCandidate"]
+# 与 agent.checkpointer 的 _TASK_CHECKPOINT_MSGPACK_TYPES 派生结果一致；
+# 旧 checkpoint 仍引用 rag_kb.agent.result 路径，新写入使用 application 契约路径。
+_STRICT_MSGPACK_ALLOWLIST = sorted(
+    f"{module}.{name}"
+    for module, name in (
+        ("rag_kb.agent.result", "TaskResultCandidate"),
+        ("rag_kb.application.agent_contract", "TaskResultCandidate"),
+    )
+)
 _M2_READ_TOOLS = _M1_RESEARCH_TOOL_TRACE
 _M2_WRITE_TOOLS = ["create_report_artifact", "create_work_item_draft"]
 _M2_CRASH_RECOVERY_STEPS = (

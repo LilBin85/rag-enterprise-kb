@@ -19,6 +19,7 @@ from sqlalchemy import select, text
 
 from rag_kb.agent.result import AgentResultStore, TaskResultCandidate
 from rag_kb.application.approval_service import ApprovalService, ApprovalServiceError
+from rag_kb.application.ports.task_worker import TaskWorkerPersistenceError
 from rag_kb.application.task_worker import TaskWorker, TaskWorkerError
 from rag_kb.application.tool_execution_service import (
     ToolExecutionError,
@@ -29,7 +30,9 @@ from rag_kb.application.tool_registry import ToolRegistry, ToolRegistryError
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.tasks import TaskBudgets, TaskMode, TaskStatus
 from rag_kb.infrastructure.database import Base, build_database
-from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerRepository
+from rag_kb.infrastructure.database.approval_lifecycle import (
+    DatabaseApprovalLifecycle,
+)
 from rag_kb.infrastructure.database.models import (
     ACLGrantRow,
     AgentCapabilityLeaseRow,
@@ -45,12 +48,16 @@ from rag_kb.infrastructure.database.models import (
     TaskResumeCommandRow,
     ToolCallRow,
 )
+from rag_kb.infrastructure.database.task_execution import DatabaseTaskWorkerSettlement
 from rag_kb.infrastructure.database.task_repository import (
     DatabaseTaskRepository,
     ResumeCommandLease,
     TaskLease,
     TaskRepositoryError,
     _command_from_row,
+)
+from rag_kb.infrastructure.database.tool_execution_lifecycle import (
+    DatabaseToolExecutionLifecycle,
 )
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
@@ -386,9 +393,12 @@ def _build_stage(tmp_path: Path, *, task_mode: TaskMode) -> SimpleNamespace:
             "create_work_item_draft": draft_adapter,
         }
     )
-    approvals = ApprovalService(database, registry=registry)
+    approvals = ApprovalService(
+        DatabaseApprovalLifecycle(database, resume_repository=repository),
+        registry=registry,
+    )
     tools = ToolExecutionService(
-        database,
+        DatabaseToolExecutionLifecycle(database),
         registry,
         approvals,
         tool_results=LocalObjectStore(tmp_path / "tool-results"),
@@ -457,6 +467,13 @@ def _mark_resume_checkpoint(stage: SimpleNamespace, config: dict[str, object]) -
         )
 
 
+def _settlement(stage: SimpleNamespace) -> DatabaseTaskWorkerSettlement:
+    return DatabaseTaskWorkerSettlement(
+        stage.database,
+        LocalObjectStore(stage.tmp_path / "objects"),
+    )
+
+
 def _worker(stage: SimpleNamespace, agent: ScriptedAgent) -> TaskWorker:
     fenced_agent = _CheckpointMarkingAgent(stage, agent)
     return TaskWorker(
@@ -465,14 +482,12 @@ def _worker(stage: SimpleNamespace, agent: ScriptedAgent) -> TaskWorker:
         agent_for=lambda _budgets: fenced_agent,
         controlled_agent_for=lambda _budgets: fenced_agent,
         results=AgentResultStore(LocalObjectStore(stage.tmp_path / "objects")),
-        evidence=EvidenceLedgerRepository(),
+        settlement=_settlement(stage),
         tools=stage.tools,
-        database=stage.database,
         worker_id="worker-1",
         capability_name="task-agent",
         protocol_version="m2-fenced-v1",
         approvals=stage.approvals,
-        objects=LocalObjectStore(stage.tmp_path / "objects"),
     )
 
 
@@ -1062,7 +1077,6 @@ def test_queued_approval_command_fails_closed_after_approver_revocation(stage) -
         expected_task_state_version=state_version,
         decision="approve",
         reason=None,
-        repository=stage.repository,
     )
     with stage.database.sessions.begin() as session:
         approver = session.get(PrincipalRow, ("tenant-a", "approver"))
@@ -1227,9 +1241,8 @@ def test_resume_crash_before_checkpoint_reclaims_the_same_command_once(stage) ->
             agent_for=lambda _budgets: crashing,
             controlled_agent_for=lambda _budgets: crashing,
             results=AgentResultStore(LocalObjectStore(stage.tmp_path / "objects")),
-            evidence=EvidenceLedgerRepository(),
+            settlement=_settlement(stage),
             tools=stage.tools,
-            database=stage.database,
             worker_id="worker-1",
             capability_name="task-agent",
             protocol_version="m2-fenced-v1",
@@ -1295,9 +1308,8 @@ def test_resume_crash_after_checkpoint_settles_without_reinjecting(stage) -> Non
             agent_for=lambda _budgets: fenced_crashing,
             controlled_agent_for=lambda _budgets: fenced_crashing,
             results=AgentResultStore(LocalObjectStore(stage.tmp_path / "objects")),
-            evidence=EvidenceLedgerRepository(),
+            settlement=_settlement(stage),
             tools=stage.tools,
-            database=stage.database,
             worker_id="worker-1",
             capability_name="task-agent",
             protocol_version="m2-fenced-v1",
@@ -1440,7 +1452,10 @@ def test_settle_verifies_declared_artifacts_belonging_and_hash(stage) -> None:
             )
         )
 
-    summaries = worker._verified_artifacts(
+    settlement = DatabaseTaskWorkerSettlement(
+        stage.database, LocalObjectStore(stage.tmp_path / "objects")
+    )
+    summaries = settlement.verify_artifacts(
         tenant_id="tenant-a", task_id="task-1", artifact_ids=("artifact-1",)
     )
     assert len(summaries) == 1
@@ -1454,15 +1469,15 @@ def test_settle_verifies_declared_artifacts_belonging_and_hash(stage) -> None:
         row = work.session.get(ArtifactRow, "artifact-1")
         assert row is not None
         row.content_hash = "sha256:" + "f" * 64
-    with pytest.raises(TaskWorkerError) as tampered:
-        worker._verified_artifacts(
+    with pytest.raises(TaskWorkerPersistenceError) as tampered:
+        settlement.verify_artifacts(
             tenant_id="tenant-a", task_id="task-1", artifact_ids=("artifact-1",)
         )
     assert tampered.value.code == "task_artifact_binding_invalid"
 
     # 未知/不属于任务的 artifact id → fail-closed。
-    with pytest.raises(TaskWorkerError) as missing:
-        worker._verified_artifacts(
+    with pytest.raises(TaskWorkerPersistenceError) as missing:
+        settlement.verify_artifacts(
             tenant_id="tenant-a", task_id="task-1", artifact_ids=("artifact-missing",)
         )
     assert missing.value.code == "task_artifact_binding_invalid"

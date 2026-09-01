@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 
 from sqlalchemy import select
 
-from rag_kb.application.enterprise_retriever import EnterpriseRetriever
+from rag_kb.application.ports.retrieval import RetrieverPort
 from rag_kb.application.tool_registry import ToolExecutionContext
 from rag_kb.domain.identity import Permission
 from rag_kb.domain.fingerprints import canonical_fingerprint
@@ -56,7 +56,7 @@ class DatabaseReadToolAdapter:
         database: Database,
         *,
         operation: str,
-        retriever: EnterpriseRetriever | None = None,
+        retriever: RetrieverPort | None = None,
         acl: ACLRepository | None = None,
         evidence: EvidenceLedgerRepository | None = None,
         source_parser: LocalDocumentParser | None = None,

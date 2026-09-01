@@ -5,8 +5,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 
-from rag_kb.agent.result import TaskResult
-from rag_kb.application.task_query_service import DatabaseTaskQueryService, TaskQueryError
+from rag_kb.application.ports.task_read import TaskResult
+from rag_kb.application.task_query_service import TaskQueryError, TaskQueryService
 from rag_kb.application.task_result_service import TaskResultError, TaskResultService
 from rag_kb.application.artifact_content_service import (
     ArtifactContentError,
@@ -213,7 +213,7 @@ def cancel_task(
 def get_events(
     task_id: str,
     auth: Annotated[AuthContext, Depends(resolve_auth_context)],
-    service: Annotated[DatabaseTaskQueryService, Depends(build_task_query_service)],
+    service: Annotated[TaskQueryService, Depends(build_task_query_service)],
 ) -> tuple[TaskEventResponse, ...]:
     try:
         return tuple(

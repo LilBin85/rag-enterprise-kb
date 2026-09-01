@@ -4,7 +4,8 @@ from dataclasses import replace
 
 import pytest
 
-from rag_kb.application.retrieval_fusion import RankedChunk, pack_context, reciprocal_rank_fusion
+from rag_kb.application.ports.retrieval import RankedChunk
+from rag_kb.application.retrieval_fusion import pack_context, reciprocal_rank_fusion
 
 
 def chunk(chunk_id: str, *, content_hash: str | None = None, text: str | None = None) -> RankedChunk:

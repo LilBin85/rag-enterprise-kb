@@ -2,7 +2,12 @@
 
 from sqlalchemy import and_, select
 
-from rag_kb.application.ingestion_worker import ClaimedIngestionJob
+from rag_kb.application.ports.indexing import (
+    ClaimedIngestionJob,
+    DocumentIndexError,
+    DocumentIndexMetadata,
+    DocumentIndexMetadataPort,
+)
 from rag_kb.domain.identity import Permission
 from rag_kb.infrastructure.database.acl_repository import ACLRepository
 from rag_kb.infrastructure.database.models import (
@@ -12,13 +17,9 @@ from rag_kb.infrastructure.database.models import (
 )
 from rag_kb.infrastructure.database.session import Database
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
-from rag_kb.infrastructure.vectorstore.qdrant_document_index import (
-    DocumentIndexError,
-    DocumentIndexMetadata,
-)
 
 
-class DatabaseDocumentIndexMetadataPort:
+class DatabaseDocumentIndexMetadataPort(DocumentIndexMetadataPort):
     """按任务、版本、文档和租户的完整绑定读取投影元数据。"""
 
     def __init__(self, database: Database, acl_repository: ACLRepository | None = None) -> None:

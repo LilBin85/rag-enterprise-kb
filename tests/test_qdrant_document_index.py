@@ -8,11 +8,13 @@ from types import SimpleNamespace
 import pytest
 from qdrant_client.http import models
 
-from rag_kb.application.ingestion_worker import ClaimedIngestionJob
-from rag_kb.domain.indexing import ParsedChunk, ParsedDocument, compute_chunk_manifest_digest
-from rag_kb.infrastructure.vectorstore.qdrant_document_index import (
+from rag_kb.application.ports.indexing import (
+    ClaimedIngestionJob,
     DocumentIndexError,
     DocumentIndexMetadata,
+)
+from rag_kb.domain.indexing import ParsedChunk, ParsedDocument, compute_chunk_manifest_digest
+from rag_kb.infrastructure.vectorstore.qdrant_document_index import (
     QdrantDocumentDeletion,
     QdrantDocumentIndex,
     keyword_sparse_vector,

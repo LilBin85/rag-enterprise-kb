@@ -2,21 +2,16 @@
 
 from __future__ import annotations
 
-import hashlib
-from datetime import UTC, datetime, timedelta
 from time import perf_counter
 from typing import Literal, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import update
 
+from rag_kb.application.ports.knowledge_query import KnowledgeQueryLifecyclePort
+from rag_kb.application.ports.retrieval import RetrieverPort
 from rag_kb.domain.identity import AuthContext
-from rag_kb.domain.retrieval import RetrievalCandidate, RetrievalResult
-from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerRepository
-from rag_kb.infrastructure.database.models import AgentTaskRow
-from rag_kb.infrastructure.database.session import Database
-from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
+from rag_kb.domain.retrieval import RetrievalCandidate
 from rag_kb.models import Citation, Refusal
 from rag_kb.observability import (
     current_observability,
@@ -47,10 +42,6 @@ class _QueryFailure(RuntimeError):
         super().__init__(code)
         self.code = code
         self.refusal_kind = refusal_kind
-
-
-class RetrieverPort(Protocol):
-    def search(self, query: str, auth: AuthContext) -> RetrievalResult: ...
 
 
 class ModelVerdictPort(Protocol):
@@ -84,15 +75,13 @@ class KnowledgeQueryService:
 
     def __init__(
         self,
-        database: Database,
+        lifecycle: KnowledgeQueryLifecyclePort,
         retriever: RetrieverPort,
         model: AnswerModelPort,
-        evidence: EvidenceLedgerRepository | None = None,
     ) -> None:
-        self._database = database
+        self._lifecycle = lifecycle
         self._retriever = retriever
         self._model = model
-        self._evidence = evidence or EvidenceLedgerRepository()
 
     def query(self, question: str, auth: AuthContext) -> KnowledgeQueryResult:
         started_at = perf_counter()
@@ -163,11 +152,14 @@ class KnowledgeQueryService:
 
         task_id = uuid4().hex
         try:
-            records = self._record_evidence(
+            records = self._lifecycle.start_fenced_query_with_evidence(
                 task_id=task_id,
                 query_fingerprint=result.query_fingerprint,
                 auth=auth,
                 candidates=result.candidates,
+                lease_owner=_SYNC_LEASE_OWNER,
+                lease_seconds=_SYNC_LEASE_SECONDS,
+                lease_generation=_SYNC_LEASE_GENERATION,
             )
         except Exception:
             raise _QueryFailure("evidence_record_failed") from None
@@ -204,21 +196,13 @@ class KnowledgeQueryService:
             return self._refusal("conflicting_evidence")
 
         try:
-            with UnitOfWork(self._database) as work:
-                assert work.session is not None
-                citations = self._evidence.citations_from_ledger(
-                    work.session,
-                    task_id=task_id,
-                    evidence_ids=evidence_ids,
-                    auth=auth,
-                )
-                if not self._finish_owned_task(
-                    work.session,
-                    task_id,
-                    auth,
-                    status="succeeded",
-                ):
-                    raise RuntimeError("query_task_binding_lost")
+            citations = self._lifecycle.finish_fenced_query_with_citations(
+                task_id=task_id,
+                auth=auth,
+                evidence_ids=evidence_ids,
+                lease_owner=_SYNC_LEASE_OWNER,
+                lease_generation=_SYNC_LEASE_GENERATION,
+            )
         except Exception:
             self._finish_task(task_id, auth, status="failed", error_code="citation_revalidation_failed")
             raise _QueryFailure(
@@ -230,43 +214,6 @@ class KnowledgeQueryService:
             citations=citations,
         )
 
-    def _record_evidence(
-        self,
-        *,
-        task_id: str,
-        query_fingerprint: str,
-        auth: AuthContext,
-        candidates: tuple[RetrievalCandidate, ...],
-    ):
-        auth_ref = "sha256:" + hashlib.sha256(
-            f"{auth.tenant_id}|{auth.user_id}|{auth.request_id}".encode("utf-8")
-        ).hexdigest()
-        with UnitOfWork(self._database) as work:
-            assert work.session is not None
-            work.session.add(
-                AgentTaskRow(
-                    task_id=task_id,
-                    tenant_id=auth.tenant_id,
-                    user_id=auth.user_id,
-                    task_mode="knowledge_query",
-                    status="running",
-                    goal=f"knowledge_query:{query_fingerprint}",
-                    auth_context_ref=auth_ref,
-                    lease_owner=_SYNC_LEASE_OWNER,
-                    lease_expires_at=datetime.now(UTC)
-                    + timedelta(seconds=_SYNC_LEASE_SECONDS),
-                    lease_generation=_SYNC_LEASE_GENERATION,
-                )
-            )
-            work.session.flush()
-            return self._evidence.record_candidates(
-                work.session,
-                task_id=task_id,
-                query_fingerprint=query_fingerprint,
-                auth=auth,
-                candidates=candidates,
-            )
-
     def _finish_task(
         self,
         task_id: str,
@@ -276,15 +223,14 @@ class KnowledgeQueryService:
         error_code: str | None = None,
     ) -> None:
         try:
-            with UnitOfWork(self._database) as work:
-                assert work.session is not None
-                self._finish_owned_task(
-                    work.session,
-                    task_id,
-                    auth,
-                    status=status,
-                    error_code=error_code,
-                )
+            self._lifecycle.close_fenced_query(
+                task_id=task_id,
+                auth=auth,
+                lease_owner=_SYNC_LEASE_OWNER,
+                lease_generation=_SYNC_LEASE_GENERATION,
+                terminal_status=status,
+                error_code=error_code,
+            )
         except Exception:
             log_event(
                 "knowledge.query.task_finish_failed",
@@ -296,40 +242,6 @@ class KnowledgeQueryService:
                 error_code="query_task_finish_failed",
                 task_id=task_id,
             )
-
-    @staticmethod
-    def _finish_owned_task(
-        session,
-        task_id: str,
-        auth: AuthContext,
-        *,
-        status: str,
-        error_code: str | None = None,
-    ) -> bool:
-        now = datetime.now(UTC)
-        result = session.execute(
-            update(AgentTaskRow)
-            .where(
-                AgentTaskRow.task_id == task_id,
-                AgentTaskRow.tenant_id == auth.tenant_id,
-                AgentTaskRow.user_id == auth.user_id,
-                AgentTaskRow.task_mode == "knowledge_query",
-                AgentTaskRow.status == "running",
-                AgentTaskRow.lease_owner == _SYNC_LEASE_OWNER,
-                AgentTaskRow.lease_generation == _SYNC_LEASE_GENERATION,
-                AgentTaskRow.lease_expires_at.is_not(None),
-                AgentTaskRow.lease_expires_at > now,
-            )
-            .values(
-                status=status,
-                last_error_code=error_code,
-                lease_owner=None,
-                lease_expires_at=None,
-                state_version=AgentTaskRow.state_version + 1,
-                updated_at=now,
-            )
-        )
-        return result.rowcount == 1
 
     @staticmethod
     def _refusal(kind: str) -> KnowledgeQueryResult:

@@ -10,12 +10,12 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
-import rag_kb.application.tool_execution_service as tool_execution_module
 from rag_kb.agent.context import AgentRunContext
 from rag_kb.agent.result import AgentResultStore
 from rag_kb.agent.tools import _execute_read_tool
 from rag_kb.application.approval_service import ApprovalService
 from rag_kb.application.task_worker import TaskWorker
+import rag_kb.infrastructure.database.tool_execution_lifecycle as tool_execution_lifecycle_module
 from rag_kb.application.tool_execution_service import (
     ToolExecutionError,
     ToolExecutionRequest,
@@ -25,6 +25,9 @@ from rag_kb.application.tool_registry import ToolRegistry, builtin_tool_definiti
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.tasks import TaskBudgets, TaskMode, TaskStatus
 from rag_kb.infrastructure.database import Base, build_database
+from rag_kb.infrastructure.database.approval_lifecycle import (
+    DatabaseApprovalLifecycle,
+)
 from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerRepository
 from rag_kb.infrastructure.database.models import (
     AgentTaskRow,
@@ -34,11 +37,15 @@ from rag_kb.infrastructure.database.models import (
 )
 from rag_kb.infrastructure.database.task_execution import (
     DatabaseTaskAuthContextPort,
+    DatabaseTaskWorkerSettlement,
     TaskExecutionContextError,
 )
 from rag_kb.infrastructure.database.task_repository import (
     DatabaseTaskRepository,
     TaskLease,
+)
+from rag_kb.infrastructure.database.tool_execution_lifecycle import (
+    DatabaseToolExecutionLifecycle,
 )
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
 from rag_kb.models import Citation
@@ -87,9 +94,9 @@ def research(tmp_path: Path):
         item for item in builtin_tool_definitions() if item.name == "search_knowledge"
     )
     service = ToolExecutionService(
-        database,
+        DatabaseToolExecutionLifecycle(database),
         ToolRegistry([definition], adapters={"search_knowledge": adapter}),
-        ApprovalService(database),
+        ApprovalService(DatabaseApprovalLifecycle(database)),
         tool_results=LocalObjectStore(tmp_path / "tool-results"),
     )
     yield database, repository, service, adapter
@@ -221,7 +228,7 @@ def test_integrity_replay_rechecks_current_identity(research, monkeypatch) -> No
     database, repository, service, adapter = research
     lease = repository.claim_next(worker_id="worker-a", lease_seconds=60)
     assert lease is not None
-    real_unit_of_work = tool_execution_module.UnitOfWork
+    real_unit_of_work = tool_execution_lifecycle_module.UnitOfWork
 
     class CommitThenIntegrityError:
         exits = 0
@@ -247,7 +254,11 @@ def test_integrity_replay_rechecks_current_identity(research, monkeypatch) -> No
                 raise IntegrityError("injected_duplicate", {}, RuntimeError("duplicate"))
             return False
 
-    monkeypatch.setattr(tool_execution_module, "UnitOfWork", CommitThenIntegrityError)
+    monkeypatch.setattr(
+        tool_execution_lifecycle_module,
+        "UnitOfWork",
+        CommitThenIntegrityError,
+    )
     with pytest.raises(ToolExecutionError, match="task_auth_context_changed"):
         service.execute(_request(lease, "call-race"))
     assert adapter.calls == 0
@@ -319,7 +330,7 @@ def test_bound_tool_result_survives_commit_acknowledgement_loss(research, monkey
     database, repository, service, _adapter = research
     lease = repository.claim_next(worker_id="worker-a", lease_seconds=60)
     assert lease is not None
-    real_unit_of_work = tool_execution_module.UnitOfWork
+    real_unit_of_work = tool_execution_lifecycle_module.UnitOfWork
 
     class CommitThenAcknowledgementLost:
         injected = False
@@ -346,7 +357,11 @@ def test_bound_tool_result_survives_commit_acknowledgement_loss(research, monkey
                     raise RuntimeError("commit_acknowledgement_lost")
             return False
 
-    monkeypatch.setattr(tool_execution_module, "UnitOfWork", CommitThenAcknowledgementLost)
+    monkeypatch.setattr(
+        tool_execution_lifecycle_module,
+        "UnitOfWork",
+        CommitThenAcknowledgementLost,
+    )
 
     with pytest.raises(RuntimeError, match="commit_acknowledgement_lost"):
         service.execute(_request(lease, "ack-lost-call"))
@@ -428,14 +443,14 @@ class _FixedAuthContexts:
 
 
 def _fencing_worker(database, agent, *, repository=None) -> TaskWorker:
+    objects = LocalObjectStore(Path(database.engine.url.database).parent / "objects")
     return TaskWorker(
         repository=repository or DatabaseTaskRepository(database),
         auth_contexts=_FixedAuthContexts(),
         agent_for=lambda _budgets: agent,
-        results=AgentResultStore(LocalObjectStore(Path(database.engine.url.database).parent / "objects")),
-        evidence=EvidenceLedgerRepository(),
+        results=AgentResultStore(objects),
+        settlement=DatabaseTaskWorkerSettlement(database, objects),
         tools=SimpleNamespace(close=lambda: None),
-        database=database,
         worker_id="worker-a",
         lease_seconds=60,
     )
@@ -593,6 +608,7 @@ def test_settle_revalidates_citations_with_latest_identity(tmp_path: Path) -> No
     repository = DatabaseTaskRepository(database)
     repository.create_task(auth=_auth(), goal="研究", task_mode=TaskMode.RESEARCH, task_id="task-a")
     evidence = _RecordingEvidence()
+    objects = LocalObjectStore(tmp_path / "objects")
 
     class SucceededAgent(_RaisingAgent):
         def __init__(self) -> None:
@@ -612,10 +628,11 @@ def test_settle_revalidates_citations_with_latest_identity(tmp_path: Path) -> No
         repository=repository,
         auth_contexts=_RotatingAuthContexts(),
         agent_for=lambda _budgets: SucceededAgent(),
-        results=AgentResultStore(LocalObjectStore(tmp_path / "objects")),
-        evidence=evidence,
+        results=AgentResultStore(objects),
+        settlement=DatabaseTaskWorkerSettlement(
+            database, objects, evidence_repository=evidence
+        ),
         tools=SimpleNamespace(close=lambda: None),
-        database=database,
         worker_id="worker-a",
         lease_seconds=60,
     )

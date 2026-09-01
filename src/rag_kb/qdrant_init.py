@@ -6,11 +6,9 @@ import logging
 
 from qdrant_client import QdrantClient
 
+from rag_kb.application.ports.indexing import DocumentIndexError
 from rag_kb.config import get_settings
-from rag_kb.infrastructure.vectorstore.qdrant_collection import (
-    DocumentIndexError,
-    ensure_document_collection,
-)
+from rag_kb.infrastructure.vectorstore.qdrant_collection import ensure_document_collection
 
 
 logger = logging.getLogger(__name__)

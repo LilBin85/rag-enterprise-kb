@@ -27,10 +27,7 @@ from sqlalchemy import delete
 
 from rag_kb.application.document_service import DocumentService
 from rag_kb.application.enterprise_retriever import EnterpriseRetriever
-from rag_kb.application.ingestion_worker import (
-    DocumentRegistryIngestionJobPort,
-    IngestionWorker,
-)
+from rag_kb.application.ingestion_worker import IngestionWorker
 from rag_kb.domain.identity import AuthContext, Permission, Principal
 from rag_kb.embedder import BgeM3Embedder
 from rag_kb.ingestion import load_manifest
@@ -38,6 +35,10 @@ from rag_kb.infrastructure.database.acl_repository import DatabaseAuthorizationP
 from rag_kb.infrastructure.database.base import Base
 from rag_kb.infrastructure.database.index_projection_metadata import (
     DatabaseDocumentIndexMetadataPort,
+)
+from rag_kb.infrastructure.database.document_lifecycle import (
+    DatabaseDocumentLifecycle,
+    DocumentRegistryIngestionJobPort,
 )
 from rag_kb.infrastructure.database.models import ACLGrantRow, PrincipalRow, TenantRow
 from rag_kb.infrastructure.database.session import build_database
@@ -432,7 +433,10 @@ def run_benchmark(
         phase = "create_tenant_principals"
         writer_auth, role_auths = _create_tenant_principals(database, tenant_id=tenant_id, run_id=run_id)
         tenant_created = True
-        service = DocumentService(database, LocalObjectStore(object_root / "objects"))
+        service = DocumentService(
+            DatabaseDocumentLifecycle(database),
+            LocalObjectStore(object_root / "objects"),
+        )
         seen_documents: set[str] = set()
         ingested: list[dict[str, Any]] = []
         phase = "register_uploads"

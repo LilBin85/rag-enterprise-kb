@@ -19,7 +19,6 @@ from rag_kb.web.routers import approvals as approvals_router
 from rag_kb.web.dependencies import (
     build_approval_service,
     build_identity_provider,
-    build_task_repository,
 )
 
 
@@ -133,7 +132,6 @@ def setup_app():
     )
     app.dependency_overrides[build_identity_provider] = lambda: provider
     app.dependency_overrides[build_approval_service] = lambda: service
-    app.dependency_overrides[build_task_repository] = object
     with TestClient(app) as client:
         yield client, service
     app.dependency_overrides.clear()

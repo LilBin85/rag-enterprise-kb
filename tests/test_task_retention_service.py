@@ -21,6 +21,9 @@ from rag_kb.application.tool_registry import ToolRegistry, builtin_tool_definiti
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.tasks import TaskMode, TaskStatus
 from rag_kb.infrastructure.database import Base, build_database
+from rag_kb.infrastructure.database.approval_lifecycle import (
+    DatabaseApprovalLifecycle,
+)
 from rag_kb.infrastructure.database.models import (
     AgentTaskRow,
     ArtifactRow,
@@ -29,6 +32,10 @@ from rag_kb.infrastructure.database.models import (
     ToolCallRow,
 )
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
+from rag_kb.infrastructure.database.task_retention import DatabaseTaskRetentionLifecycle
+from rag_kb.infrastructure.database.tool_execution_lifecycle import (
+    DatabaseToolExecutionLifecycle,
+)
 from rag_kb.infrastructure.object_store.local import LocalObjectStore
 
 
@@ -84,8 +91,7 @@ def runtime(tmp_path: Path):
     repository = DatabaseTaskRepository(database, now=clock)
     checkpointer = Checkpointer()
     retention = TaskRetentionService(
-        database=database,
-        repository=repository,
+        lifecycle=DatabaseTaskRetentionLifecycle(database, repository, now=clock),
         objects=objects,
         results=AgentResultStore(objects),
         checkpointer=checkpointer,
@@ -115,11 +121,10 @@ def _execute_tool(runtime, task_id: str):
         item for item in builtin_tool_definitions() if item.name == "search_knowledge"
     )
     service = ToolExecutionService(
-        database,
+        DatabaseToolExecutionLifecycle(database, now=clock),
         ToolRegistry([definition], adapters={"search_knowledge": OkAdapter()}),
-        ApprovalService(database),
+        ApprovalService(DatabaseApprovalLifecycle(database)),
         tool_results=objects,
-        now=clock,
     )
     result = service.execute(
         ToolExecutionRequest(
@@ -589,8 +594,7 @@ def test_orphan_scanner_skips_referenced_objects_after_restart(runtime) -> None:
         _set_mtime(objects, orphan_ref, clock.value - timedelta(seconds=61))
 
         restarted = TaskRetentionService(
-            database=database,
-            repository=repository,
+            lifecycle=DatabaseTaskRetentionLifecycle(database, repository, now=clock),
             objects=objects,
             results=AgentResultStore(objects),
             checkpointer=checkpointer,
@@ -742,8 +746,7 @@ def test_orphan_scanner_converges_after_restart_with_referenced_prefix_larger_th
         monkeypatch.setattr(objects, "iter_ref_entries", limited_entries)
 
         restarted = TaskRetentionService(
-            database=database,
-            repository=repository,
+            lifecycle=DatabaseTaskRetentionLifecycle(database, repository, now=clock),
             objects=objects,
             results=AgentResultStore(objects),
             checkpointer=checkpointer,

@@ -9,30 +9,9 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 
+from rag_kb.application.ports.retrieval import RankedChunk
 from rag_kb.domain.retrieval import RetrievalCandidate, RetrievalResult
-
-
-@dataclass(frozen=True)
-class RankedChunk:
-    """已通过调用方授权过滤的候选块及两路检索分数。"""
-
-    tenant_id: str
-    document_id: str
-    version_id: str
-    document_version: int
-    chunk_id: str
-    content_hash: str
-    source_locator: str
-    source_file_name: str
-    text: str
-    projection_generation: int = 1
-    dense_score: float | None = None
-    sparse_score: float | None = None
-    rerank_score: float | None = None
-    # 输入候选可省略；RRF 输出会填充该字段，供上下文结果保留融合分数。
-    fused_score: float = 0.0
 
 
 def reciprocal_rank_fusion(

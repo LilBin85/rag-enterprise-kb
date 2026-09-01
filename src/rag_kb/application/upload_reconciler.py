@@ -6,10 +6,11 @@ import hashlib
 import hmac
 from time import monotonic
 
-from rag_kb.infrastructure.database.document_repository import DocumentRegistryRepository
-from rag_kb.infrastructure.database.session import Database
-from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
-from rag_kb.infrastructure.object_store.local import LocalObjectStore
+from rag_kb.application.ports.documents import (
+    DocumentUploadRecoveryPort,
+    PendingObjectReservation,
+)
+from rag_kb.application.ports.object_store import ObjectStorePort
 
 
 @dataclass(frozen=True)
@@ -26,13 +27,11 @@ class UploadReservationReconciler:
 
     def __init__(
         self,
-        database: Database,
-        object_store: LocalObjectStore,
-        repository: DocumentRegistryRepository | None = None,
+        registry: DocumentUploadRecoveryPort,
+        object_store: ObjectStorePort,
     ) -> None:
-        self._database = database
+        self._registry = registry
         self._object_store = object_store
-        self._repository = repository or DocumentRegistryRepository()
 
     def reconcile(
         self,
@@ -48,13 +47,10 @@ class UploadReservationReconciler:
             if time_budget_seconds is not None
             else None
         )
-        with UnitOfWork(self._database) as work:
-            assert work.session is not None
-            reservations = self._repository.list_pending_object_reservations(
-                work.session,
-                older_than=older_than,
-                limit=limit,
-            )
+        reservations = self._registry.list_pending_object_reservations(
+            older_than=older_than,
+            limit=limit,
+        )
 
         recovered = 0
         missing = 0
@@ -81,15 +77,12 @@ class UploadReservationReconciler:
                     mismatched += 1
                     failed += int(not self._defer_safely(reservation))
                     continue
-                with UnitOfWork(self._database) as work:
-                    assert work.session is not None
-                    self._repository.mark_object_ready(
-                        work.session,
-                        tenant_id=reservation.tenant_id,
-                        user_id=reservation.user_id,
-                        idempotency_key=reservation.idempotency_key,
-                        request_hash=reservation.request_hash,
-                    )
+                self._registry.mark_object_ready(
+                    tenant_id=reservation.tenant_id,
+                    user_id=reservation.user_id,
+                    idempotency_key=reservation.idempotency_key,
+                    request_hash=reservation.request_hash,
+                )
                 recovered += 1
             except Exception:
                 # 单条损坏绑定不能阻塞同批次中的其他上传预留。
@@ -104,17 +97,14 @@ class UploadReservationReconciler:
             failed=failed,
         )
 
-    def _defer_safely(self, reservation) -> bool:
+    def _defer_safely(self, reservation: PendingObjectReservation) -> bool:
         try:
-            with UnitOfWork(self._database) as work:
-                assert work.session is not None
-                self._repository.defer_pending_object_reservation(
-                    work.session,
-                    tenant_id=reservation.tenant_id,
-                    user_id=reservation.user_id,
-                    idempotency_key=reservation.idempotency_key,
-                    request_hash=reservation.request_hash,
-                )
+            self._registry.defer_pending_object_reservation(
+                tenant_id=reservation.tenant_id,
+                user_id=reservation.user_id,
+                idempotency_key=reservation.idempotency_key,
+                request_hash=reservation.request_hash,
+            )
         except Exception:
             return False
         return True

@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-from rag_kb.infrastructure.vectorstore.qdrant_collection import DocumentIndexError
 from rag_kb import qdrant_init
+from rag_kb.application.ports.indexing import DocumentIndexError
 
 
 def test_qdrant_init_uses_runtime_collection_contract(monkeypatch) -> None:

@@ -18,6 +18,9 @@ from rag_kb.domain.identity import AuthContext, Principal
 from rag_kb.domain.resume_commands import ApprovalResumeDecision, ResumeCommandStatus
 from rag_kb.domain.tasks import TaskMode, TaskStatus
 from rag_kb.infrastructure.database.base import Base
+from rag_kb.infrastructure.database.approval_lifecycle import (
+    DatabaseApprovalLifecycle,
+)
 from rag_kb.infrastructure.database.models import (
     AgentTaskRow,
     ApprovalRow,
@@ -153,8 +156,11 @@ def approval_case(tmp_path):
         )
     repository = DatabaseTaskRepository(database)
     service = ApprovalService(
-        database,
-        evidence_validator=_StableEvidenceValidator(owner),
+        DatabaseApprovalLifecycle(
+            database,
+            evidence_validator=_StableEvidenceValidator(owner),
+            resume_repository=repository,
+        )
     )
     return database, service, repository, approver
 
@@ -168,7 +174,6 @@ def test_decision_enqueue_is_atomic_and_same_decision_reuses_command(approval_ca
         expected_task_state_version=4,
         decision="approve",
         reason=None,
-        repository=repository,
     )
     repeated = service.decide_and_enqueue(
         auth=approver,
@@ -176,7 +181,6 @@ def test_decision_enqueue_is_atomic_and_same_decision_reuses_command(approval_ca
         expected_task_state_version=4,
         decision="approve",
         reason="不应新建命令",
-        repository=repository,
     )
 
     assert repeated.command_id == command.command_id
@@ -197,7 +201,6 @@ def test_decision_enqueue_is_atomic_and_same_decision_reuses_command(approval_ca
             expected_task_state_version=4,
             decision="reject",
             reason=None,
-            repository=repository,
         )
 
 
@@ -251,7 +254,6 @@ def test_decided_history_without_command_is_rechecked_before_supplement(approval
         expected_task_state_version=4,
         decision="approve",
         reason=None,
-        repository=repository,
     )
 
     assert command.status is ResumeCommandStatus.PENDING
@@ -283,7 +285,6 @@ def test_decision_enqueue_failure_rolls_back_decision_and_command(
             expected_task_state_version=4,
             decision="reject",
             reason="故障注入原因",
-            repository=repository,
         )
 
     with database.sessions() as session:
@@ -310,7 +311,6 @@ def test_decision_cross_checks_approval_binding_against_locked_task(approval_cas
             expected_task_state_version=4,
             decision="approve",
             reason=None,
-            repository=repository,
         )
 
     with database.sessions() as session:

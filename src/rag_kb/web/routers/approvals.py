@@ -10,13 +10,9 @@ from rag_kb.application.approval_service import (
     ApprovalServiceError,
 )
 from rag_kb.domain.identity import AuthContext, Permission
-from rag_kb.infrastructure.database.task_repository import (
-    DatabaseTaskRepository,
-    TaskRepositoryError,
-)
+from rag_kb.infrastructure.database.task_repository import TaskRepositoryError
 from rag_kb.web.dependencies import (
     build_approval_service,
-    build_task_repository,
     resolve_auth_context,
 )
 from rag_kb.web.schemas.approvals import (
@@ -113,7 +109,6 @@ def decide_approval(
     request: ApprovalDecisionRequest,
     auth: Annotated[AuthContext, Depends(resolve_auth_context)],
     approvals: Annotated[ApprovalService, Depends(build_approval_service)],
-    repository: Annotated[DatabaseTaskRepository, Depends(build_task_repository)],
 ) -> ApprovalDecisionResponse:
     _require_approver(auth)
     try:
@@ -123,7 +118,6 @@ def decide_approval(
             expected_task_state_version=request.expected_task_state_version,
             decision=request.decision,
             reason=request.reason,
-            repository=repository,
         )
         detail = approvals.get_detail(tenant_id=auth.tenant_id, approval_id=approval_id)
         return ApprovalDecisionResponse(

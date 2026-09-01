@@ -8,6 +8,7 @@ from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import ToolRuntime
 
 from rag_kb.agent.context import AgentRunContext
+from rag_kb.application.agent_contract import CONTROLLED_WRITE_TOOL_NAMES
 from rag_kb.application.tool_execution_service import (
     _FATAL_TOOL_CODES,
     ToolExecutionError,
@@ -24,11 +25,6 @@ RESEARCH_TOOL_NAMES = (
     "compare_document_versions",
 )
 
-# M2 批次 1 精确开放的两个 WRITE 工具；HITL interrupt_on 必须与之逐字一致。
-CONTROLLED_WRITE_TOOL_NAMES = (
-    "create_report_artifact",
-    "create_work_item_draft",
-)
 
 _MAX_ITEMS = 20
 _MAX_LIST_ITEMS = 50

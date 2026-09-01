@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from rag_kb.application.enterprise_retriever import EnterpriseRetriever
+from rag_kb.application.ports.retrieval import RetrieverPort
 from rag_kb.application.tool_registry import ToolRegistry
 from rag_kb.infrastructure.database.session import Database
 from rag_kb.infrastructure.ingestion.local_document_parser import LocalDocumentParser
@@ -15,7 +15,7 @@ def build_tool_registry(
     *,
     database: Database,
     artifact_root: Path,
-    retriever: EnterpriseRetriever,
+    retriever: RetrieverPort,
     chunk_max_chars: int = 800,
 ) -> ToolRegistry:
     store = LocalObjectStore(artifact_root)

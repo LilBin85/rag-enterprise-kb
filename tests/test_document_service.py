@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import func, select
 
 from rag_kb.application.document_service import DocumentAccessDenied, DocumentService
-from rag_kb.application.ingestion_worker import DocumentRegistryIngestionJobPort
+from rag_kb.application.ports.documents import DocumentRegistryConflict, IdempotencyConflict
 from rag_kb.application.upload_reconciler import UploadReservationReconciler
 from rag_kb.domain.identity import AuthContext
 from rag_kb.domain.indexing import (
@@ -17,11 +17,11 @@ from rag_kb.domain.indexing import (
     compute_chunk_manifest_digest,
 )
 from rag_kb.infrastructure.database import Base, Database, build_database
-from rag_kb.infrastructure.database.document_repository import (
-    DocumentRegistryConflict,
-    DocumentRegistryRepository,
-    IdempotencyConflict,
+from rag_kb.infrastructure.database.document_lifecycle import (
+    DatabaseDocumentLifecycle,
+    DocumentRegistryIngestionJobPort,
 )
+from rag_kb.infrastructure.database.document_repository import DocumentRegistryRepository
 from rag_kb.infrastructure.database.models import (
     DocumentRow,
     DocumentVersionRow,
@@ -57,7 +57,7 @@ def build_service(tmp_path: Path) -> tuple[DocumentService, Database, LocalObjec
             )
         )
     store = LocalObjectStore(tmp_path / "objects")
-    return DocumentService(database, store), database, store
+    return DocumentService(DatabaseDocumentLifecycle(database), store), database, store
 
 
 def auth(
@@ -226,7 +226,9 @@ def test_delete_document_removes_database_object_and_vectors(tmp_path: Path) -> 
         assert version is not None
         source_object_key = version.source_object_key
     vector_deleter = RecordingVectorDeleter()
-    deletion_service = DocumentService(database, store, vector_deleter=vector_deleter)
+    deletion_service = DocumentService(
+        DatabaseDocumentLifecycle(database), store, vector_deleter=vector_deleter
+    )
 
     deleted = deletion_service.delete_document(
         "policy-a",
@@ -252,7 +254,11 @@ def test_delete_document_rejects_running_ingestion_job(tmp_path: Path) -> None:
         job = session.get(IngestionJobRow, created.ingestion_job_id)
         assert job is not None
         job.status = "running"
-    deletion_service = DocumentService(database, store, vector_deleter=RecordingVectorDeleter())
+    deletion_service = DocumentService(
+        DatabaseDocumentLifecycle(database),
+        store,
+        vector_deleter=RecordingVectorDeleter(),
+    )
 
     with pytest.raises(DocumentRegistryConflict, match="document_ingestion_running"):
         deletion_service.delete_document(
@@ -273,7 +279,11 @@ def test_upload_and_delete_share_document_guard(tmp_path: Path) -> None:
             assert release.wait(timeout=5)
 
     store = BlockingStore(base_store.root)
-    service = DocumentService(database, store, vector_deleter=RecordingVectorDeleter())
+    service = DocumentService(
+        DatabaseDocumentLifecycle(database),
+        store,
+        vector_deleter=RecordingVectorDeleter(),
+    )
     with ThreadPoolExecutor(max_workers=2) as executor:
         upload = executor.submit(register, service, key="guarded-upload")
         assert entered.wait(timeout=5)
@@ -303,7 +313,9 @@ def test_delete_document_rejects_active_projection_reconcile_lease(tmp_path: Pat
         document.projection_reconcile_expires_at = datetime.now(UTC) + timedelta(minutes=1)
         document.projection_reconcile_lease_generation = 1
     vector_deleter = RecordingVectorDeleter()
-    deletion_service = DocumentService(database, store, vector_deleter=vector_deleter)
+    deletion_service = DocumentService(
+        DatabaseDocumentLifecycle(database), store, vector_deleter=vector_deleter
+    )
 
     with pytest.raises(DocumentRegistryConflict, match="document_projection_reconcile_running"):
         deletion_service.delete_document(
@@ -399,7 +411,7 @@ def test_database_worker_port_reclaims_expired_lease_and_retries(tmp_path: Path)
 def test_reserved_upload_recovers_after_object_write_crash(tmp_path: Path) -> None:
     _service, database, store = build_service(tmp_path)
     flaky_store = FailFirstPutObjectStore(store.root)
-    service = DocumentService(database, flaky_store)
+    service = DocumentService(DatabaseDocumentLifecycle(database), flaky_store)
 
     with pytest.raises(RuntimeError, match="simulated_process_exit"):
         register(service, key="idem-crash")
@@ -432,12 +444,14 @@ def test_reserved_upload_recovers_after_object_write_crash(tmp_path: Path) -> No
 def test_reconciler_recovers_committed_object_orphan(tmp_path: Path) -> None:
     _service, database, store = build_service(tmp_path)
     repository = FailFirstMarkRepository()
-    service = DocumentService(database, store, repository)
+    service = DocumentService(DatabaseDocumentLifecycle(database, repository), store)
 
     with pytest.raises(RuntimeError, match="simulated_process_exit_after_object_write"):
         register(service, key="idem-orphan")
 
-    result = UploadReservationReconciler(database, store, repository).reconcile(
+    result = UploadReservationReconciler(
+        DatabaseDocumentLifecycle(database, repository), store
+    ).reconcile(
         older_than=datetime.now(UTC) + timedelta(seconds=1)
     )
 
