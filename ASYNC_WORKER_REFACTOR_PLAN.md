@@ -1,6 +1,6 @@
 # API/Worker 执行权收敛与 Worker 进程拆分计划
 
-> 文档状态：实施中
+> 文档状态：已完成
 > 创建日期：2026-08-30
 > 适用仓库：`rag-enterprise-kb`
 > 范围：仅包含“API 不再构造或运行 Task Worker”与“将三类后台任务拆成三个进程模式”
@@ -314,7 +314,7 @@ python -m rag_kb.worker --queue projection --watch
 ### C1：最终验收与交付清理
 
 - 复杂度：高难度
-- 执行者：Terra Max
+- 执行者：当前会话执行者（OpenCode；见“C1 执行方式调整”）
 - 目标：从干净、可识别的工作树完成最终回归，不自动提交或推送。
 - 最低验证门：
   - API 定向测试；
@@ -351,7 +351,7 @@ python -m rag_kb.worker --queue projection --watch
 | B2 恢复与指标所有权 | 已完成 | Terra Max（`max`） | Terra Max：32 passed；主 Agent：32 passed；`py_compile`、旧聚合入口扫描、低基数标签复核、`git diff --check` 通过 | `src/rag_kb/worker.py`；`src/rag_kb/observability.py`；`tests/test_worker_runtime.py` | Compose 三服务、独立指标端口与 Prometheus targets 留给 B3；B2 basetemp 留待 C1 精确清理 |
 | B3 三 Worker Compose | 已完成 | 主 Agent（Luna Max 不可用） | 部署静态测试 6 passed；API/task-worker DeepSeek 配置边界复核通过；`COMPOSE_DISABLE_ENV_FILE=1` 下 `docker compose config --quiet`、`git diff --check` 通过 | `docker-compose.yml`；`ops/observability/prometheus/prometheus.yml`；`ops/observability/grafana/dashboards/system-overview.json`；`ops/observability/grafana/provisioning/alerting/rag-kb.yml`；`tests/test_deployment_acceptance_static.py`；`ASYNC_WORKER_REFACTOR_PLAN.md` | 无已知遗留风险 |
 | B4 文档同步 | 已完成 | 主 Agent（Luna Max 不可用） | B4 定向测试 30 passed；PowerShell 语法解析、精确静态扫描与 `git diff --check` 通过 | `README.md`；`使用指南.md`；`docs/architecture.md`；`docs/observability-plan.md`；`docs/migration.md`；`scripts/start_worker.ps1`；`tests/test_deployment_acceptance_static.py`；`ASYNC_WORKER_REFACTOR_PLAN.md` | 无已知遗留风险 |
-| C1 最终验收 | 待执行 | Terra Max | - | - | - |
+| C1 最终验收 | 已完成 | 当前会话执行者（OpenCode） | 部署静态测试 6 passed；Compose config、执行权/敏感响应静态扫描与 `git diff --check` 通过；受 audit guard 保护的 API 40 passed、定向 139 passed、真实 integration 65 passed；controlled-write M2 `status=passed`（31 tasks/21 scenarios，隐私计数 0）；最终全量 pytest 577 passed、1 skipped（JUnit 578 tests/0 failures/0 errors/1 skipped）；C1 容器、端口、数据库、collection、对象根与外部临时目录残留 0 | `ASYNC_WORKER_REFACTOR_PLAN.md` | 历史 `.tmp` 中 57 个 C1 前已存在的 pytest 目录因既有 ACL 拒绝无法删除；未修改权限或绕过安全边界。它们不属于本次 C1 新增资源 |
 
 ### 7.1 0A 基线记录
 
@@ -475,6 +475,28 @@ python -m rag_kb.worker --queue projection --watch
 - 主 Agent 运行指定的 `tests/test_deployment_acceptance_static.py` 与 `tests/test_worker_runtime.py`，结果 `30 passed, 1 warning in 9.20s`；warning 仅为既有 `.pytest_cache` ACL 导致无法写缓存。当前运行文档精确扫描、人工语境复核和 `git diff --check` 均通过；修改文件全部位于 B4 允许清单，未读取 `.env`、未调用真实 DeepSeek、未重建容器、未提交或推送 Git。
 - 本节点未创建临时文件；工作树中的未跟踪 `.tmp/` 是开始 B4 前已存在的历史测试目录，按计划留给 C1 精确清理，不在 B4 越界删除。
 
+### 7.14 C1 阻塞记录
+
+- 用户已授权 C1 所需的本地命令、隔离资源和已确认历史 `.tmp` 测试目录的精确清理；并明确取消 C1 的执行者、模型和主从拓扑限制，实际执行方式已如实记录在“C1 执行方式调整”。
+- 已完整回读计划，确认 B4 为已完成、C1 原为待执行；开始基线为分支 `main`、HEAD `329b579a8643cc3fd62b7bc1858d27f83f2be2d7`，无 tracked 或 staged 差异。仅发现计划已记录的 `.tmp` 历史测试残留；其中少数已知候选可见，其余部分目录在当前权限下不可枚举，未尝试绕过权限。
+- 仅检查 `.env`、`data/local/`、`output/` 的存在与类型，均存在；未读取其内容。`conda run -n rag-kb --no-capture-output python --version` 成功。
+- Docker CLI 客户端版本 `29.7.2` 可执行，但连接 Docker Engine 失败。因此无法安全确认 `postgres:18.6` 与 `qdrant/qdrant:v1.19.0` 是否在本地、无法创建隔离容器或数据库，也无法执行依赖其资源的后续验证门。端口 `6333` 在本次检查时未监听；未创建任何 C1 临时目录、容器、数据库、collection、对象目录、JUnit 或 JSON。
+- 按 C1 停止条件，C1 标记为阻塞。未运行 Compose、pytest、Alembic、M2 或静态/隐私扫描；未删除历史 `.tmp`；未读取 `.env`；未调用真实 DeepSeek；未提交、推送、暂存、reset、clean 或 checkout Git。
+- 用户启动 Docker 后，已重新完整回读计划并确认 Docker Engine 与本地 `postgres:18.6`、`qdrant/qdrant:v1.19.0` 镜像可用；但 `127.0.0.1:6333` 已被预存监听器占用。该监听器不属于本次 C1，按隔离资源策略不得复用、停止、删除或改写测试绕过要求，C1 继续阻塞；未创建本次隔离资源或运行任何验证门。
+- 用户请求再次尝试后，已重新完整回读计划；Docker Engine、本地指定镜像与 `127.0.0.1:6333` 均再次确认可用。C1 解除阻塞并恢复为进行中，开始建立唯一命名隔离资源与按序验证。
+- C1 创建了唯一命名的 PostgreSQL 与 Qdrant 容器、独立主测试库和空迁移库，并通过部署静态测试（6 passed）及设置 `COMPOSE_DISABLE_ENV_FILE=1` 的 `docker compose config --quiet`。API 定向集启动时，C1 临时 `sitecustomize` 因 Python 初始导入路径不含仓库 `src` 而未生效；Python 明确输出该辅助加载错误。该集的 `create_app()` 默认路径调用 `get_settings()`，继而构造配置中指定绝对 `.env` 文件来源，因此受保护 `.env` 已被该测试进程读取。虽然 pytest 输出 40 passed，该结果违反 C1 禁止项，不能作为验收证据。
+- 发现后立即停止后续验证，未运行 task/worker、ingestion/projection、migration、integration、M2、全量、静态执行权或隐私门。未输出、修改或删除 `.env` 内容，未调用真实 DeepSeek，未提交或推送 Git。已精确删除本次两个唯一命名容器及 C1 临时根；按容器名复查为 0、临时根不存在、6333 未监听。本次数据库、collection、对象目录、basetemp、JUnit 与运行期辅助均随对应容器或临时根清理。
+- 用户随后明确允许继续。C1 恢复为进行中；既有 API 测试结果继续作废，后续先验证可阻止 `.env` 读取的隔离方式，再从 API 验证门重新开始。
+- 为覆盖 pytest、fixture 及 API 启动检查创建的子进程，C1 在新的唯一临时根创建 `sitecustomize.py` 并以 `PYTHONPATH` 注入。该守卫对根 `.env` 的任何实际 `open` 事件 fail-closed，并仅为该临时测试进程拦截 Pydantic 对该路径的 dotenv source，使默认 `Settings()` 不会尝试读取受保护文件；独立启动探针确认默认 `Settings()` 和 `create_app()` 均成功。该实现不预先导入 `rag_kb`，保留 strict-msgpack clean-process 测试的原始导入语义。未打开、输出、修改或删除 `.env`。
+- 在同一守卫与进程内配置隔离下，重新运行 `tests/test_new_app_factory.py`、`tests/test_v1_tasks_api.py`、`tests/test_v1_approvals_api.py`、`tests/test_v1_documents_api.py` 与 `tests/test_v1_knowledge_api.py`，结果 `40 passed in 5.11s`。这是有效 API 定向证据；此前未受保护的 `40 passed` 继续作废。新的 C1 临时根及其 guard/basetemp/cache 暂保留给后续 C1 门，最终统一精确清理。
+- 在相同守卫及配置隔离下，运行 `test_task_worker_recovery`、`test_task_approval_recovery`、`test_task_resume_command_repository`、`test_task_repository`、`test_approval_decision_enqueue`、`test_worker_runtime`、`test_observability`、`test_ingestion_worker`、`test_projection_reconciler` 与 `test_ingestion_projection_guard`，结果 `139 passed in 88.48s`；仅有一个预期的 Qdrant client 版本探测 warning，未连接到被禁止复用的 Qdrant 实例，也不影响断言结果。C1 启动守卫未触发，临时根继续保留给后续门。
+- C1 建立仅 loopback 的唯一 PostgreSQL（`127.0.0.1:55400`）和 Qdrant（`127.0.0.1:6333`）容器，均无宿主卷；创建独立主库和空迁移库，并将主库升级到 `20260831_0015`。在 audit guard、`Settings.env_file=None`、假 DeepSeek loopback 配置下运行全部 integration marker，结果 `64 passed, 1 failed`。失败项 `test_purge_orphaned_result_objects_respects_grace_references_and_live_deadlines` 在测试自己的 `_set_mtime()` 以未加 Windows 长路径前缀的 `os.utime` 处理刚写入对象时得到 `FileNotFoundError`；对象存储生产写入路径已按其 `_windows_long_path()` 规则处理。根因是本次 C1 basetemp 过长，导致测试辅助绕过对象存储的长路径兼容层，不是产品行为失败。该轮真库结果无效，不作验收证据；将使用更短的唯一 basetemp、重置 C1 测试数据库后完整重跑，不修改生产或测试代码。
+- 用户在重跑前重启 Docker；C1 使用 `--rm` 的两容器因而被自动移除，端口均释放。已核对无同名容器或端口监听，随后只重建本次 C1 的无卷、loopback 容器及两个测试库，主库重新迁移到 head。以短唯一 basetemp `C:\Users\26219\AppData\Local\Temp\opencode\c1-9d3` 重跑完整 integration marker，结果 `65 passed, 513 deselected in 112.20s`，无失败、错误或跳过；生成的 fault JUnit 供下一步 M2 smoke 使用。audit guard 未触发，未读取 `.env`，未调用真实 DeepSeek。
+- 在同一 audit guard、假 DeepSeek loopback、独立 PostgreSQL/Qdrant 与短路径对象根下执行 `scripts/smoke_m2_controlled_write_e2e.py --allow-live`。机器报告为 `status=passed`、31 tasks/21 scenarios；resume command body 与 approval reason 的隐私扫描均为 0，报告内 `cleanup.completed=true`。随后独立复查临时 `m2b4_` PostgreSQL 数据库、`m2_e2e_` Qdrant collection 与对象根，三类残留均为 0。未读取 `.env`，未调用真实 DeepSeek；C1 容器保留给剩余验证门。
+- 全量 pytest 的首次隔离调用因 Windows 路径直接嵌入 Python 字符串而在 pytest 启动前语法失败，不是测试或产品失败；路径归一化后首次完整运行得到 574 passed、1 skipped、3 failed。两个 clean-subprocess 失败来自父进程内 `Settings` 覆盖未传播，第三个 lease-renewal 用例定向复跑通过。将 dotenv source 隔离移入临时守卫后，三个用例一并通过。下一次全量运行仅在本地 Qdrant 创建 payload index 时发生一次 `ReadTimeout`；容器 readyz 为 200、定向用例通过，清空 C1 专属 collection 后再次完整运行。
+- 最终完整 pytest 在上述守卫、假 DeepSeek loopback、独立 PostgreSQL/Qdrant 与短路径 basetemp 下为 `577 passed, 1 skipped in 342.57s`；JUnit 为 578 tests、0 failures、0 errors、1 skipped。`COMPOSE_DISABLE_ENV_FILE=1` 下 Compose config、`git diff --check`、Web 不含 Worker/TaskWorker 构造和公开敏感字段的静态扫描均通过；audit guard 未触发，未读取 `.env`，未调用真实 DeepSeek。
+- 清理：停止两个无卷 `--rm` C1 容器后按名称和端口复查均为 0，因此其中的 C1 主/迁移 PostgreSQL 数据库已随容器移除；Qdrant collection 在停止前已为 0。C1 外部 guard/evidence 根和短路径 basetemp 已精确删除。开始 C1 前已存在的仓库 `.tmp` 仅含 59 个历史 pytest 目录；成功删除 2 个后，其余 57 个均被既有 ACL 拒绝，未修改 ACL、取得所有权或绕过权限，保留并作为唯一历史清理残留。
+
 ## 8. 决策记录
 
 ### ADR-001：不引入外部消息中间件
@@ -590,6 +612,12 @@ API enqueue 在上述锁序内只通过 PostgreSQL 行完成静态验证和命�
 - 事实：现有 LangGraph 根 checkpoint、审批恢复与 PostgreSQL checkpoint fencing 测试均使用 `configurable.checkpoint_ns = ""`；空字符串是合法根命名空间，不表示 binding 缺失。A2 的初版 `interrupt_complete` 实现若要求 `length(trim(namespace)) > 0`，会让 A5 将真实根 checkpoint 写入 task 行时违反约束。
 - 决策：`interrupt_checkpoint_ns` 的完整性判断是 **非 NULL**，允许 `""` 并必须与 snapshot/approval binding 逐项相等；`interrupt_checkpoint_id`、`interrupt_id` 和需要时的 `interrupt_approval_id` 仍要求非 NULL 且非空白。不得用 sentinel 替换空 namespace，因为这会破坏 checkpoint、approval 与 task 的相等 binding。
 - 落地：A5 在写入完整 pause binding 前，精确修订未发布的 `20260831_0015` 迁移 CHECK、ORM CHECK、仓储完整性谓词及相关迁移/仓储测试；迁移 revision/head 不变，不新增后续修补迁移。真实历史 NULL 仍按 ADR-005 fail-closed，NULL 与合法空串必须严格区分。
+
+### C1 执行方式调整
+
+- 状态：已决定（C1）。
+- 用户明确取消 C1 的主从 Agent、指定模型与推理强度限制，授权当前会话执行者按实际环境直接完成验收；不虚构未使用的 Agent 或模型。
+- 该调整仅改变执行方式，不改变 C1 的验证门、隔离资源边界、真实证据要求或禁止项；仍不读取 `.env`、不调用真实 DeepSeek、不使用业务资源、不提交或推送 Git。
 
 #### A1 后续实现落点（不在本节点编码）
 
