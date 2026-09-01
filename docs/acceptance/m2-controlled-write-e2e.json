@@ -11,15 +11,15 @@
     "status": "ready"
   },
   "binding": {
-    "approval_id": "8534a6dd1db3408e8f5f982df2d9e198",
+    "approval_id": "abfb4acdee0c4cf9b243b05f87352a77",
     "artifact_hash": "sha256:f0c94c2a291e9bfb092751c62f9528004640bfd35af940073e14a835ff37f7bf",
     "artifact_id": "00000000000000000000000000000042",
-    "checkpoint_id": "1f1a485b-dd70-6ab0-801a-223be850320f",
-    "interrupt_id": "a2ec0a89d2e7e036ef212e2e1b5aad09",
+    "checkpoint_id": "1f1a63de-500d-6b40-801a-e4b471131a0f",
+    "interrupt_id": "8175ffa3ef270b5365ec6fe7b20f6c50",
     "result_artifact_id": "00000000000000000000000000000042",
-    "task_id": "695f0c6b39d941baa292c84aa0ba5dcd",
-    "thread_id": "695f0c6b39d941baa292c84aa0ba5dcd",
-    "tool_call_id": "72c31649b6284f098562f20458b62a53"
+    "task_id": "3c79a906ea7e45a4beabf973ae824cb2",
+    "thread_id": "3c79a906ea7e45a4beabf973ae824cb2",
+    "tool_call_id": "5815c9045d7c4ce78d817a4b221a17e7"
   },
   "capability": "task-agent",
   "checkpoint_encodings": [
@@ -50,9 +50,12 @@
     "adapter_calls_before_approval": 0
   },
   "privacy_scan": {
+    "approval_reason": 0,
     "content": 0,
     "credentials": 0,
     "prompt": 0,
+    "resume_command_body": 0,
+    "resume_command_hash": 0,
     "resume_payload": 0,
     "storage_key": 0
   },
@@ -63,13 +66,14 @@
     "unknown_replay": 0
   },
   "source_binding": {
-    "git_revision": "ac18d8200ae2f2a7d13c635617d6a81d993ddc24",
+    "git_revision": "ed056ac08970493d9f3fbfcad72db34ec1cae37b",
     "worktree_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   },
   "status": "passed",
   "strict_msgpack": {
     "allowed_msgpack_modules": [
-      "rag_kb.agent.result.TaskResultCandidate"
+      "rag_kb.agent.result.TaskResultCandidate",
+      "rag_kb.application.agent_contract.TaskResultCandidate"
     ],
     "pickle_fallback": false,
     "runtime_flag": true,
@@ -77,308 +81,308 @@
   },
   "task_ledger": [
     {
-      "correlation_id": "132a45c4454a46428d2f8f2914c66089",
+      "correlation_id": "28324f2987bb44d093cee143a6070f95",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "b1019685de934762995046e9c217ffbe",
+      "task_id": "007a571f73e84a938721baa3df4c4510",
       "tool_calls": 2
     },
     {
-      "correlation_id": "d62761e3af21436cab5375fed5b7237a",
+      "correlation_id": "be95f3c6edfa48c88ddefea1d5264adf",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "6bda03e4ed6f420fa44a8b0de3633156",
+      "task_id": "663881243220404fa88f1992ff766307",
       "tool_calls": 2
     },
     {
-      "correlation_id": "5bef8bfe423441e8998c3cf91a32f9df",
+      "correlation_id": "e3fcdc1ee12848159dbbf2fc03c543a5",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "7125bf7468d347f588e6afcf2aadbd88",
+      "task_id": "5e6cc1f291834b7e9aa9cd1b343ed125",
       "tool_calls": 2
     },
     {
-      "correlation_id": "b1f5bcde8a254ca28bbe363f4fa7ccab",
+      "correlation_id": "a1e29fac5c174f3f8de43ef81e41e1de",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "e96e55c42aee4fe8b0135fe34e152191",
+      "task_id": "888e213e2edd41428a8669e694c401be",
       "tool_calls": 2
     },
     {
-      "correlation_id": "b9fc1a1cb1af4bd78e46be762ad28f98",
+      "correlation_id": "bf97c00ef23945e48642d5f15081bd00",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "932a241678334235ab944d579eef0882",
+      "task_id": "0140e30320cc41e2a1b3414037bbb2a6",
       "tool_calls": 2
     },
     {
-      "correlation_id": "8b637b3bd62b4e4897fa7ffef5d002ea",
+      "correlation_id": "1a6c2bce23914f0caf35eb6f0cd9f73a",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "5a4cb270f8f7498bbf804fe464dd92d4",
+      "task_id": "2fa926e545b3474c869bc15fa0387948",
       "tool_calls": 2
     },
     {
-      "correlation_id": "c6dda0e0d97b48c9867f27fdde580485",
+      "correlation_id": "8445bfa75a8c48afb1b35ff051deb4e2",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "9e8c4b43d55840aebee16f1985da7988",
+      "task_id": "98f177cf1a404839ad155dcdd0d3c2ed",
       "tool_calls": 2
     },
     {
-      "correlation_id": "a615ecf6ef114f6c9517262455b87c28",
+      "correlation_id": "fc7784f2ea1f4c3281ad3e5acf314771",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "ccdd6d8eae154223adeff09c15b6778c",
+      "task_id": "962cc3fadebc469aa6ee849417938506",
       "tool_calls": 2
     },
     {
-      "correlation_id": "239a376070604ac0838b8c96a73f4c46",
+      "correlation_id": "415203945bda451b91da037dcf2f1b01",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "dacff57e12874a928de8c7fede9379db",
+      "task_id": "52a65fdd9e7e494e8c601473d04bf8c2",
       "tool_calls": 2
     },
     {
-      "correlation_id": "6b007d11f11241d98968f6efe94a25c7",
+      "correlation_id": "49c24e106bc34dd6ab165c5cecd99d29",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "0ebb39a168b8446dbe20c8397ca5b730",
+      "task_id": "45735aad928b4a8abb0ef7ffb6a64011",
       "tool_calls": 2
     },
     {
-      "correlation_id": "d52b8d8712e44db9a5465becd69b8300",
+      "correlation_id": "d051f98deead4cd1a15c32b1339fdba1",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "7637c36f589f4517a5db331ea3acecdd",
+      "task_id": "0254bd485df7450eaf55e73cbcd794fd",
       "tool_calls": 2
     },
     {
-      "correlation_id": "9b44d8d926e844f9b211a8043d590312",
+      "correlation_id": "a8aa7f21e06b4e9d81a312e74a372daf",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "5bf736f678e54175832e5811d5797acd",
+      "task_id": "c30dd328ca674810983043dbe2fa3e0f",
       "tool_calls": 2
     },
     {
-      "correlation_id": "397137dcac21404693f7aed16369ebca",
+      "correlation_id": "4f49ba498ab54773980a6e1ff8e402e4",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "535cf057a8924e8b89b7519a0acd6517",
+      "task_id": "6e73ea70201547ae961481ff2a37ce65",
       "tool_calls": 2
     },
     {
-      "correlation_id": "cc7c6898f03a4eeb97bd89bee83a4cc4",
+      "correlation_id": "705a275702144d538079031553376dba",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "e4052079c08148718006471b2b3b529e",
+      "task_id": "448a5e35c4844331aa24df3756e66d31",
       "tool_calls": 2
     },
     {
-      "correlation_id": "b7942040afdd4062956240c1df376d47",
+      "correlation_id": "9a1c2aefd5864c1fb4a7eec3ed71132c",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "a76895adea32490b8a0a361860388f3c",
+      "task_id": "5057a747443c469ea5d50ce3c384e5fe",
       "tool_calls": 2
     },
     {
-      "correlation_id": "4bd80f379a1c4673ba2199e26a32a15d",
+      "correlation_id": "f62ab096cdc541868b22dcdbe23b5189",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "f52f235e5a21420a8a6ad840d5e81692",
+      "task_id": "59c018f877e745be941e1b8ded10b724",
       "tool_calls": 2
     },
     {
-      "correlation_id": "2bba6d4ef1a04327a5dcc41caf74d124",
+      "correlation_id": "2668fdb3d9d741d0a59ecb9cfdc9644d",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "4f96f23fd0174dc989b3b13516997d35",
+      "task_id": "f42df7b3274c47feb079f419b0c5c616",
       "tool_calls": 2
     },
     {
-      "correlation_id": "375f9a490f3c4b92a5006de8dff6ef94",
+      "correlation_id": "2a46fc0fd23c4f31a6d1aee64b4c6121",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "d4460d4fc9be4c969aeb82aa3891d0fa",
+      "task_id": "26da5636d5d448cf996b70e9ea0d1772",
       "tool_calls": 2
     },
     {
-      "correlation_id": "38aadcfc23074783b1a12aa22fe7334c",
+      "correlation_id": "258142c0fbef491a88810d9262fefec2",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "84960f4483d84c488a792b0ebc455426",
+      "task_id": "427c486fa2cf4e9486046abf99196766",
       "tool_calls": 2
     },
     {
-      "correlation_id": "adf611f00c9540b482fb9d3d1287c17f",
+      "correlation_id": "2744749ad7134c8cb911b072e5d05aa3",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "006a32590a954f5292f096a91db5519f",
+      "task_id": "1639fdb889b44f8091378330d6f0756d",
       "tool_calls": 2
     },
     {
-      "correlation_id": "ee8160b0e0a542f8acfc9bcbc7917c6e",
+      "correlation_id": "ff13769f6fc94bfb95199939a92dce4d",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "fb0f46ee01df4ad492c57ca7458131cb",
+      "task_id": "425982f5930f4d749862ffb7e12d7812",
       "tool_calls": 2
     },
     {
-      "correlation_id": "4ff33f081a704c96bee9762c684fced7",
+      "correlation_id": "6ce01896ba95416792252717303dd68b",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "fe1bf87f66684301bc3442feda5db795",
+      "task_id": "a2c3166f832f4177956d532ae4926e4d",
       "tool_calls": 2
     },
     {
-      "correlation_id": "febc4cc93ee646a49159e289ae50591e",
+      "correlation_id": "12ad5a24acac41b8b3248f9f8233e1a4",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "a104bd27c633473ebc681ae852e51dbc",
+      "task_id": "79ef33b837de4d32be6b4a6a00ec2e49",
       "tool_calls": 2
     },
     {
-      "correlation_id": "1bbe703e613a4ae38dd5181085e2ff21",
+      "correlation_id": "55f1ec9f67034996b3e91dd715b033aa",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "b0d651976fee41058b528b2d909085e1",
+      "task_id": "9fbc81c2414546c281ecb87b78d0aefd",
       "tool_calls": 2
     },
     {
-      "correlation_id": "1d244fc99a9e454d8640de1382d9eefd",
+      "correlation_id": "b1ca1327a99c47568e64d783d369c113",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "0b6f7a52e50946fa9cbda8227be09d8a",
+      "task_id": "0ec90f01df0d45fc8ebba89b1339658e",
       "tool_calls": 2
     },
     {
-      "correlation_id": "ee606d8b9e5e46589013cd82287dd590",
+      "correlation_id": "29bdd783788e4cbb87a7ca6f4713a5de",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "3847d5d088f84985a89ce0d980099b44",
+      "task_id": "8d7447e6f6b6472ea929d6550f323982",
       "tool_calls": 2
     },
     {
-      "correlation_id": "2a16b9da6f3a449988397fdfb67e92d9",
+      "correlation_id": "233a7cc6187a4d17b88b6c55e760d205",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "f5442728ebef46d4bbab1070c5a86a4b",
+      "task_id": "e162e410015d4eada93a703a3c19aed0",
       "tool_calls": 2
     },
     {
-      "correlation_id": "2e51e70b0da84a9da03f028b31c4d4ac",
+      "correlation_id": "4b1dc888ef7043408e1a5d82ad7c646e",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "29e481abc9a247648f4876751a3755e6",
+      "task_id": "5734099e330546558e2080bc3eec5737",
       "tool_calls": 2
     },
     {
-      "correlation_id": "10613d2733d44ee59a7b0d8ba016609f",
+      "correlation_id": "c99a7608168d4c8cb19f508224691a53",
       "error_code": null,
       "model_calls": 4,
       "status": "refused",
       "stop_reason": "approval_rejected",
-      "task_id": "e389a6f91b3e4eed9ecaf6a43deb10a2",
+      "task_id": "5f6c39c0066c4b17817f0bdc9728a734",
       "tool_calls": 2
     },
     {
-      "correlation_id": "220615dd74c746769fb6b1f3c58bc145",
+      "correlation_id": "3c4c7e62ba0e45e492fc0e6e7c280b06",
       "error_code": null,
       "model_calls": 4,
       "status": "succeeded",
       "stop_reason": "completed",
-      "task_id": "695f0c6b39d941baa292c84aa0ba5dcd",
+      "task_id": "3c79a906ea7e45a4beabf973ae824cb2",
       "tool_calls": 3
     },
     {
-      "correlation_id": "dd7f849e1ef34eed8ec90819ae39ad54",
+      "correlation_id": "524b2fdd2dd14f2fad8e1504802610f3",
       "error_code": null,
       "model_calls": 2,
       "status": "refused",
       "stop_reason": "clarification_completed",
-      "task_id": "4b81b59110da46e1b88e16d424dc0d70",
+      "task_id": "aa4e225757b445239e05947775b890df",
       "tool_calls": 0
     }
   ],
   "terminal_binding": {
     "approval": {
-      "approval_id": "8534a6dd1db3408e8f5f982df2d9e198",
-      "checkpoint_action_id": "695f0c6b39d941baa292c84aa0ba5dcd-write",
+      "approval_id": "abfb4acdee0c4cf9b243b05f87352a77",
+      "checkpoint_action_id": "3c79a906ea7e45a4beabf973ae824cb2-write",
       "status": "executed"
     },
     "artifact": {
       "artifact_id": "00000000000000000000000000000042",
       "content_hash": "sha256:f0c94c2a291e9bfb092751c62f9528004640bfd35af940073e14a835ff37f7bf",
       "status": "ready",
-      "tool_call_id": "72c31649b6284f098562f20458b62a53"
+      "tool_call_id": "5815c9045d7c4ce78d817a4b221a17e7"
     },
     "task_result": {
       "artifact_id": "00000000000000000000000000000042",
       "result_kind": "controlled_action",
       "status": "succeeded",
       "stop_reason": "completed",
-      "task_id": "695f0c6b39d941baa292c84aa0ba5dcd"
+      "task_id": "3c79a906ea7e45a4beabf973ae824cb2"
     },
     "tool_call": {
-      "approval_id": "8534a6dd1db3408e8f5f982df2d9e198",
+      "approval_id": "abfb4acdee0c4cf9b243b05f87352a77",
       "status": "succeeded",
-      "tool_call_id": "72c31649b6284f098562f20458b62a53"
+      "tool_call_id": "5815c9045d7c4ce78d817a4b221a17e7"
     }
   },
   "tool_exposure": {

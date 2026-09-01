@@ -1,6 +1,6 @@
 # Application 边界收敛与双路径 Retrieval Core 统一计划
 
-> 文档状态：进行中（F1）
+> 文档状态：阻塞（F1）
 > 创建日期：2026-09-01
 > 适用仓库：`rag-enterprise-kb`
 > 前置完成项：API 已退出 TaskWorker 执行链；task、ingestion、projection 已拆为三个 Worker 模式
@@ -51,11 +51,11 @@
 
 ### 1.4 F1 正式验收基线（2026-09-02）
 
-- 状态：进行中。当前 HEAD 为 `2aea5ea23cc5400af8e3c694fd33cc7e9ad35f1f`（`main`）；工作树含 L0-L6 的大规模未提交源码、测试、脚本与本计划修改，尚未建立可绑定的源码提交。
+- 基线时状态：进行中。开始 F1 时 HEAD 为 `2aea5ea23cc5400af8e3c694fd33cc7e9ad35f1f`（`main`）；工作树含 L0-L6 的大规模未提交源码、测试、脚本与本计划修改，尚未建立可绑定的源码提交。
 - 受保护资产：已删除但未提交的 `ASYNC_WORKER_REFACTOR_CONTINUATION_PROMPT.md`，以及来源不明、当前有访问拒绝的 `.tmp/` 历史目录；两者均不恢复、不删除、不纳入提交。
 - AST 扫描的 `application→infrastructure`、`application→SQLAlchemy/Qdrant/psycopg`、`application→rag_kb.agent`、`domain` 向上依赖、`infrastructure/agent→web/worker/main` 均为 0，`TEMPORARY_ALLOWLIST` 为空。`application/task_worker.py` 对 LangGraph/LangChain 的直接使用经架构决策明确允许：它只编排框架公开 API，不依赖项目内 Agent 具体实现；不为该框架隔离新增 runtime port。
 - 初审发现两条旧维护路径的锁序与主路径不一致：`DatabaseToolExecutionLifecycle.expire_stale_running()` 为 tool→task，`complete()` 为 task→tool；`DatabaseApprovalLifecycle.reject()` 为 approval→task，而决定入队路径为 task→approval。先记录为 F1 风险，修复后以真实 PostgreSQL 回归验证。
-- 已验证环境：Alembic script head 为 `20260831_0015`，`COMPOSE_DISABLE_ENV_FILE=1` 下 `docker compose config --quiet` 通过。尚未验证项：真实 PostgreSQL/Qdrant、migration round-trip、全量回归、M1/M2 本地确定性回归、隐私扫描和绑定验收报告；不执行 R1/R2/R3。
+- 当时已验证环境：Alembic script head 为 `20260831_0015`，`COMPOSE_DISABLE_ENV_FILE=1` 下 `docker compose config --quiet` 通过。后续验收结果见 F1 当前执行记录；不执行 R1/R2/R3。
 
 ### 1.2 安全约束
 
@@ -521,11 +521,12 @@ upload_reconciler
 
 #### F1 当前执行记录（2026-09-02）
 
-- 状态：进行中。
+- 状态：阻塞。源码提交为 `ed056ac08970493d9f3fbfcad72db34ec1cae37b`，验收报告仅绑定该 clean worktree。
 - 静态门禁：`application/domain` 对 `rag_kb.agent`、`rag_kb.infrastructure`、`rag_kb.worker`、`rag_kb.main` 及 SQLAlchemy/Qdrant/psycopg 的直接导入均为 0；动态加载命中仅为架构测试的 `__import__` 拦截，`TEMPORARY_ALLOWLIST` 为空。`TaskWorker` 对 LangGraph/LangChain 框架 API 的允许依赖保持不变。
 - 隐私初审：生产日志、trace、metrics 与 HTTP 错误边界未见正文、prompt、凭据或授权 header 直接泄漏；手工诊断/运维脚本的输出不在本节点扩围修改。
-- 本地验证：设置 `RAG_KB_DISABLE_ENV_FILE=1` 后，架构、配置和 observability 定向集 `27 passed`；`compileall`、`git diff --check` 通过。隔离 PostgreSQL/Qdrant 的全部 `integration` 标记集在主库升级至 `20260831_0015`、checkpointer 初始化且独立空迁移库参与 round-trip 后为 `65 passed, 523 deselected`。
-- 未验证项：绑定源码提交的全量 JUnit、M2 controlled-write E2E、正式验收报告，以及未经用户授权的真实 DeepSeek M1 smoke；本轮未执行 R1/R2/R3。
+- 本地验证：设置 `RAG_KB_DISABLE_ENV_FILE=1` 后，架构、配置和 observability 定向集 `27 passed`；`compileall`、`git diff --check` 通过。隔离 PostgreSQL/Qdrant 的全部 `integration` 标记集在主库升级至 `20260831_0015`、checkpointer 初始化且独立空迁移库参与 round-trip 后为 `65 passed, 523 deselected`；clean worktree 全量 pytest 为 `588 passed`。
+- M2 证据：controlled-write E2E 为 `status=passed`，覆盖 31 个任务、21 个场景、三类 crash recovery，严格 MsgPack 无 pickle，隐私计数与未批准/重复/UNKNOWN replay 副作用均为 0；脚本自证 PostgreSQL、Qdrant collection、对象根清理完成。
+- 阻塞项：真实 DeepSeek M1 smoke 尚未获用户外部请求授权，实时 retrieval benchmark 未运行；`docs/acceptance/latest.json` 因此如实为 `unverified`，本轮未执行 R1/R2/R3。
 
 ## 8. 执行状态表
 
@@ -541,7 +542,7 @@ upload_reconciler
 | L5 高风险任务事务边界 | 已完成 | retention/approval/tool/task worker ports | L5.4 已清零 application→infrastructure/SQLAlchemy；L6 后全量本地历史结果 542 passed、45 skipped | F1 复核发现两条旧维护路径锁序不一致，待最小修复与真实 PostgreSQL 回归 |
 | L6 Agent 小环收口 | 已完成 | `application.agent_contract` 与 agent shim/serde 双路径 allowlist | 全量本地 542 passed、45 项真实集成因环境跳过；编译、diff、serde round-trip 通过 | F1 最终回归待执行 |
 | R3 文档与观测 | 待执行 | 路径选择说明 | - | - |
-| F1 最终回归 | 进行中 | 零 allowlist 与验收证据 | 静态门禁、27 项定向集、编译/diff 通过；隔离 PostgreSQL/Qdrant 65 项 integration 通过；`TaskWorker` 直接使用 LangGraph/LangChain 经决策允许 | 绑定全量 JUnit、M2、真实 M1 与正式报告待完成 |
+| F1 最终回归 | 阻塞 | 零 allowlist 与验收证据 | 静态门禁、27 项定向集、编译/diff、65 项 integration、588 项全量与绑定 M2 通过；`TaskWorker` 直接使用 LangGraph/LangChain 经决策允许 | 等待真实 M1 外部请求授权；实时 retrieval benchmark 未观察 |
 
 ## 9. 测试矩阵
 
