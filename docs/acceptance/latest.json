@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_on": "2026-09-01T20:44:32.292076+00:00",
+  "generated_on": "2026-09-02T05:35:26.191451+00:00",
   "code": {
     "status": "passed",
     "values": {
-      "git_revision": "ed056ac08970493d9f3fbfcad72db34ec1cae37b",
+      "git_revision": "01f82638b225ba8851483f46d3a4ec89dcac1134",
       "worktree_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     }
   },
@@ -12,7 +12,7 @@
     "status": "passed",
     "values": {
       "sha256": "49f74654f356c5a97cd7377b24618dbdcfb0393913069a2f4ba667869add06c2",
-      "path": "data/benchmarks/retrieval_acceptance_v2.yaml"
+      "path": "data\\benchmarks\\retrieval_acceptance_v2.yaml"
     }
   },
   "samples": {
@@ -25,13 +25,13 @@
     "status": "passed",
     "values": {
       "pytest": {
-        "total": 588,
+        "total": 593,
         "failures": 0,
         "errors": 0,
         "skipped": 0,
-        "duration_seconds": 302.277,
+        "duration_seconds": 266.346,
         "skipped_details": [],
-        "passed": 588
+        "passed": 593
       },
       "retrieval": {
         "all_cases": {
@@ -49,16 +49,16 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 145.069,
+              "latency_ms": 161.136,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.62971425,
+                  "dense_score": 0.62971437,
                   "document_id": "incident-response-standard",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5534274,
+                  "dense_score": 0.5534275,
                   "document_id": "dev-release-process",
                   "version": 1
                 },
@@ -68,12 +68,12 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.501525,
+                  "dense_score": 0.50152504,
                   "document_id": "security-access-management",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.476516,
+                  "dense_score": 0.4765161,
                   "document_id": "security-access-management",
                   "version": 1
                 }
@@ -94,21 +94,21 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 155.11,
+              "latency_ms": 151.966,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.6989522,
+                  "dense_score": 0.69895196,
                   "document_id": "employee-onboarding-process",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.56486255,
+                  "dense_score": 0.5648625,
                   "document_id": "security-access-management",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5474727,
+                  "dense_score": 0.5474728,
                   "document_id": "security-access-management",
                   "version": 1
                 },
@@ -139,11 +139,11 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 162.022,
+              "latency_ms": 160.102,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.6983422,
+                  "dense_score": 0.69834214,
                   "document_id": "product-service-level-agreement",
                   "version": 1
                 }
@@ -164,31 +164,31 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 126.051,
+              "latency_ms": 135.567,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.7902059,
+                  "dense_score": 0.79020596,
                   "document_id": "remote-work-policy",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.60043794,
+                  "dense_score": 0.6004379,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.54109967,
+                  "dense_score": 0.54109955,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.52287596,
+                  "dense_score": 0.5228759,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.4726424,
+                  "dense_score": 0.47264242,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 }
@@ -204,11 +204,11 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 149.349,
+              "latency_ms": 160.53,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.5361179,
+                  "dense_score": 0.5361178,
                   "document_id": "employee-onboarding-process",
                   "version": 1
                 },
@@ -228,7 +228,7 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.48203862,
+                  "dense_score": 0.48203856,
                   "document_id": "hr-leave-policy",
                   "version": 2
                 }
@@ -249,26 +249,26 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 139.597,
+              "latency_ms": 157.092,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.7255836,
+                  "dense_score": 0.7255837,
                   "document_id": "data-classification-sharing",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.6403942,
+                  "dense_score": 0.64039433,
                   "document_id": "security-access-management",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.58138484,
+                  "dense_score": 0.58138466,
                   "document_id": "dev-release-process",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5812701,
+                  "dense_score": 0.58127016,
                   "document_id": "security-access-management",
                   "version": 1
                 },
@@ -289,7 +289,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": "evidence_quantitative_fact_missing",
-              "latency_ms": 155.549,
+              "latency_ms": 182.158,
               "no_answer_correct": true,
               "returned_document_versions": [],
               "split": "calibration",
@@ -303,11 +303,11 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 205.1,
+              "latency_ms": 172.372,
               "no_answer_correct": false,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.5564738,
+                  "dense_score": 0.55647373,
                   "document_id": "procurement-approval-policy",
                   "version": 2
                 }
@@ -328,31 +328,31 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 147.822,
+              "latency_ms": 184.57,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.6819466,
+                  "dense_score": 0.6819465,
                   "document_id": "vendor-management-standard",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.60656726,
+                  "dense_score": 0.6065674,
                   "document_id": "dev-release-process",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.53562146,
+                  "dense_score": 0.5356215,
                   "document_id": "procurement-approval-policy",
                   "version": 2
                 },
                 {
-                  "dense_score": 0.53528,
+                  "dense_score": 0.5352801,
                   "document_id": "dev-release-process",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.52954525,
+                  "dense_score": 0.5295453,
                   "document_id": "incident-response-standard",
                   "version": 1
                 }
@@ -373,31 +373,31 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 162.926,
+              "latency_ms": 171.769,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.68330574,
+                  "dense_score": 0.68330586,
                   "document_id": "data-classification-sharing",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.56645274,
+                  "dense_score": 0.5664529,
                   "document_id": "security-access-management",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.50659823,
+                  "dense_score": 0.50659835,
                   "document_id": "security-access-management",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.49654558,
+                  "dense_score": 0.49654567,
                   "document_id": "remote-work-policy",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.47992986,
+                  "dense_score": 0.47993004,
                   "document_id": "security-access-management",
                   "version": 1
                 }
@@ -418,11 +418,11 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 167.956,
+              "latency_ms": 155.916,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.67014045,
+                  "dense_score": 0.6701404,
                   "document_id": "incident-response-standard",
                   "version": 1
                 },
@@ -432,12 +432,12 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.55334944,
+                  "dense_score": 0.5533494,
                   "document_id": "dev-release-process",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5479768,
+                  "dense_score": 0.54797673,
                   "document_id": "dev-release-process",
                   "version": 1
                 },
@@ -463,7 +463,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 140.637,
+              "latency_ms": 154.131,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -477,17 +477,17 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.4581122,
+                  "dense_score": 0.45811218,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.44362473,
+                  "dense_score": 0.44362468,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.43913275,
+                  "dense_score": 0.4391328,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 }
@@ -508,7 +508,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 133.221,
+              "latency_ms": 154.275,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -517,7 +517,7 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.51892114,
+                  "dense_score": 0.51892096,
                   "document_id": "dev-release-process",
                   "version": 1
                 },
@@ -527,7 +527,7 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.48972642,
+                  "dense_score": 0.4897263,
                   "document_id": "dev-release-process",
                   "version": 1
                 },
@@ -553,11 +553,11 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 151.503,
+              "latency_ms": 156.037,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.68252623,
+                  "dense_score": 0.6825263,
                   "document_id": "procurement-approval-policy",
                   "version": 2
                 }
@@ -573,11 +573,11 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 160.14,
+              "latency_ms": 173.734,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.51161194,
+                  "dense_score": 0.511612,
                   "document_id": "product-service-level-agreement",
                   "version": 1
                 }
@@ -593,16 +593,16 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 147.32,
+              "latency_ms": 172.009,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.56113267,
+                  "dense_score": 0.5611327,
                   "document_id": "security-access-management",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5260545,
+                  "dense_score": 0.52605456,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 },
@@ -612,12 +612,12 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.52367306,
+                  "dense_score": 0.5236731,
                   "document_id": "remote-work-policy",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5214876,
+                  "dense_score": 0.52148765,
                   "document_id": "security-access-management",
                   "version": 1
                 }
@@ -633,7 +633,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": "evidence_quantitative_fact_missing",
-              "latency_ms": 140.218,
+              "latency_ms": 172.404,
               "no_answer_correct": true,
               "returned_document_versions": [],
               "split": "test",
@@ -647,7 +647,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": "evidence_anchor_missing",
-              "latency_ms": 150.564,
+              "latency_ms": 180.394,
               "no_answer_correct": true,
               "returned_document_versions": [],
               "split": "test",
@@ -670,7 +670,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 167.262,
+              "latency_ms": 169.956,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -679,22 +679,22 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.6247833,
+                  "dense_score": 0.62478334,
                   "document_id": "data-classification-sharing",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5456405,
+                  "dense_score": 0.54564035,
                   "document_id": "dev-release-process",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5239031,
+                  "dense_score": 0.52390295,
                   "document_id": "procurement-approval-policy",
                   "version": 2
                 },
                 {
-                  "dense_score": 0.51289296,
+                  "dense_score": 0.51289284,
                   "document_id": "malicious-prompt-injection-sample",
                   "version": 1
                 }
@@ -719,31 +719,31 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 151.256,
+              "latency_ms": 202.868,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.67582464,
+                  "dense_score": 0.6758245,
                   "document_id": "employee-onboarding-process",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.6315672,
+                  "dense_score": 0.63156724,
                   "document_id": "security-access-management",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.61702025,
+                  "dense_score": 0.61702037,
                   "document_id": "security-access-management",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.587608,
+                  "dense_score": 0.58760804,
                   "document_id": "security-access-management",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5731636,
+                  "dense_score": 0.57316375,
                   "document_id": "remote-work-policy",
                   "version": 1
                 }
@@ -764,16 +764,16 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 128.878,
+              "latency_ms": 154.96,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.6729226,
+                  "dense_score": 0.6729227,
                   "document_id": "product-service-level-agreement",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5638077,
+                  "dense_score": 0.5638078,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 },
@@ -783,12 +783,12 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.547899,
+                  "dense_score": 0.54789907,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.49712986,
+                  "dense_score": 0.4971299,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 }
@@ -809,7 +809,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 155.264,
+              "latency_ms": 172.517,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -818,7 +818,7 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.6237004,
+                  "dense_score": 0.62370014,
                   "document_id": "employee-onboarding-process",
                   "version": 1
                 },
@@ -833,7 +833,7 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.58280617,
+                  "dense_score": 0.5828061,
                   "document_id": "hr-leave-policy",
                   "version": 2
                 }
@@ -872,16 +872,16 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 145.069,
+              "latency_ms": 161.136,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.62971425,
+                  "dense_score": 0.62971437,
                   "document_id": "incident-response-standard",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5534274,
+                  "dense_score": 0.5534275,
                   "document_id": "dev-release-process",
                   "version": 1
                 },
@@ -891,12 +891,12 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.501525,
+                  "dense_score": 0.50152504,
                   "document_id": "security-access-management",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.476516,
+                  "dense_score": 0.4765161,
                   "document_id": "security-access-management",
                   "version": 1
                 }
@@ -917,21 +917,21 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 155.11,
+              "latency_ms": 151.966,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.6989522,
+                  "dense_score": 0.69895196,
                   "document_id": "employee-onboarding-process",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.56486255,
+                  "dense_score": 0.5648625,
                   "document_id": "security-access-management",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5474727,
+                  "dense_score": 0.5474728,
                   "document_id": "security-access-management",
                   "version": 1
                 },
@@ -962,11 +962,11 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 162.022,
+              "latency_ms": 160.102,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.6983422,
+                  "dense_score": 0.69834214,
                   "document_id": "product-service-level-agreement",
                   "version": 1
                 }
@@ -987,31 +987,31 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 126.051,
+              "latency_ms": 135.567,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.7902059,
+                  "dense_score": 0.79020596,
                   "document_id": "remote-work-policy",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.60043794,
+                  "dense_score": 0.6004379,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.54109967,
+                  "dense_score": 0.54109955,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.52287596,
+                  "dense_score": 0.5228759,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.4726424,
+                  "dense_score": 0.47264242,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 }
@@ -1027,11 +1027,11 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 149.349,
+              "latency_ms": 160.53,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.5361179,
+                  "dense_score": 0.5361178,
                   "document_id": "employee-onboarding-process",
                   "version": 1
                 },
@@ -1051,7 +1051,7 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.48203862,
+                  "dense_score": 0.48203856,
                   "document_id": "hr-leave-policy",
                   "version": 2
                 }
@@ -1072,26 +1072,26 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 139.597,
+              "latency_ms": 157.092,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.7255836,
+                  "dense_score": 0.7255837,
                   "document_id": "data-classification-sharing",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.6403942,
+                  "dense_score": 0.64039433,
                   "document_id": "security-access-management",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.58138484,
+                  "dense_score": 0.58138466,
                   "document_id": "dev-release-process",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5812701,
+                  "dense_score": 0.58127016,
                   "document_id": "security-access-management",
                   "version": 1
                 },
@@ -1112,7 +1112,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": "evidence_quantitative_fact_missing",
-              "latency_ms": 155.549,
+              "latency_ms": 182.158,
               "no_answer_correct": true,
               "returned_document_versions": [],
               "split": "calibration",
@@ -1126,11 +1126,11 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 205.1,
+              "latency_ms": 172.372,
               "no_answer_correct": false,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.5564738,
+                  "dense_score": 0.55647373,
                   "document_id": "procurement-approval-policy",
                   "version": 2
                 }
@@ -1159,7 +1159,7 @@
           "object_root": true,
           "tenant": true
         },
-        "completed_at": "2026-09-01T20:41:17.409139+00:00",
+        "completed_at": "2026-09-02T05:32:59.979982+00:00",
         "configuration": {
           "calibration_hybrid_candidates": [
             false,
@@ -1167,7 +1167,7 @@
           ],
           "candidate_k": 20,
           "chunk_max_chars": 800,
-          "collection": "f1_m1_retrieval_4c7d_ec85163642794e6d91482fd196c275f2",
+          "collection": "enterprise_retrieval_96c069b15e424b76b914e5b6411886e1_1c51d2ee66714a82a7a0f85f13d07009",
           "context_k": 5,
           "database_source": "RAG_KB_DATABASE_URL",
           "dense_threshold_candidates": [
@@ -1183,13 +1183,13 @@
         },
         "corpus": {
           "manifest": "data/corpus/manifest.yaml",
-          "sha256": "sha256:93e67b6f5088ad8a13d648b06e2499a71bd2260539aee5ef4fa8fe8b617d8e4c"
+          "sha256": "sha256:46e7177597952cdc1bea78b0d9c960ecda79ae303cbe7184ef168cdd801a28d2"
         },
         "dataset": {
           "case_count": 26,
           "name": "expanded-enterprise-retrieval-holdout",
-          "path": "data/benchmarks/retrieval_acceptance_v2.yaml",
-          "sha256": "sha256:0b20f690b4b0595ce1b6776256e3ce5cadbdd71c4e44501e3ca69b475d886082",
+          "path": "data\\benchmarks\\retrieval_acceptance_v2.yaml",
+          "sha256": "sha256:49f74654f356c5a97cd7377b24618dbdcfb0393913069a2f4ba667869add06c2",
           "version": 2
         },
         "development": {
@@ -1197,217 +1197,234 @@
           "reason": "development split is excluded from calibration and holdout metrics",
           "status": "not_evaluated"
         },
-        "git_baseline_hash": "ed056ac08970493d9f3fbfcad72db34ec1cae37b",
+        "git_baseline_hash": "01f82638b225ba8851483f46d3a4ec89dcac1134",
         "ingestion": {
           "uploads": [
             {
               "document_id": "travel-reimbursement-policy",
-              "ingestion_job_id": "5d83d1f14b0645288e6da6510bd16d6a",
+              "ingestion_job_id": "91db91d383164c0e8e87bde63a779c82",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "55f711b512dd418aa6ed93e8605c26e1"
+              "version_id": "fb9b57d91843451ba7b01543b1dfe755"
             },
             {
               "document_id": "dev-release-process",
-              "ingestion_job_id": "a2da7bc7ee9a48599e73e751f82a29e0",
+              "ingestion_job_id": "212f1c05de5745cd99b8016ec39e473b",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "b7cc279d01414402abee36ea9e6bf34e"
+              "version_id": "378c5867687a43a09c552dffdca38d50"
             },
             {
               "document_id": "hr-leave-policy",
-              "ingestion_job_id": "b68e8820830942bea3bf93c232cf958b",
+              "ingestion_job_id": "cd399517453a4748997fe3e9dbc2de52",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "a9f1daede67d4a7d817ee60b25c0e9c7"
+              "version_id": "06fbda016c58452ab648ba2a206beb78"
             },
             {
               "document_id": "hr-leave-policy",
-              "ingestion_job_id": "09e705dc1d304cd0b879c69c5989d446",
+              "ingestion_job_id": "b8c869fe50a146b0bebf0ea289576586",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 2,
-              "version_id": "ee465910003e439baa884569adf506be"
+              "version_id": "9da502be4f074a6798f12872a1664c4d"
             },
             {
               "document_id": "security-access-management",
-              "ingestion_job_id": "4c2c005335c0428a8d6763ea5392f0bf",
+              "ingestion_job_id": "10afbdd7342240b1a0d94ad8b07f93b3",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "9a25014f62e241e4af258f20b5a91a11"
+              "version_id": "b94fb6e6ebb04877a7fd5ece10d72352"
             },
             {
               "document_id": "procurement-approval-policy",
-              "ingestion_job_id": "76b3b7863e104721bcd545eaa77d42da",
+              "ingestion_job_id": "003d13a8bb374fc4b5a244cfea1e1f80",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "9affcb84b22a47c9943ec3ea8ebc100b"
+              "version_id": "072e3765b5464f8a83ad0f37c06dba2a"
             },
             {
               "document_id": "procurement-approval-policy",
-              "ingestion_job_id": "179ba2b890214b3f8be797d180846dcc",
+              "ingestion_job_id": "4967f2a122fc44ef9c8b1f19594ae7a1",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 2,
-              "version_id": "eac4d99d4f3c4e38b5b4b2d1ea56d428"
+              "version_id": "b83ded414e6549af934c1e2c8dbc03ff"
             },
             {
               "document_id": "incident-response-standard",
-              "ingestion_job_id": "d1af1c65929045ce8120a1b93ba1f5e2",
+              "ingestion_job_id": "e45e386f681343489cbb813b3cb4cf80",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "e00ba2ae3ef14628951b3869ae1ff06e"
+              "version_id": "016f181b27e44451b61b9dd0866a3ce9"
             },
             {
               "document_id": "employee-onboarding-process",
-              "ingestion_job_id": "03f1401e2f8f4bcab8d23759a92aadb7",
+              "ingestion_job_id": "265ac19353e545e59fafd6fe2631a9da",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "f2cf5bd8b7364e68b724d01fb86e7905"
+              "version_id": "73e827ec504c429b9f70456fe43e0520"
             },
             {
               "document_id": "vendor-management-standard",
-              "ingestion_job_id": "4b41ef0a42c743148db2ea74218bd8b4",
+              "ingestion_job_id": "86b32d7cb0b649e8b0857e87e03de788",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "40a0e422f73b490fad4cf3fd700f657c"
+              "version_id": "3cbcae89500e4b1aa3adf89702d7aeac"
             },
             {
               "document_id": "remote-work-policy",
-              "ingestion_job_id": "4d1da24171bb4063bebe8bff489b3709",
+              "ingestion_job_id": "45095cb525f04b06b3a4e3d232c53975",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "7caee19b93924c0f9cda34cd9b9e10c2"
+              "version_id": "d51473bf85d041d8b6c55a78202f40cf"
             },
             {
               "document_id": "product-service-level-agreement",
-              "ingestion_job_id": "e680a7c215704d2b9822f5a2a907a996",
+              "ingestion_job_id": "721567190b6f495da6eddd542b675dfe",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "a67570af0f29402ebde68a806c586f7f"
+              "version_id": "2ace97b40e6d4eeda69f908a8c2dc2fc"
             },
             {
               "document_id": "data-classification-sharing",
-              "ingestion_job_id": "657ce42761c349b99b0c00b74ba5be2e",
+              "ingestion_job_id": "0426a7d8ced6430c8a2cf8b498d69ecb",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "79d70d77ce8e4d8c8f5b58213e20b18d"
+              "version_id": "14e069f27abc42a0b62ce354da9c1d47"
             },
             {
               "document_id": "malicious-prompt-injection-sample",
-              "ingestion_job_id": "1c5bb62d2d164bf1849a37907014e5dc",
+              "ingestion_job_id": "4ba1d090351745d4bdafc9014d6c7c6d",
               "ingestion_status": "pending",
               "lifecycle_status": "pending",
               "outcome": "created",
               "version": 1,
-              "version_id": "eb38c244145f49048525961ecc37cbbd"
+              "version_id": "ee8f68d4a8db42fa9d9e1e12cd440d2a"
             }
           ],
           "worker_outcomes": [
             {
               "error_code": null,
-              "job_id": "5d83d1f14b0645288e6da6510bd16d6a",
+              "job_id": "91db91d383164c0e8e87bde63a779c82",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "a2da7bc7ee9a48599e73e751f82a29e0",
+              "job_id": "212f1c05de5745cd99b8016ec39e473b",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "b68e8820830942bea3bf93c232cf958b",
+              "job_id": "cd399517453a4748997fe3e9dbc2de52",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "09e705dc1d304cd0b879c69c5989d446",
+              "job_id": "b8c869fe50a146b0bebf0ea289576586",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "4c2c005335c0428a8d6763ea5392f0bf",
+              "job_id": "10afbdd7342240b1a0d94ad8b07f93b3",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "76b3b7863e104721bcd545eaa77d42da",
+              "job_id": "003d13a8bb374fc4b5a244cfea1e1f80",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "179ba2b890214b3f8be797d180846dcc",
+              "job_id": "4967f2a122fc44ef9c8b1f19594ae7a1",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "d1af1c65929045ce8120a1b93ba1f5e2",
+              "job_id": "e45e386f681343489cbb813b3cb4cf80",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "03f1401e2f8f4bcab8d23759a92aadb7",
+              "job_id": "265ac19353e545e59fafd6fe2631a9da",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "4b41ef0a42c743148db2ea74218bd8b4",
+              "job_id": "86b32d7cb0b649e8b0857e87e03de788",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "4d1da24171bb4063bebe8bff489b3709",
+              "job_id": "45095cb525f04b06b3a4e3d232c53975",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "e680a7c215704d2b9822f5a2a907a996",
+              "job_id": "721567190b6f495da6eddd542b675dfe",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "657ce42761c349b99b0c00b74ba5be2e",
+              "job_id": "0426a7d8ced6430c8a2cf8b498d69ecb",
               "status": "succeeded"
             },
             {
               "error_code": null,
-              "job_id": "1c5bb62d2d164bf1849a37907014e5dc",
+              "job_id": "4ba1d090351745d4bdafc9014d6c7c6d",
               "status": "succeeded"
             }
           ]
         },
         "metric_contract": "gold matches document_id+document_version; not comparable as legacy chunk-level identity",
         "old_baseline_reference": {
-          "exists": false,
-          "metrics": null,
-          "path": "data/local/benchmarks/retrieval-acceptance-baseline-20260822.json",
-          "sha256": null
+          "exists": true,
+          "metrics": {
+            "acl_denied_case_count": 4,
+            "acl_filtered_recall_at_k": 1.0,
+            "acl_leak_case_count": 0,
+            "acl_leak_count": 0,
+            "acl_leak_rate": 0.0,
+            "acl_positive_case_count": 4,
+            "case_count": 47,
+            "correct_version_recall_at_k": 1.0,
+            "exact_term_case_count": 9,
+            "exact_term_recall_at_k": 1.0,
+            "mrr": 0.9861111111111112,
+            "ndcg_at_k": 0.9897480487103183,
+            "no_answer_accuracy": 1.0,
+            "no_answer_case_count": 11,
+            "positive_case_count": 36,
+            "recall_at_k": 1.0
+          },
+          "path": "data\\local\\benchmarks\\retrieval-acceptance-baseline-20260822.json",
+          "sha256": "sha256:3ce12d658b272b598aeff879e316dca9e885de57376a3bc74844bd6dcb76758e"
         },
-        "started_at": "2026-09-01T20:40:23.402675+00:00",
+        "started_at": "2026-09-02T05:32:00.261477+00:00",
         "status": "completed",
         "test": {
           "cases": [
@@ -1424,31 +1441,31 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 147.822,
+              "latency_ms": 184.57,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.6819466,
+                  "dense_score": 0.6819465,
                   "document_id": "vendor-management-standard",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.60656726,
+                  "dense_score": 0.6065674,
                   "document_id": "dev-release-process",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.53562146,
+                  "dense_score": 0.5356215,
                   "document_id": "procurement-approval-policy",
                   "version": 2
                 },
                 {
-                  "dense_score": 0.53528,
+                  "dense_score": 0.5352801,
                   "document_id": "dev-release-process",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.52954525,
+                  "dense_score": 0.5295453,
                   "document_id": "incident-response-standard",
                   "version": 1
                 }
@@ -1469,31 +1486,31 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 162.926,
+              "latency_ms": 171.769,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.68330574,
+                  "dense_score": 0.68330586,
                   "document_id": "data-classification-sharing",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.56645274,
+                  "dense_score": 0.5664529,
                   "document_id": "security-access-management",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.50659823,
+                  "dense_score": 0.50659835,
                   "document_id": "security-access-management",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.49654558,
+                  "dense_score": 0.49654567,
                   "document_id": "remote-work-policy",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.47992986,
+                  "dense_score": 0.47993004,
                   "document_id": "security-access-management",
                   "version": 1
                 }
@@ -1514,11 +1531,11 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 167.956,
+              "latency_ms": 155.916,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.67014045,
+                  "dense_score": 0.6701404,
                   "document_id": "incident-response-standard",
                   "version": 1
                 },
@@ -1528,12 +1545,12 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.55334944,
+                  "dense_score": 0.5533494,
                   "document_id": "dev-release-process",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5479768,
+                  "dense_score": 0.54797673,
                   "document_id": "dev-release-process",
                   "version": 1
                 },
@@ -1559,7 +1576,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 140.637,
+              "latency_ms": 154.131,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1573,17 +1590,17 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.4581122,
+                  "dense_score": 0.45811218,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.44362473,
+                  "dense_score": 0.44362468,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.43913275,
+                  "dense_score": 0.4391328,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 }
@@ -1604,7 +1621,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 133.221,
+              "latency_ms": 154.275,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1613,7 +1630,7 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.51892114,
+                  "dense_score": 0.51892096,
                   "document_id": "dev-release-process",
                   "version": 1
                 },
@@ -1623,7 +1640,7 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.48972642,
+                  "dense_score": 0.4897263,
                   "document_id": "dev-release-process",
                   "version": 1
                 },
@@ -1649,11 +1666,11 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 151.503,
+              "latency_ms": 156.037,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.68252623,
+                  "dense_score": 0.6825263,
                   "document_id": "procurement-approval-policy",
                   "version": 2
                 }
@@ -1669,11 +1686,11 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 160.14,
+              "latency_ms": 173.734,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.51161194,
+                  "dense_score": 0.511612,
                   "document_id": "product-service-level-agreement",
                   "version": 1
                 }
@@ -1689,16 +1706,16 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": null,
-              "latency_ms": 147.32,
+              "latency_ms": 172.009,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.56113267,
+                  "dense_score": 0.5611327,
                   "document_id": "security-access-management",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5260545,
+                  "dense_score": 0.52605456,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 },
@@ -1708,12 +1725,12 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.52367306,
+                  "dense_score": 0.5236731,
                   "document_id": "remote-work-policy",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5214876,
+                  "dense_score": 0.52148765,
                   "document_id": "security-access-management",
                   "version": 1
                 }
@@ -1729,7 +1746,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": "evidence_quantitative_fact_missing",
-              "latency_ms": 140.218,
+              "latency_ms": 172.404,
               "no_answer_correct": true,
               "returned_document_versions": [],
               "split": "test",
@@ -1743,7 +1760,7 @@
               "first_gold_rank": null,
               "gold_document_versions": [],
               "insufficiency_code": "evidence_anchor_missing",
-              "latency_ms": 150.564,
+              "latency_ms": 180.394,
               "no_answer_correct": true,
               "returned_document_versions": [],
               "split": "test",
@@ -1766,7 +1783,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 167.262,
+              "latency_ms": 169.956,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1775,22 +1792,22 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.6247833,
+                  "dense_score": 0.62478334,
                   "document_id": "data-classification-sharing",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5456405,
+                  "dense_score": 0.54564035,
                   "document_id": "dev-release-process",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5239031,
+                  "dense_score": 0.52390295,
                   "document_id": "procurement-approval-policy",
                   "version": 2
                 },
                 {
-                  "dense_score": 0.51289296,
+                  "dense_score": 0.51289284,
                   "document_id": "malicious-prompt-injection-sample",
                   "version": 1
                 }
@@ -1815,31 +1832,31 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 151.256,
+              "latency_ms": 202.868,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.67582464,
+                  "dense_score": 0.6758245,
                   "document_id": "employee-onboarding-process",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.6315672,
+                  "dense_score": 0.63156724,
                   "document_id": "security-access-management",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.61702025,
+                  "dense_score": 0.61702037,
                   "document_id": "security-access-management",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.587608,
+                  "dense_score": 0.58760804,
                   "document_id": "security-access-management",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5731636,
+                  "dense_score": 0.57316375,
                   "document_id": "remote-work-policy",
                   "version": 1
                 }
@@ -1860,16 +1877,16 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 128.878,
+              "latency_ms": 154.96,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
-                  "dense_score": 0.6729226,
+                  "dense_score": 0.6729227,
                   "document_id": "product-service-level-agreement",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.5638077,
+                  "dense_score": 0.5638078,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 },
@@ -1879,12 +1896,12 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.547899,
+                  "dense_score": 0.54789907,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 },
                 {
-                  "dense_score": 0.49712986,
+                  "dense_score": 0.4971299,
                   "document_id": "travel-reimbursement-policy",
                   "version": 1
                 }
@@ -1905,7 +1922,7 @@
                 }
               ],
               "insufficiency_code": null,
-              "latency_ms": 155.264,
+              "latency_ms": 172.517,
               "no_answer_correct": null,
               "returned_document_versions": [
                 {
@@ -1914,7 +1931,7 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.6237004,
+                  "dense_score": 0.62370014,
                   "document_id": "employee-onboarding-process",
                   "version": 1
                 },
@@ -1929,7 +1946,7 @@
                   "version": 1
                 },
                 {
-                  "dense_score": 0.58280617,
+                  "dense_score": 0.5828061,
                   "document_id": "hr-leave-policy",
                   "version": 2
                 }
@@ -1973,16 +1990,16 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 145.069,
+                      "latency_ms": 161.136,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.62971425,
+                          "dense_score": 0.62971437,
                           "document_id": "incident-response-standard",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5534274,
+                          "dense_score": 0.5534275,
                           "document_id": "dev-release-process",
                           "version": 1
                         },
@@ -1992,12 +2009,12 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.501525,
+                          "dense_score": 0.50152504,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.476516,
+                          "dense_score": 0.4765161,
                           "document_id": "security-access-management",
                           "version": 1
                         }
@@ -2018,21 +2035,21 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 155.11,
+                      "latency_ms": 151.966,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6989522,
+                          "dense_score": 0.69895196,
                           "document_id": "employee-onboarding-process",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.56486255,
+                          "dense_score": 0.5648625,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5474727,
+                          "dense_score": 0.5474728,
                           "document_id": "security-access-management",
                           "version": 1
                         },
@@ -2063,11 +2080,11 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 162.022,
+                      "latency_ms": 160.102,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6983422,
+                          "dense_score": 0.69834214,
                           "document_id": "product-service-level-agreement",
                           "version": 1
                         }
@@ -2088,31 +2105,31 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 126.051,
+                      "latency_ms": 135.567,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7902059,
+                          "dense_score": 0.79020596,
                           "document_id": "remote-work-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.60043794,
+                          "dense_score": 0.6004379,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.54109967,
+                          "dense_score": 0.54109955,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.52287596,
+                          "dense_score": 0.5228759,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.4726424,
+                          "dense_score": 0.47264242,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         }
@@ -2128,11 +2145,11 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 149.349,
+                      "latency_ms": 160.53,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.5361179,
+                          "dense_score": 0.5361178,
                           "document_id": "employee-onboarding-process",
                           "version": 1
                         },
@@ -2152,7 +2169,7 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.48203862,
+                          "dense_score": 0.48203856,
                           "document_id": "hr-leave-policy",
                           "version": 2
                         }
@@ -2173,26 +2190,26 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 139.597,
+                      "latency_ms": 157.092,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7255836,
+                          "dense_score": 0.7255837,
                           "document_id": "data-classification-sharing",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.6403942,
+                          "dense_score": 0.64039433,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.58138484,
+                          "dense_score": 0.58138466,
                           "document_id": "dev-release-process",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5812701,
+                          "dense_score": 0.58127016,
                           "document_id": "security-access-management",
                           "version": 1
                         },
@@ -2213,7 +2230,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 155.549,
+                      "latency_ms": 182.158,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -2227,11 +2244,11 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 205.1,
+                      "latency_ms": 172.372,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.5564738,
+                          "dense_score": 0.55647373,
                           "document_id": "procurement-approval-policy",
                           "version": 2
                         }
@@ -2271,16 +2288,16 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 132.46,
+                      "latency_ms": 167.672,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.62971425,
+                          "dense_score": 0.62971437,
                           "document_id": "incident-response-standard",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5534274,
+                          "dense_score": 0.5534275,
                           "document_id": "dev-release-process",
                           "version": 1
                         },
@@ -2290,12 +2307,12 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.501525,
+                          "dense_score": 0.50152504,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.476516,
+                          "dense_score": 0.4765161,
                           "document_id": "security-access-management",
                           "version": 1
                         }
@@ -2316,21 +2333,21 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 133.721,
+                      "latency_ms": 167.719,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6989522,
+                          "dense_score": 0.69895196,
                           "document_id": "employee-onboarding-process",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.56486255,
+                          "dense_score": 0.5648625,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5474727,
+                          "dense_score": 0.5474728,
                           "document_id": "security-access-management",
                           "version": 1
                         },
@@ -2361,11 +2378,11 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 143.692,
+                      "latency_ms": 171.714,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6983422,
+                          "dense_score": 0.69834214,
                           "document_id": "product-service-level-agreement",
                           "version": 1
                         }
@@ -2386,31 +2403,31 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 118.547,
+                      "latency_ms": 136.406,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7902059,
+                          "dense_score": 0.79020596,
                           "document_id": "remote-work-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.60043794,
+                          "dense_score": 0.6004379,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.54109967,
+                          "dense_score": 0.54109955,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.52287596,
+                          "dense_score": 0.5228759,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.4726424,
+                          "dense_score": 0.47264242,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         }
@@ -2426,11 +2443,11 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 144.032,
+                      "latency_ms": 183.092,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.5361179,
+                          "dense_score": 0.5361178,
                           "document_id": "employee-onboarding-process",
                           "version": 1
                         },
@@ -2450,7 +2467,7 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.48203862,
+                          "dense_score": 0.48203856,
                           "document_id": "hr-leave-policy",
                           "version": 2
                         }
@@ -2471,26 +2488,26 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 132.007,
+                      "latency_ms": 152.101,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7255836,
+                          "dense_score": 0.7255837,
                           "document_id": "data-classification-sharing",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.6403942,
+                          "dense_score": 0.64039433,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.58138484,
+                          "dense_score": 0.58138466,
                           "document_id": "dev-release-process",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5812701,
+                          "dense_score": 0.58127016,
                           "document_id": "security-access-management",
                           "version": 1
                         },
@@ -2511,7 +2528,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 149.696,
+                      "latency_ms": 170.656,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -2525,11 +2542,11 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 120.806,
+                      "latency_ms": 157.851,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.5564738,
+                          "dense_score": 0.55647373,
                           "document_id": "procurement-approval-policy",
                           "version": 2
                         }
@@ -2569,16 +2586,16 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 132.424,
+                      "latency_ms": 155.871,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.62971425,
+                          "dense_score": 0.62971437,
                           "document_id": "incident-response-standard",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5534274,
+                          "dense_score": 0.5534275,
                           "document_id": "dev-release-process",
                           "version": 1
                         },
@@ -2588,12 +2605,12 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.501525,
+                          "dense_score": 0.50152504,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.476516,
+                          "dense_score": 0.4765161,
                           "document_id": "security-access-management",
                           "version": 1
                         }
@@ -2614,21 +2631,21 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 127.624,
+                      "latency_ms": 168.568,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6989522,
+                          "dense_score": 0.69895196,
                           "document_id": "employee-onboarding-process",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.56486255,
+                          "dense_score": 0.5648625,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5474727,
+                          "dense_score": 0.5474728,
                           "document_id": "security-access-management",
                           "version": 1
                         },
@@ -2659,11 +2676,11 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 157.344,
+                      "latency_ms": 183.586,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6983422,
+                          "dense_score": 0.69834214,
                           "document_id": "product-service-level-agreement",
                           "version": 1
                         }
@@ -2684,31 +2701,31 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 125.662,
+                      "latency_ms": 139.481,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7902059,
+                          "dense_score": 0.79020596,
                           "document_id": "remote-work-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.60043794,
+                          "dense_score": 0.6004379,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.54109967,
+                          "dense_score": 0.54109955,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.52287596,
+                          "dense_score": 0.5228759,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.4726424,
+                          "dense_score": 0.47264242,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         }
@@ -2724,11 +2741,11 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 147.314,
+                      "latency_ms": 172.047,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.5361179,
+                          "dense_score": 0.5361178,
                           "document_id": "employee-onboarding-process",
                           "version": 1
                         },
@@ -2748,7 +2765,7 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.48203862,
+                          "dense_score": 0.48203856,
                           "document_id": "hr-leave-policy",
                           "version": 2
                         }
@@ -2769,26 +2786,26 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 131.358,
+                      "latency_ms": 167.721,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7255836,
+                          "dense_score": 0.7255837,
                           "document_id": "data-classification-sharing",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.6403942,
+                          "dense_score": 0.64039433,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.58138484,
+                          "dense_score": 0.58138466,
                           "document_id": "dev-release-process",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5812701,
+                          "dense_score": 0.58127016,
                           "document_id": "security-access-management",
                           "version": 1
                         },
@@ -2809,7 +2826,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 150.354,
+                      "latency_ms": 153.787,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -2823,11 +2840,11 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 132.282,
+                      "latency_ms": 155.251,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.5564738,
+                          "dense_score": 0.55647373,
                           "document_id": "procurement-approval-policy",
                           "version": 2
                         }
@@ -2867,16 +2884,16 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 134.269,
+                      "latency_ms": 142.757,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.62971425,
+                          "dense_score": 0.62971437,
                           "document_id": "incident-response-standard",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5534274,
+                          "dense_score": 0.5534275,
                           "document_id": "dev-release-process",
                           "version": 1
                         },
@@ -2886,12 +2903,12 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.501525,
+                          "dense_score": 0.50152504,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.476516,
+                          "dense_score": 0.4765161,
                           "document_id": "security-access-management",
                           "version": 1
                         }
@@ -2912,21 +2929,21 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 138.079,
+                      "latency_ms": 171.269,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6989522,
+                          "dense_score": 0.69895196,
                           "document_id": "employee-onboarding-process",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.56486255,
+                          "dense_score": 0.5648625,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5474727,
+                          "dense_score": 0.5474728,
                           "document_id": "security-access-management",
                           "version": 1
                         },
@@ -2957,11 +2974,11 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 150.154,
+                      "latency_ms": 165.918,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6983422,
+                          "dense_score": 0.69834214,
                           "document_id": "product-service-level-agreement",
                           "version": 1
                         }
@@ -2982,31 +2999,31 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 126.559,
+                      "latency_ms": 155.616,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7902059,
+                          "dense_score": 0.79020596,
                           "document_id": "remote-work-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.60043794,
+                          "dense_score": 0.6004379,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.54109967,
+                          "dense_score": 0.54109955,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.52287596,
+                          "dense_score": 0.5228759,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.4726424,
+                          "dense_score": 0.47264242,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         }
@@ -3022,11 +3039,11 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 144.262,
+                      "latency_ms": 170.135,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.5361179,
+                          "dense_score": 0.5361178,
                           "document_id": "employee-onboarding-process",
                           "version": 1
                         },
@@ -3046,7 +3063,7 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.48203862,
+                          "dense_score": 0.48203856,
                           "document_id": "hr-leave-policy",
                           "version": 2
                         }
@@ -3067,26 +3084,26 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 139.917,
+                      "latency_ms": 138.089,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7255836,
+                          "dense_score": 0.7255837,
                           "document_id": "data-classification-sharing",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.6403942,
+                          "dense_score": 0.64039433,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.58138484,
+                          "dense_score": 0.58138466,
                           "document_id": "dev-release-process",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5812701,
+                          "dense_score": 0.58127016,
                           "document_id": "security-access-management",
                           "version": 1
                         },
@@ -3107,7 +3124,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 127.047,
+                      "latency_ms": 173.615,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3121,11 +3138,11 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 130.493,
+                      "latency_ms": 129.857,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.5564738,
+                          "dense_score": 0.55647373,
                           "document_id": "procurement-approval-policy",
                           "version": 2
                         }
@@ -3165,11 +3182,11 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 122.975,
+                      "latency_ms": 164.617,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.62971425,
+                          "dense_score": 0.62971437,
                           "document_id": "incident-response-standard",
                           "version": 1
                         }
@@ -3190,11 +3207,11 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 131.847,
+                      "latency_ms": 190.246,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6989522,
+                          "dense_score": 0.69895196,
                           "document_id": "employee-onboarding-process",
                           "version": 1
                         }
@@ -3215,11 +3232,11 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 146.646,
+                      "latency_ms": 178.97,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6983422,
+                          "dense_score": 0.69834214,
                           "document_id": "product-service-level-agreement",
                           "version": 1
                         }
@@ -3240,16 +3257,16 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 115.975,
+                      "latency_ms": 156.994,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7902059,
+                          "dense_score": 0.79020596,
                           "document_id": "remote-work-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.60043794,
+                          "dense_score": 0.6004379,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         }
@@ -3265,7 +3282,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 134.946,
+                      "latency_ms": 164.052,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3284,16 +3301,16 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 123.224,
+                      "latency_ms": 158.88,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7255836,
+                          "dense_score": 0.7255837,
                           "document_id": "data-classification-sharing",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.6403942,
+                          "dense_score": 0.64039433,
                           "document_id": "security-access-management",
                           "version": 1
                         }
@@ -3309,7 +3326,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 129.014,
+                      "latency_ms": 136.668,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3323,7 +3340,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 127.191,
+                      "latency_ms": 154.201,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3361,7 +3378,7 @@
                         }
                       ],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 127.743,
+                      "latency_ms": 169.099,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3380,7 +3397,7 @@
                         }
                       ],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 125.597,
+                      "latency_ms": 158.208,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3399,7 +3416,7 @@
                         }
                       ],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 143.759,
+                      "latency_ms": 187.515,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3418,7 +3435,7 @@
                         }
                       ],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 122.137,
+                      "latency_ms": 153.314,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3432,7 +3449,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 155.86,
+                      "latency_ms": 155.709,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3451,7 +3468,7 @@
                         }
                       ],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 126.505,
+                      "latency_ms": 137.978,
                       "no_answer_correct": null,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3465,7 +3482,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 137.435,
+                      "latency_ms": 172.759,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3479,7 +3496,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "no_candidates",
-                      "latency_ms": 129.527,
+                      "latency_ms": 138.874,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3522,21 +3539,21 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 136.473,
+                      "latency_ms": 167.008,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.62971425,
+                          "dense_score": 0.62971437,
                           "document_id": "incident-response-standard",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5534274,
+                          "dense_score": 0.5534275,
                           "document_id": "dev-release-process",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.501525,
+                          "dense_score": 0.50152504,
                           "document_id": "security-access-management",
                           "version": 1
                         },
@@ -3546,7 +3563,7 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.445057,
+                          "dense_score": 0.44505712,
                           "document_id": "dev-release-process",
                           "version": 1
                         }
@@ -3567,26 +3584,26 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 136.305,
+                      "latency_ms": 185.678,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6989522,
+                          "dense_score": 0.69895196,
                           "document_id": "employee-onboarding-process",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5474727,
+                          "dense_score": 0.5474728,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.56486255,
+                          "dense_score": 0.5648625,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5160814,
+                          "dense_score": 0.51608145,
                           "document_id": "remote-work-policy",
                           "version": 1
                         },
@@ -3612,11 +3629,11 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 149.902,
+                      "latency_ms": 183.321,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6983422,
+                          "dense_score": 0.69834214,
                           "document_id": "product-service-level-agreement",
                           "version": 1
                         }
@@ -3637,31 +3654,31 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 125.491,
+                      "latency_ms": 166.547,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7902059,
+                          "dense_score": 0.79020596,
                           "document_id": "remote-work-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.60043794,
+                          "dense_score": 0.6004379,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.54109967,
+                          "dense_score": 0.54109955,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.52287596,
+                          "dense_score": 0.5228759,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.4726424,
+                          "dense_score": 0.47264242,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         }
@@ -3677,7 +3694,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 139.661,
+                      "latency_ms": 164.418,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3686,7 +3703,7 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5361179,
+                          "dense_score": 0.5361178,
                           "document_id": "employee-onboarding-process",
                           "version": 1
                         },
@@ -3696,12 +3713,12 @@
                           "version": 2
                         },
                         {
-                          "dense_score": 0.48203862,
+                          "dense_score": 0.48203856,
                           "document_id": "hr-leave-policy",
                           "version": 2
                         },
                         {
-                          "dense_score": 0.45857745,
+                          "dense_score": 0.4585775,
                           "document_id": "security-access-management",
                           "version": 1
                         }
@@ -3722,11 +3739,11 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 139.514,
+                      "latency_ms": 177.175,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7255836,
+                          "dense_score": 0.7255837,
                           "document_id": "data-classification-sharing",
                           "version": 1
                         },
@@ -3736,12 +3753,12 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.6403942,
+                          "dense_score": 0.64039433,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.56063944,
+                          "dense_score": 0.5606394,
                           "document_id": "malicious-prompt-injection-sample",
                           "version": 1
                         },
@@ -3762,7 +3779,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 148.04,
+                      "latency_ms": 169.188,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -3776,11 +3793,11 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 133.013,
+                      "latency_ms": 168.536,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.5564738,
+                          "dense_score": 0.55647373,
                           "document_id": "procurement-approval-policy",
                           "version": 2
                         }
@@ -3820,21 +3837,21 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 132.814,
+                      "latency_ms": 159.711,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.62971425,
+                          "dense_score": 0.62971437,
                           "document_id": "incident-response-standard",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5534274,
+                          "dense_score": 0.5534275,
                           "document_id": "dev-release-process",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.501525,
+                          "dense_score": 0.50152504,
                           "document_id": "security-access-management",
                           "version": 1
                         },
@@ -3844,7 +3861,7 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.445057,
+                          "dense_score": 0.44505712,
                           "document_id": "dev-release-process",
                           "version": 1
                         }
@@ -3865,26 +3882,26 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 141.858,
+                      "latency_ms": 183.744,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6989522,
+                          "dense_score": 0.69895196,
                           "document_id": "employee-onboarding-process",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5474727,
+                          "dense_score": 0.5474728,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.56486255,
+                          "dense_score": 0.5648625,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5160814,
+                          "dense_score": 0.51608145,
                           "document_id": "remote-work-policy",
                           "version": 1
                         },
@@ -3910,11 +3927,11 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 150.194,
+                      "latency_ms": 204.679,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6983422,
+                          "dense_score": 0.69834214,
                           "document_id": "product-service-level-agreement",
                           "version": 1
                         }
@@ -3935,31 +3952,31 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 118.166,
+                      "latency_ms": 169.147,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7902059,
+                          "dense_score": 0.79020596,
                           "document_id": "remote-work-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.60043794,
+                          "dense_score": 0.6004379,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.54109967,
+                          "dense_score": 0.54109955,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.52287596,
+                          "dense_score": 0.5228759,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.4726424,
+                          "dense_score": 0.47264242,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         }
@@ -3975,7 +3992,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 142.556,
+                      "latency_ms": 187.918,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -3984,7 +4001,7 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5361179,
+                          "dense_score": 0.5361178,
                           "document_id": "employee-onboarding-process",
                           "version": 1
                         },
@@ -3994,12 +4011,12 @@
                           "version": 2
                         },
                         {
-                          "dense_score": 0.48203862,
+                          "dense_score": 0.48203856,
                           "document_id": "hr-leave-policy",
                           "version": 2
                         },
                         {
-                          "dense_score": 0.45857745,
+                          "dense_score": 0.4585775,
                           "document_id": "security-access-management",
                           "version": 1
                         }
@@ -4020,11 +4037,11 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 132.267,
+                      "latency_ms": 167.502,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7255836,
+                          "dense_score": 0.7255837,
                           "document_id": "data-classification-sharing",
                           "version": 1
                         },
@@ -4034,12 +4051,12 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.6403942,
+                          "dense_score": 0.64039433,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.56063944,
+                          "dense_score": 0.5606394,
                           "document_id": "malicious-prompt-injection-sample",
                           "version": 1
                         },
@@ -4060,7 +4077,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 138.841,
+                      "latency_ms": 171.547,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -4074,11 +4091,11 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 121.138,
+                      "latency_ms": 158.13,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.5564738,
+                          "dense_score": 0.55647373,
                           "document_id": "procurement-approval-policy",
                           "version": 2
                         }
@@ -4118,21 +4135,21 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 141.566,
+                      "latency_ms": 184.654,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.62971425,
+                          "dense_score": 0.62971437,
                           "document_id": "incident-response-standard",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5534274,
+                          "dense_score": 0.5534275,
                           "document_id": "dev-release-process",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.501525,
+                          "dense_score": 0.50152504,
                           "document_id": "security-access-management",
                           "version": 1
                         },
@@ -4142,7 +4159,7 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.445057,
+                          "dense_score": 0.44505712,
                           "document_id": "dev-release-process",
                           "version": 1
                         }
@@ -4163,26 +4180,26 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 148.547,
+                      "latency_ms": 158.995,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6989522,
+                          "dense_score": 0.69895196,
                           "document_id": "employee-onboarding-process",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5474727,
+                          "dense_score": 0.5474728,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.56486255,
+                          "dense_score": 0.5648625,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5160814,
+                          "dense_score": 0.51608145,
                           "document_id": "remote-work-policy",
                           "version": 1
                         },
@@ -4208,11 +4225,11 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 149.728,
+                      "latency_ms": 183.578,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6983422,
+                          "dense_score": 0.69834214,
                           "document_id": "product-service-level-agreement",
                           "version": 1
                         }
@@ -4233,31 +4250,31 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 127.021,
+                      "latency_ms": 155.021,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7902059,
+                          "dense_score": 0.79020596,
                           "document_id": "remote-work-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.60043794,
+                          "dense_score": 0.6004379,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.54109967,
+                          "dense_score": 0.54109955,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.52287596,
+                          "dense_score": 0.5228759,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.4726424,
+                          "dense_score": 0.47264242,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         }
@@ -4273,7 +4290,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 143.86,
+                      "latency_ms": 171.832,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4282,7 +4299,7 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5361179,
+                          "dense_score": 0.5361178,
                           "document_id": "employee-onboarding-process",
                           "version": 1
                         },
@@ -4292,12 +4309,12 @@
                           "version": 2
                         },
                         {
-                          "dense_score": 0.48203862,
+                          "dense_score": 0.48203856,
                           "document_id": "hr-leave-policy",
                           "version": 2
                         },
                         {
-                          "dense_score": 0.45857745,
+                          "dense_score": 0.4585775,
                           "document_id": "security-access-management",
                           "version": 1
                         }
@@ -4318,11 +4335,11 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 133.833,
+                      "latency_ms": 163.529,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7255836,
+                          "dense_score": 0.7255837,
                           "document_id": "data-classification-sharing",
                           "version": 1
                         },
@@ -4332,12 +4349,12 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.6403942,
+                          "dense_score": 0.64039433,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.56063944,
+                          "dense_score": 0.5606394,
                           "document_id": "malicious-prompt-injection-sample",
                           "version": 1
                         },
@@ -4358,7 +4375,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 133.702,
+                      "latency_ms": 174.249,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -4372,11 +4389,11 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 132.708,
+                      "latency_ms": 164.771,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.5564738,
+                          "dense_score": 0.55647373,
                           "document_id": "procurement-approval-policy",
                           "version": 2
                         }
@@ -4416,21 +4433,21 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 137.169,
+                      "latency_ms": 172.522,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.62971425,
+                          "dense_score": 0.62971437,
                           "document_id": "incident-response-standard",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5534274,
+                          "dense_score": 0.5534275,
                           "document_id": "dev-release-process",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.501525,
+                          "dense_score": 0.50152504,
                           "document_id": "security-access-management",
                           "version": 1
                         },
@@ -4440,7 +4457,7 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.445057,
+                          "dense_score": 0.44505712,
                           "document_id": "dev-release-process",
                           "version": 1
                         }
@@ -4461,26 +4478,26 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 129.106,
+                      "latency_ms": 160.059,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6989522,
+                          "dense_score": 0.69895196,
                           "document_id": "employee-onboarding-process",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5474727,
+                          "dense_score": 0.5474728,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.56486255,
+                          "dense_score": 0.5648625,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5160814,
+                          "dense_score": 0.51608145,
                           "document_id": "remote-work-policy",
                           "version": 1
                         },
@@ -4506,11 +4523,11 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 142.135,
+                      "latency_ms": 178.98,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6983422,
+                          "dense_score": 0.69834214,
                           "document_id": "product-service-level-agreement",
                           "version": 1
                         }
@@ -4531,31 +4548,31 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 122.272,
+                      "latency_ms": 172.911,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7902059,
+                          "dense_score": 0.79020596,
                           "document_id": "remote-work-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.60043794,
+                          "dense_score": 0.6004379,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.54109967,
+                          "dense_score": 0.54109955,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.52287596,
+                          "dense_score": 0.5228759,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.4726424,
+                          "dense_score": 0.47264242,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         }
@@ -4571,7 +4588,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 177.214,
+                      "latency_ms": 185.14,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4580,7 +4597,7 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.5361179,
+                          "dense_score": 0.5361178,
                           "document_id": "employee-onboarding-process",
                           "version": 1
                         },
@@ -4590,12 +4607,12 @@
                           "version": 2
                         },
                         {
-                          "dense_score": 0.48203862,
+                          "dense_score": 0.48203856,
                           "document_id": "hr-leave-policy",
                           "version": 2
                         },
                         {
-                          "dense_score": 0.45857745,
+                          "dense_score": 0.4585775,
                           "document_id": "security-access-management",
                           "version": 1
                         }
@@ -4616,11 +4633,11 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 139.918,
+                      "latency_ms": 173.101,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7255836,
+                          "dense_score": 0.7255837,
                           "document_id": "data-classification-sharing",
                           "version": 1
                         },
@@ -4630,12 +4647,12 @@
                           "version": 1
                         },
                         {
-                          "dense_score": 0.6403942,
+                          "dense_score": 0.64039433,
                           "document_id": "security-access-management",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.56063944,
+                          "dense_score": 0.5606394,
                           "document_id": "malicious-prompt-injection-sample",
                           "version": 1
                         },
@@ -4656,7 +4673,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 147.505,
+                      "latency_ms": 171.424,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -4670,11 +4687,11 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 135.783,
+                      "latency_ms": 169.894,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.5564738,
+                          "dense_score": 0.55647373,
                           "document_id": "procurement-approval-policy",
                           "version": 2
                         }
@@ -4714,11 +4731,11 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 239.0,
+                      "latency_ms": 169.887,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.62971425,
+                          "dense_score": 0.62971437,
                           "document_id": "incident-response-standard",
                           "version": 1
                         },
@@ -4759,11 +4776,11 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 161.427,
+                      "latency_ms": 193.585,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6989522,
+                          "dense_score": 0.69895196,
                           "document_id": "employee-onboarding-process",
                           "version": 1
                         },
@@ -4804,11 +4821,11 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 179.673,
+                      "latency_ms": 185.003,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.6983422,
+                          "dense_score": 0.69834214,
                           "document_id": "product-service-level-agreement",
                           "version": 1
                         }
@@ -4829,16 +4846,16 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 124.011,
+                      "latency_ms": 158.569,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7902059,
+                          "dense_score": 0.79020596,
                           "document_id": "remote-work-policy",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.60043794,
+                          "dense_score": 0.6004379,
                           "document_id": "travel-reimbursement-policy",
                           "version": 1
                         },
@@ -4869,7 +4886,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 158.314,
+                      "latency_ms": 173.334,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -4914,16 +4931,16 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 151.434,
+                      "latency_ms": 149.322,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
-                          "dense_score": 0.7255836,
+                          "dense_score": 0.7255837,
                           "document_id": "data-classification-sharing",
                           "version": 1
                         },
                         {
-                          "dense_score": 0.6403942,
+                          "dense_score": 0.64039433,
                           "document_id": "security-access-management",
                           "version": 1
                         },
@@ -4954,7 +4971,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 144.616,
+                      "latency_ms": 172.874,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -4968,7 +4985,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 134.36,
+                      "latency_ms": 160.378,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -5012,7 +5029,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 146.332,
+                      "latency_ms": 169.591,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -5057,7 +5074,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 159.925,
+                      "latency_ms": 172.152,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -5102,7 +5119,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 165.354,
+                      "latency_ms": 194.914,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -5127,7 +5144,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 133.396,
+                      "latency_ms": 160.004,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -5167,7 +5184,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 154.54,
+                      "latency_ms": 205.867,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -5212,7 +5229,7 @@
                         }
                       ],
                       "insufficiency_code": null,
-                      "latency_ms": 156.19,
+                      "latency_ms": 174.786,
                       "no_answer_correct": null,
                       "returned_document_versions": [
                         {
@@ -5252,7 +5269,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": "evidence_quantitative_fact_missing",
-                      "latency_ms": 164.618,
+                      "latency_ms": 172.949,
                       "no_answer_correct": true,
                       "returned_document_versions": [],
                       "split": "calibration",
@@ -5266,7 +5283,7 @@
                       "first_gold_rank": null,
                       "gold_document_versions": [],
                       "insufficiency_code": null,
-                      "latency_ms": 145.29,
+                      "latency_ms": 153.847,
                       "no_answer_correct": false,
                       "returned_document_versions": [
                         {
@@ -5313,14 +5330,14 @@
           "msgpack",
           "null"
         ],
-        "citation_count": 3,
-        "document_id": "m1-e2e-281321f403c4420eabe316cbfde017b5",
+        "citation_count": 5,
+        "document_id": "m1-e2e-48e8f3978eff459facb09f210db7e045",
         "document_version_endpoint": "/v1/documents/{document_id}/versions",
         "document_versions": 2,
         "execution_mode": "live_postgres_msgpack",
         "result_readable": true,
         "source_binding": {
-          "git_revision": "ed056ac08970493d9f3fbfcad72db34ec1cae37b",
+          "git_revision": "01f82638b225ba8851483f46d3a4ec89dcac1134",
           "worktree_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         },
         "status": "passed",
@@ -5334,7 +5351,7 @@
           "saver_package": "langgraph-checkpoint-postgres==3.1.2",
           "serializer": "JsonPlusSerializer"
         },
-        "task_id": "52f93ed5e6a643e983356f43546292b8",
+        "task_id": "389ba33ce9f74602bb626e6ab6ba225d",
         "tool_calls": 4,
         "tool_trace": [
           "list_document_versions",
@@ -5356,15 +5373,15 @@
           "status": "ready"
         },
         "binding": {
-          "approval_id": "abfb4acdee0c4cf9b243b05f87352a77",
+          "approval_id": "619e35ed028f4ff6b44df11c0d8d0326",
           "artifact_hash": "sha256:f0c94c2a291e9bfb092751c62f9528004640bfd35af940073e14a835ff37f7bf",
           "artifact_id": "00000000000000000000000000000042",
-          "checkpoint_id": "1f1a63de-500d-6b40-801a-e4b471131a0f",
-          "interrupt_id": "8175ffa3ef270b5365ec6fe7b20f6c50",
+          "checkpoint_id": "1f1a68f3-f666-66fe-801a-c6b6299bb4f7",
+          "interrupt_id": "13e6cecdbf7f0cba1162c2162eba591e",
           "result_artifact_id": "00000000000000000000000000000042",
-          "task_id": "3c79a906ea7e45a4beabf973ae824cb2",
-          "thread_id": "3c79a906ea7e45a4beabf973ae824cb2",
-          "tool_call_id": "5815c9045d7c4ce78d817a4b221a17e7"
+          "task_id": "c6682784f1e44ebe83177f054dfee830",
+          "thread_id": "c6682784f1e44ebe83177f054dfee830",
+          "tool_call_id": "15bd7c8c49dd481580bff9295c091d00"
         },
         "capability": "task-agent",
         "checkpoint_encodings": [
@@ -5411,7 +5428,7 @@
           "unknown_replay": 0
         },
         "source_binding": {
-          "git_revision": "ed056ac08970493d9f3fbfcad72db34ec1cae37b",
+          "git_revision": "01f82638b225ba8851483f46d3a4ec89dcac1134",
           "worktree_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         },
         "status": "passed",
@@ -5426,308 +5443,308 @@
         },
         "task_ledger": [
           {
-            "correlation_id": "28324f2987bb44d093cee143a6070f95",
+            "correlation_id": "a98f65a4130346f5b3cbde89777338da",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "007a571f73e84a938721baa3df4c4510",
+            "task_id": "e85d9e299c5949a581aa1f1597dd35ed",
             "tool_calls": 2
           },
           {
-            "correlation_id": "be95f3c6edfa48c88ddefea1d5264adf",
+            "correlation_id": "37b127d720654de881aa2259f46ef4b2",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "663881243220404fa88f1992ff766307",
+            "task_id": "11381c5ff52545f4b5f4041b4117cdc5",
             "tool_calls": 2
           },
           {
-            "correlation_id": "e3fcdc1ee12848159dbbf2fc03c543a5",
+            "correlation_id": "2ce6ae1d1b324e21a0193d8fd8e3de66",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "5e6cc1f291834b7e9aa9cd1b343ed125",
+            "task_id": "8b3e60530b59488c8e126e4799606afb",
             "tool_calls": 2
           },
           {
-            "correlation_id": "a1e29fac5c174f3f8de43ef81e41e1de",
+            "correlation_id": "33f92465f59f40e2ad640eff663c4253",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "888e213e2edd41428a8669e694c401be",
+            "task_id": "9768d0c189084bbda13ea8337503e984",
             "tool_calls": 2
           },
           {
-            "correlation_id": "bf97c00ef23945e48642d5f15081bd00",
+            "correlation_id": "7cbb5edee36a438d9a52afddf7139d4d",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "0140e30320cc41e2a1b3414037bbb2a6",
+            "task_id": "66ab1169ec8845fb9ac4ba28bef6a69f",
             "tool_calls": 2
           },
           {
-            "correlation_id": "1a6c2bce23914f0caf35eb6f0cd9f73a",
+            "correlation_id": "795ffd2c15304cb0b4a877053258f0c5",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "2fa926e545b3474c869bc15fa0387948",
+            "task_id": "4bab6e3300b74d1dadfe2f5d0ab07fb5",
             "tool_calls": 2
           },
           {
-            "correlation_id": "8445bfa75a8c48afb1b35ff051deb4e2",
+            "correlation_id": "063c65fe393c4dd39d0fbfadf34cc10f",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "98f177cf1a404839ad155dcdd0d3c2ed",
+            "task_id": "7c4180ea19e449a2b51e70ca2111c6d3",
             "tool_calls": 2
           },
           {
-            "correlation_id": "fc7784f2ea1f4c3281ad3e5acf314771",
+            "correlation_id": "bbc99eac9dd041cb8a47a655fb1df81b",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "962cc3fadebc469aa6ee849417938506",
+            "task_id": "ad7afefb0e614266887b552cfbe798d6",
             "tool_calls": 2
           },
           {
-            "correlation_id": "415203945bda451b91da037dcf2f1b01",
+            "correlation_id": "97361f018ef7485ba9342d22046033e4",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "52a65fdd9e7e494e8c601473d04bf8c2",
+            "task_id": "59884987db6743bfb5eaf1432a850ec0",
             "tool_calls": 2
           },
           {
-            "correlation_id": "49c24e106bc34dd6ab165c5cecd99d29",
+            "correlation_id": "4ccfff5f2c81409389c6973a99cbe714",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "45735aad928b4a8abb0ef7ffb6a64011",
+            "task_id": "09b876eee2144244a5f3ad0a1b004d2e",
             "tool_calls": 2
           },
           {
-            "correlation_id": "d051f98deead4cd1a15c32b1339fdba1",
+            "correlation_id": "00d92b5f3998414fb333d44b45ab0c1d",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "0254bd485df7450eaf55e73cbcd794fd",
+            "task_id": "119f68ef5c19489ea28404850feb6a4a",
             "tool_calls": 2
           },
           {
-            "correlation_id": "a8aa7f21e06b4e9d81a312e74a372daf",
+            "correlation_id": "c9a0157299d642bd8d67d4413e633425",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "c30dd328ca674810983043dbe2fa3e0f",
+            "task_id": "57066e7aeddc4ccc96b433199e4645af",
             "tool_calls": 2
           },
           {
-            "correlation_id": "4f49ba498ab54773980a6e1ff8e402e4",
+            "correlation_id": "85d19df494c249da80884901248280a3",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "6e73ea70201547ae961481ff2a37ce65",
+            "task_id": "27a6ec29e2314c6ab0194deb187d8d69",
             "tool_calls": 2
           },
           {
-            "correlation_id": "705a275702144d538079031553376dba",
+            "correlation_id": "286f33b117b8456a854569f442597ccc",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "448a5e35c4844331aa24df3756e66d31",
+            "task_id": "58566b577cda4506908856a82d73d29e",
             "tool_calls": 2
           },
           {
-            "correlation_id": "9a1c2aefd5864c1fb4a7eec3ed71132c",
+            "correlation_id": "61ec9f4e9ce149deb483939e7e50e6eb",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "5057a747443c469ea5d50ce3c384e5fe",
+            "task_id": "1a41a896c8f34f53928422eba2720448",
             "tool_calls": 2
           },
           {
-            "correlation_id": "f62ab096cdc541868b22dcdbe23b5189",
+            "correlation_id": "bc79d34fd81d4710bd0b309bf5566f7f",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "59c018f877e745be941e1b8ded10b724",
+            "task_id": "17247b9625aa41b4b33ed7fcecf8fdb9",
             "tool_calls": 2
           },
           {
-            "correlation_id": "2668fdb3d9d741d0a59ecb9cfdc9644d",
+            "correlation_id": "c2f168dd3c3d4ac299cfc393df0a82d7",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "f42df7b3274c47feb079f419b0c5c616",
+            "task_id": "b3ef57b6ca084114bc62957d3e56b6d7",
             "tool_calls": 2
           },
           {
-            "correlation_id": "2a46fc0fd23c4f31a6d1aee64b4c6121",
+            "correlation_id": "2663329683b243f9a6041538ebee8565",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "26da5636d5d448cf996b70e9ea0d1772",
+            "task_id": "ee1bc539068147f991cea2cd7c084798",
             "tool_calls": 2
           },
           {
-            "correlation_id": "258142c0fbef491a88810d9262fefec2",
+            "correlation_id": "62a528c8193f4535951d844045ecbf99",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "427c486fa2cf4e9486046abf99196766",
+            "task_id": "606042c18e5f41c69a877e81c94acd49",
             "tool_calls": 2
           },
           {
-            "correlation_id": "2744749ad7134c8cb911b072e5d05aa3",
+            "correlation_id": "bf064bc5c7534aee97ff72218176c6d0",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "1639fdb889b44f8091378330d6f0756d",
+            "task_id": "948ecedfced548e19b5e3488c23eb0b1",
             "tool_calls": 2
           },
           {
-            "correlation_id": "ff13769f6fc94bfb95199939a92dce4d",
+            "correlation_id": "7941d14aba75409c91a4203da32b935a",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "425982f5930f4d749862ffb7e12d7812",
+            "task_id": "459f3c0f949544399c265fb934f47d2d",
             "tool_calls": 2
           },
           {
-            "correlation_id": "6ce01896ba95416792252717303dd68b",
+            "correlation_id": "9ca0d24c6bf14eea88b9d292f7ed8c60",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "a2c3166f832f4177956d532ae4926e4d",
+            "task_id": "9aee913eee604a22a24a2fb32a81f42e",
             "tool_calls": 2
           },
           {
-            "correlation_id": "12ad5a24acac41b8b3248f9f8233e1a4",
+            "correlation_id": "2fa37a31e2254d499c01238b6775ee22",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "79ef33b837de4d32be6b4a6a00ec2e49",
+            "task_id": "dfd23ab7b6dd45ce9a184a4e36d12319",
             "tool_calls": 2
           },
           {
-            "correlation_id": "55f1ec9f67034996b3e91dd715b033aa",
+            "correlation_id": "3e353adecb4741f598a8e5a3bf6892d9",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "9fbc81c2414546c281ecb87b78d0aefd",
+            "task_id": "4eac7b9176634bb08c7972e35b739e6a",
             "tool_calls": 2
           },
           {
-            "correlation_id": "b1ca1327a99c47568e64d783d369c113",
+            "correlation_id": "6f51dd557d894362bbda6f759bd13d42",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "0ec90f01df0d45fc8ebba89b1339658e",
+            "task_id": "a2e27850373c4cde8a63023be1edb341",
             "tool_calls": 2
           },
           {
-            "correlation_id": "29bdd783788e4cbb87a7ca6f4713a5de",
+            "correlation_id": "82a7dff3993340dd8bcc1a58886f564c",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "8d7447e6f6b6472ea929d6550f323982",
+            "task_id": "b67dd312c76b484fa8c3318c8d37f406",
             "tool_calls": 2
           },
           {
-            "correlation_id": "233a7cc6187a4d17b88b6c55e760d205",
+            "correlation_id": "5e6bb4f3cd77418fb4559350b570367d",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "e162e410015d4eada93a703a3c19aed0",
+            "task_id": "f40e59c73e9d45cca0d71399c3b3ab6b",
             "tool_calls": 2
           },
           {
-            "correlation_id": "4b1dc888ef7043408e1a5d82ad7c646e",
+            "correlation_id": "29e3da16b19a4de6999bf949c7650d67",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "5734099e330546558e2080bc3eec5737",
+            "task_id": "fa8a5cef73b9463787897e0a8bb49b74",
             "tool_calls": 2
           },
           {
-            "correlation_id": "c99a7608168d4c8cb19f508224691a53",
+            "correlation_id": "46eba3f70e6245c4a9df47cfeedd8c9b",
             "error_code": null,
             "model_calls": 4,
             "status": "refused",
             "stop_reason": "approval_rejected",
-            "task_id": "5f6c39c0066c4b17817f0bdc9728a734",
+            "task_id": "7b194fdc1e3d4e9d872715d6e5329338",
             "tool_calls": 2
           },
           {
-            "correlation_id": "3c4c7e62ba0e45e492fc0e6e7c280b06",
+            "correlation_id": "e879da0ff93643ed8a1e152a66a7cc78",
             "error_code": null,
             "model_calls": 4,
             "status": "succeeded",
             "stop_reason": "completed",
-            "task_id": "3c79a906ea7e45a4beabf973ae824cb2",
+            "task_id": "c6682784f1e44ebe83177f054dfee830",
             "tool_calls": 3
           },
           {
-            "correlation_id": "524b2fdd2dd14f2fad8e1504802610f3",
+            "correlation_id": "a6b5bedf7afb4e5da6160386a5794702",
             "error_code": null,
             "model_calls": 2,
             "status": "refused",
             "stop_reason": "clarification_completed",
-            "task_id": "aa4e225757b445239e05947775b890df",
+            "task_id": "94c258c3bfc349b684aaeb9a49485f0b",
             "tool_calls": 0
           }
         ],
         "terminal_binding": {
           "approval": {
-            "approval_id": "abfb4acdee0c4cf9b243b05f87352a77",
-            "checkpoint_action_id": "3c79a906ea7e45a4beabf973ae824cb2-write",
+            "approval_id": "619e35ed028f4ff6b44df11c0d8d0326",
+            "checkpoint_action_id": "c6682784f1e44ebe83177f054dfee830-write",
             "status": "executed"
           },
           "artifact": {
             "artifact_id": "00000000000000000000000000000042",
             "content_hash": "sha256:f0c94c2a291e9bfb092751c62f9528004640bfd35af940073e14a835ff37f7bf",
             "status": "ready",
-            "tool_call_id": "5815c9045d7c4ce78d817a4b221a17e7"
+            "tool_call_id": "15bd7c8c49dd481580bff9295c091d00"
           },
           "task_result": {
             "artifact_id": "00000000000000000000000000000042",
             "result_kind": "controlled_action",
             "status": "succeeded",
             "stop_reason": "completed",
-            "task_id": "3c79a906ea7e45a4beabf973ae824cb2"
+            "task_id": "c6682784f1e44ebe83177f054dfee830"
           },
           "tool_call": {
-            "approval_id": "abfb4acdee0c4cf9b243b05f87352a77",
+            "approval_id": "619e35ed028f4ff6b44df11c0d8d0326",
             "status": "succeeded",
-            "tool_call_id": "5815c9045d7c4ce78d817a4b221a17e7"
+            "tool_call_id": "15bd7c8c49dd481580bff9295c091d00"
           }
         },
         "tool_exposure": {
@@ -5754,7 +5771,7 @@
     "status": "passed",
     "values": {
       "execution_mode": "live_postgres_msgpack",
-      "citation_count": 3,
+      "citation_count": 5,
       "strict_msgpack": {
         "allowed_msgpack_modules": [
           "rag_kb.agent.result.TaskResultCandidate",
@@ -5766,7 +5783,7 @@
         "serializer": "JsonPlusSerializer"
       },
       "source_binding": {
-        "git_revision": "ed056ac08970493d9f3fbfcad72db34ec1cae37b",
+        "git_revision": "01f82638b225ba8851483f46d3a4ec89dcac1134",
         "worktree_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       }
     }
@@ -5811,312 +5828,312 @@
       },
       "task_ledger": [
         {
-          "correlation_id": "28324f2987bb44d093cee143a6070f95",
+          "correlation_id": "a98f65a4130346f5b3cbde89777338da",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "007a571f73e84a938721baa3df4c4510",
+          "task_id": "e85d9e299c5949a581aa1f1597dd35ed",
           "tool_calls": 2
         },
         {
-          "correlation_id": "be95f3c6edfa48c88ddefea1d5264adf",
+          "correlation_id": "37b127d720654de881aa2259f46ef4b2",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "663881243220404fa88f1992ff766307",
+          "task_id": "11381c5ff52545f4b5f4041b4117cdc5",
           "tool_calls": 2
         },
         {
-          "correlation_id": "e3fcdc1ee12848159dbbf2fc03c543a5",
+          "correlation_id": "2ce6ae1d1b324e21a0193d8fd8e3de66",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "5e6cc1f291834b7e9aa9cd1b343ed125",
+          "task_id": "8b3e60530b59488c8e126e4799606afb",
           "tool_calls": 2
         },
         {
-          "correlation_id": "a1e29fac5c174f3f8de43ef81e41e1de",
+          "correlation_id": "33f92465f59f40e2ad640eff663c4253",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "888e213e2edd41428a8669e694c401be",
+          "task_id": "9768d0c189084bbda13ea8337503e984",
           "tool_calls": 2
         },
         {
-          "correlation_id": "bf97c00ef23945e48642d5f15081bd00",
+          "correlation_id": "7cbb5edee36a438d9a52afddf7139d4d",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "0140e30320cc41e2a1b3414037bbb2a6",
+          "task_id": "66ab1169ec8845fb9ac4ba28bef6a69f",
           "tool_calls": 2
         },
         {
-          "correlation_id": "1a6c2bce23914f0caf35eb6f0cd9f73a",
+          "correlation_id": "795ffd2c15304cb0b4a877053258f0c5",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "2fa926e545b3474c869bc15fa0387948",
+          "task_id": "4bab6e3300b74d1dadfe2f5d0ab07fb5",
           "tool_calls": 2
         },
         {
-          "correlation_id": "8445bfa75a8c48afb1b35ff051deb4e2",
+          "correlation_id": "063c65fe393c4dd39d0fbfadf34cc10f",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "98f177cf1a404839ad155dcdd0d3c2ed",
+          "task_id": "7c4180ea19e449a2b51e70ca2111c6d3",
           "tool_calls": 2
         },
         {
-          "correlation_id": "fc7784f2ea1f4c3281ad3e5acf314771",
+          "correlation_id": "bbc99eac9dd041cb8a47a655fb1df81b",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "962cc3fadebc469aa6ee849417938506",
+          "task_id": "ad7afefb0e614266887b552cfbe798d6",
           "tool_calls": 2
         },
         {
-          "correlation_id": "415203945bda451b91da037dcf2f1b01",
+          "correlation_id": "97361f018ef7485ba9342d22046033e4",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "52a65fdd9e7e494e8c601473d04bf8c2",
+          "task_id": "59884987db6743bfb5eaf1432a850ec0",
           "tool_calls": 2
         },
         {
-          "correlation_id": "49c24e106bc34dd6ab165c5cecd99d29",
+          "correlation_id": "4ccfff5f2c81409389c6973a99cbe714",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "45735aad928b4a8abb0ef7ffb6a64011",
+          "task_id": "09b876eee2144244a5f3ad0a1b004d2e",
           "tool_calls": 2
         },
         {
-          "correlation_id": "d051f98deead4cd1a15c32b1339fdba1",
+          "correlation_id": "00d92b5f3998414fb333d44b45ab0c1d",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "0254bd485df7450eaf55e73cbcd794fd",
+          "task_id": "119f68ef5c19489ea28404850feb6a4a",
           "tool_calls": 2
         },
         {
-          "correlation_id": "a8aa7f21e06b4e9d81a312e74a372daf",
+          "correlation_id": "c9a0157299d642bd8d67d4413e633425",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "c30dd328ca674810983043dbe2fa3e0f",
+          "task_id": "57066e7aeddc4ccc96b433199e4645af",
           "tool_calls": 2
         },
         {
-          "correlation_id": "4f49ba498ab54773980a6e1ff8e402e4",
+          "correlation_id": "85d19df494c249da80884901248280a3",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "6e73ea70201547ae961481ff2a37ce65",
+          "task_id": "27a6ec29e2314c6ab0194deb187d8d69",
           "tool_calls": 2
         },
         {
-          "correlation_id": "705a275702144d538079031553376dba",
+          "correlation_id": "286f33b117b8456a854569f442597ccc",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "448a5e35c4844331aa24df3756e66d31",
+          "task_id": "58566b577cda4506908856a82d73d29e",
           "tool_calls": 2
         },
         {
-          "correlation_id": "9a1c2aefd5864c1fb4a7eec3ed71132c",
+          "correlation_id": "61ec9f4e9ce149deb483939e7e50e6eb",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "5057a747443c469ea5d50ce3c384e5fe",
+          "task_id": "1a41a896c8f34f53928422eba2720448",
           "tool_calls": 2
         },
         {
-          "correlation_id": "f62ab096cdc541868b22dcdbe23b5189",
+          "correlation_id": "bc79d34fd81d4710bd0b309bf5566f7f",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "59c018f877e745be941e1b8ded10b724",
+          "task_id": "17247b9625aa41b4b33ed7fcecf8fdb9",
           "tool_calls": 2
         },
         {
-          "correlation_id": "2668fdb3d9d741d0a59ecb9cfdc9644d",
+          "correlation_id": "c2f168dd3c3d4ac299cfc393df0a82d7",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "f42df7b3274c47feb079f419b0c5c616",
+          "task_id": "b3ef57b6ca084114bc62957d3e56b6d7",
           "tool_calls": 2
         },
         {
-          "correlation_id": "2a46fc0fd23c4f31a6d1aee64b4c6121",
+          "correlation_id": "2663329683b243f9a6041538ebee8565",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "26da5636d5d448cf996b70e9ea0d1772",
+          "task_id": "ee1bc539068147f991cea2cd7c084798",
           "tool_calls": 2
         },
         {
-          "correlation_id": "258142c0fbef491a88810d9262fefec2",
+          "correlation_id": "62a528c8193f4535951d844045ecbf99",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "427c486fa2cf4e9486046abf99196766",
+          "task_id": "606042c18e5f41c69a877e81c94acd49",
           "tool_calls": 2
         },
         {
-          "correlation_id": "2744749ad7134c8cb911b072e5d05aa3",
+          "correlation_id": "bf064bc5c7534aee97ff72218176c6d0",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "1639fdb889b44f8091378330d6f0756d",
+          "task_id": "948ecedfced548e19b5e3488c23eb0b1",
           "tool_calls": 2
         },
         {
-          "correlation_id": "ff13769f6fc94bfb95199939a92dce4d",
+          "correlation_id": "7941d14aba75409c91a4203da32b935a",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "425982f5930f4d749862ffb7e12d7812",
+          "task_id": "459f3c0f949544399c265fb934f47d2d",
           "tool_calls": 2
         },
         {
-          "correlation_id": "6ce01896ba95416792252717303dd68b",
+          "correlation_id": "9ca0d24c6bf14eea88b9d292f7ed8c60",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "a2c3166f832f4177956d532ae4926e4d",
+          "task_id": "9aee913eee604a22a24a2fb32a81f42e",
           "tool_calls": 2
         },
         {
-          "correlation_id": "12ad5a24acac41b8b3248f9f8233e1a4",
+          "correlation_id": "2fa37a31e2254d499c01238b6775ee22",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "79ef33b837de4d32be6b4a6a00ec2e49",
+          "task_id": "dfd23ab7b6dd45ce9a184a4e36d12319",
           "tool_calls": 2
         },
         {
-          "correlation_id": "55f1ec9f67034996b3e91dd715b033aa",
+          "correlation_id": "3e353adecb4741f598a8e5a3bf6892d9",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "9fbc81c2414546c281ecb87b78d0aefd",
+          "task_id": "4eac7b9176634bb08c7972e35b739e6a",
           "tool_calls": 2
         },
         {
-          "correlation_id": "b1ca1327a99c47568e64d783d369c113",
+          "correlation_id": "6f51dd557d894362bbda6f759bd13d42",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "0ec90f01df0d45fc8ebba89b1339658e",
+          "task_id": "a2e27850373c4cde8a63023be1edb341",
           "tool_calls": 2
         },
         {
-          "correlation_id": "29bdd783788e4cbb87a7ca6f4713a5de",
+          "correlation_id": "82a7dff3993340dd8bcc1a58886f564c",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "8d7447e6f6b6472ea929d6550f323982",
+          "task_id": "b67dd312c76b484fa8c3318c8d37f406",
           "tool_calls": 2
         },
         {
-          "correlation_id": "233a7cc6187a4d17b88b6c55e760d205",
+          "correlation_id": "5e6bb4f3cd77418fb4559350b570367d",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "e162e410015d4eada93a703a3c19aed0",
+          "task_id": "f40e59c73e9d45cca0d71399c3b3ab6b",
           "tool_calls": 2
         },
         {
-          "correlation_id": "4b1dc888ef7043408e1a5d82ad7c646e",
+          "correlation_id": "29e3da16b19a4de6999bf949c7650d67",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "5734099e330546558e2080bc3eec5737",
+          "task_id": "fa8a5cef73b9463787897e0a8bb49b74",
           "tool_calls": 2
         },
         {
-          "correlation_id": "c99a7608168d4c8cb19f508224691a53",
+          "correlation_id": "46eba3f70e6245c4a9df47cfeedd8c9b",
           "error_code": null,
           "model_calls": 4,
           "status": "refused",
           "stop_reason": "approval_rejected",
-          "task_id": "5f6c39c0066c4b17817f0bdc9728a734",
+          "task_id": "7b194fdc1e3d4e9d872715d6e5329338",
           "tool_calls": 2
         },
         {
-          "correlation_id": "3c4c7e62ba0e45e492fc0e6e7c280b06",
+          "correlation_id": "e879da0ff93643ed8a1e152a66a7cc78",
           "error_code": null,
           "model_calls": 4,
           "status": "succeeded",
           "stop_reason": "completed",
-          "task_id": "3c79a906ea7e45a4beabf973ae824cb2",
+          "task_id": "c6682784f1e44ebe83177f054dfee830",
           "tool_calls": 3
         },
         {
-          "correlation_id": "524b2fdd2dd14f2fad8e1504802610f3",
+          "correlation_id": "a6b5bedf7afb4e5da6160386a5794702",
           "error_code": null,
           "model_calls": 2,
           "status": "refused",
           "stop_reason": "clarification_completed",
-          "task_id": "aa4e225757b445239e05947775b890df",
+          "task_id": "94c258c3bfc349b684aaeb9a49485f0b",
           "tool_calls": 0
         }
       ],
       "terminal_binding": {
         "approval": {
-          "approval_id": "abfb4acdee0c4cf9b243b05f87352a77",
-          "checkpoint_action_id": "3c79a906ea7e45a4beabf973ae824cb2-write",
+          "approval_id": "619e35ed028f4ff6b44df11c0d8d0326",
+          "checkpoint_action_id": "c6682784f1e44ebe83177f054dfee830-write",
           "status": "executed"
         },
         "artifact": {
           "artifact_id": "00000000000000000000000000000042",
           "content_hash": "sha256:f0c94c2a291e9bfb092751c62f9528004640bfd35af940073e14a835ff37f7bf",
           "status": "ready",
-          "tool_call_id": "5815c9045d7c4ce78d817a4b221a17e7"
+          "tool_call_id": "15bd7c8c49dd481580bff9295c091d00"
         },
         "task_result": {
           "artifact_id": "00000000000000000000000000000042",
           "result_kind": "controlled_action",
           "status": "succeeded",
           "stop_reason": "completed",
-          "task_id": "3c79a906ea7e45a4beabf973ae824cb2"
+          "task_id": "c6682784f1e44ebe83177f054dfee830"
         },
         "tool_call": {
-          "approval_id": "abfb4acdee0c4cf9b243b05f87352a77",
+          "approval_id": "619e35ed028f4ff6b44df11c0d8d0326",
           "status": "succeeded",
-          "tool_call_id": "5815c9045d7c4ce78d817a4b221a17e7"
+          "tool_call_id": "15bd7c8c49dd481580bff9295c091d00"
         }
       },
       "source_binding": {
-        "git_revision": "ed056ac08970493d9f3fbfcad72db34ec1cae37b",
+        "git_revision": "01f82638b225ba8851483f46d3a4ec89dcac1134",
         "worktree_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       }
     }
@@ -6140,49 +6157,49 @@
       "name": "code_binding",
       "status": "passed",
       "evidence": [
-        "ed056ac08970493d9f3fbfcad72db34ec1cae37b"
+        "01f82638b225ba8851483f46d3a4ec89dcac1134"
       ]
     },
     {
       "name": "dataset",
       "status": "passed",
       "evidence": [
-        "data/benchmarks/retrieval_acceptance_v2.yaml"
+        "data\\benchmarks\\retrieval_acceptance_v2.yaml"
       ]
     },
     {
       "name": "pytest",
       "status": "passed",
       "evidence": [
-        "data/local/acceptance/pytest-f1-20260902-4c7d.xml"
+        "data\\local\\acceptance\\01f8263-96c069b15e424b76b914e5b6411886e1\\pytest.xml"
       ]
     },
     {
       "name": "retrieval_quality",
       "status": "passed",
       "evidence": [
-        "data/local/benchmarks/enterprise-retrieval-f1-20260902-4c7d.json"
+        "data\\local\\acceptance\\01f8263-96c069b15e424b76b914e5b6411886e1\\retrieval.json"
       ]
     },
     {
       "name": "acl_leak_rate",
       "status": "passed",
       "evidence": [
-        "data/local/benchmarks/enterprise-retrieval-f1-20260902-4c7d.json"
+        "data\\local\\acceptance\\01f8263-96c069b15e424b76b914e5b6411886e1\\retrieval.json"
       ]
     },
     {
       "name": "m1_research_e2e",
       "status": "passed",
       "evidence": [
-        "docs/acceptance/m1-research-e2e.json"
+        "docs\\acceptance\\m1-research-e2e.json"
       ]
     },
     {
       "name": "m2_controlled_write_e2e",
       "status": "passed",
       "evidence": [
-        "docs/acceptance/m2-controlled-write-e2e.json"
+        "docs\\acceptance\\m2-controlled-write-e2e.json"
       ]
     },
     {
@@ -6197,14 +6214,14 @@
   "evidence_artifacts": [
     {
       "name": "pytest_junit",
-      "path": "data/local/acceptance/pytest-f1-20260902-4c7d.xml",
-      "sha256": "1f41af3e5af5981972839590d5b8f4c57ecb1dd2058e6596b7a693d3a994626e",
+      "path": "data\\local\\acceptance\\01f8263-96c069b15e424b76b914e5b6411886e1\\pytest.xml",
+      "sha256": "e1df39121f86dc5f92a80f5e4f54801bcb3e6aedd10d8a6d44a84a879a26232c",
       "status": "available"
     },
     {
       "name": "retrieval_report",
-      "path": "data/local/benchmarks/enterprise-retrieval-f1-20260902-4c7d.json",
-      "sha256": "07e2f92eb209764657ecea956ad729095843544a28cffcefc0abafa04846e2fe",
+      "path": "data\\local\\acceptance\\01f8263-96c069b15e424b76b914e5b6411886e1\\retrieval.json",
+      "sha256": "212caac441660ed391bfa8c2ff192ce31e46fb43ec04816c719e97236f6ead90",
       "status": "available"
     },
     {
@@ -6221,30 +6238,30 @@
     },
     {
       "name": "m1_research_e2e",
-      "path": "docs/acceptance/m1-research-e2e.json",
-      "sha256": "93e275677307011764b98f4fe61c0653a18667182c4f71bb0225d730186c3190",
+      "path": "docs\\acceptance\\m1-research-e2e.json",
+      "sha256": "6e15f76edc305a646b5988a6c26f5b148d4296c963e41cfade46d0ba19aaa76a",
       "status": "available"
     },
     {
       "name": "m2_controlled_write_e2e",
-      "path": "docs/acceptance/m2-controlled-write-e2e.json",
-      "sha256": "c8be572146a7018cd0fe60f0c279694f5c7c0dbd262e799a2b61afc4fa17a216",
+      "path": "docs\\acceptance\\m2-controlled-write-e2e.json",
+      "sha256": "dfc267cd14411aa7bfc269e0f51a4de3da7cdd6c78b0b461bc9852888a064885",
       "status": "available"
     },
     {
       "name": "dataset",
-      "path": "data/benchmarks/retrieval_acceptance_v2.yaml",
+      "path": "data\\benchmarks\\retrieval_acceptance_v2.yaml",
       "sha256": "49f74654f356c5a97cd7377b24618dbdcfb0393913069a2f4ba667869add06c2",
       "status": "available"
     },
     {
       "name": "config",
       "path": "pyproject.toml",
-      "sha256": "69e439e95c4414a7090710c1512f91db123bbe82d26c35255378b21c5c7313d7",
+      "sha256": "6015ddf9214bef9c55e8fde8f06a101457c296db8a85e76e9eb6f45862d54fe2",
       "status": "available"
     }
   ],
-  "report_hash": "f6fd28f9c4a5f1efa7f68f4e8180f4e546713606b3dc84426127ddbaa9691d4d",
+  "report_hash": "39f1b044054332ec5938b35218573f3bfd0d1d46c07909faa3cafd32408a9792",
   "verdict": {
     "status": "passed",
     "reason": "observed inputs only; missing metrics are not inferred"
