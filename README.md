@@ -58,7 +58,7 @@ docker compose up --build -d
 | M1 只读 Research Agent | 通过；4 次工具调用，3 条引用 |
 | M2 受控写入 | 通过；31 个任务，21 个场景 |
 
-数据来自机器报告 [docs/acceptance/latest.json](docs/acceptance/latest.json)，绑定代码版本 `ed056ac`；它是固定版本快照，不自动代表后续工作树已通过。发布前必须重新生成报告，并以 `verdict`、`gates`、`unverified` 和检索质量门为准。
+数据来自机器报告 [docs/acceptance/latest.json](docs/acceptance/latest.json)，当前绑定最近一次受验收的生产代码版本 `01f8263`。报告固化及后续纯文档或仓库维护提交可以拥有更新的 HEAD，但不会扩大该报告的验收范围；任何生产代码改动后都必须重新生成报告，并以 `verdict`、`gates`、`unverified` 和检索质量门为准。
 
 ## 三个关键技术取舍
 
@@ -68,7 +68,7 @@ docker compose up --build -d
 | Qdrant 作为带世代的授权投影 | 避免旧向量和越权结果进入答案 | 摄取需要构建、校验、切换和收敛 |
 | 固定工具集 + HITL + checkpoint | Agent 可恢复，写操作可审批、可追责 | 比无约束同步 Agent 延迟更高、流程更长 |
 
-详细边界见[架构说明](docs/architecture.md)、[威胁模型](docs/threat-model.md)和[迁移说明](docs/migration.md)。
+详细边界见[架构说明](docs/architecture.md)、[威胁模型](docs/threat-model.md)和[迁移说明](docs/migration.md)。项目从 RAG 到 Durable Agent 的收敛过程及当前技术边界见[项目演进摘要](docs/project-evolution.md)。
 
 ## Windows 启动
 

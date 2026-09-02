@@ -65,8 +65,8 @@ OTLP endpoint 保持为空。本结果衡量本地 instrumentation 开销，不�
 
 | 项目 | 命令 | 结果 |
 | --- | --- | --- |
-| benchmark 专项测试 | `D:\DevelopmentTools\Miniconda3\envs\rag-kb\python.exe -m pytest tests/test_benchmark_observability.py -q` | `15 passed in 6.28s`，退出码 `0` |
-| 编译检查 | `D:\DevelopmentTools\Miniconda3\envs\rag-kb\python.exe -m compileall -q scripts/benchmark_observability.py tests/test_benchmark_observability.py` | PASS，退出码 `0` |
+| benchmark 专项测试 | `python -m pytest tests/test_benchmark_observability.py -q` | `15 passed in 6.28s`，退出码 `0` |
+| 编译检查 | `python -m compileall -q scripts/benchmark_observability.py tests/test_benchmark_observability.py` | PASS，退出码 `0` |
 | 空白检查 | `git diff --check` | PASS，退出码 `0` |
 
 首次在文件系统沙箱内执行专项测试时，pytest 无权访问用户临时目录，产生 2 个 fixture setup error；这不是代码失败。允许访问 pytest 临时目录后使用同一命令重跑，15 项全部通过。该过程未采集正式性能数据。
@@ -76,7 +76,7 @@ OTLP endpoint 保持为空。本结果衡量本地 instrumentation 开销，不�
 命令：
 
 ```powershell
-& "D:\DevelopmentTools\Miniconda3\envs\rag-kb\python.exe" -m pytest -q
+python -m pytest -q
 ```
 
 结果：`485 passed, 43 skipped, 1 warning in 203.27s`，退出码 `0`，命令墙钟 `210.5s`。
@@ -88,7 +88,7 @@ OTLP endpoint 保持为空。本结果衡量本地 instrumentation 开销，不�
 完整命令：
 
 ```powershell
-& "D:\DevelopmentTools\Miniconda3\envs\rag-kb\python.exe" scripts/benchmark_observability.py `
+python scripts/benchmark_observability.py `
   --rounds 10 `
   --api-samples 180 `
   --rag-samples 180 `
@@ -192,7 +192,7 @@ RAG P99 继续仅作为诊断信息。全部原始样本均被保留，没有裁
 
 ## 与历史 FAIL 的关系
 
-旧快照 `docs/acceptance/m6-observability-performance-v0.1.0-20260830-081728.md` 记录 revision `966bcfd` 的独立三轮结果：RAG hierarchical CI 上界 `2.088%` 未满足 `<2%`，最终为 **FAIL**。旧快照已在 commit `df3616b` 中固化，内容未被覆盖或改写。
+历史 FAIL 记录 revision `966bcfd` 的独立三轮结果：RAG hierarchical CI 上界 `2.088%` 未满足 `<2%`，最终为 **FAIL**。该记录已在 Git 历史（commit `df3616b`）中固化，内容未被覆盖或改写。
 
 本报告使用预先提交的 `10×180`、10000 次 bootstrap 新协议生成独立证据；没有把新样本追加到旧数据，也没有用本结果抹去历史 FAIL。
 
