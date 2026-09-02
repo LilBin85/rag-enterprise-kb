@@ -187,6 +187,7 @@ Telemetry 工具模块采用白名单，而不是依赖后置黑名单。允许�
 service, component, operation, outcome, error_category, duration_ms,
 request_id, trace_id, span_id, run_id, task_mode, task_status,
 tool_name, tool_mode, worker_kind, queue_kind, phase,
+retrieval_consumer,
 candidate_count, context_token_estimate, input_tokens, output_tokens,
 total_tokens, model_name, provider
 ```
@@ -281,9 +282,9 @@ HTTP server span
 | `rag_kb_http_request_duration_seconds` | Histogram | `route,method` | HTTP middleware finally |
 | `rag_kb_knowledge_queries_total` | Counter | `outcome,reason` | `KnowledgeQueryService.query()` 退出 |
 | `rag_kb_knowledge_query_duration_seconds` | Histogram | `outcome` | 同步问答总耗时 |
-| `rag_kb_retrieval_stage_duration_seconds` | Histogram | `stage,outcome` | 授权、dense、sparse、融合、重排、复核、pack |
-| `rag_kb_retrieval_candidates` | Histogram | `stage` | dense、sparse、fused、revalidated、packed 候选数量 |
-| `rag_kb_retrieval_context_token_estimate` | Histogram | 无 | pack 后上下文估算 token，仅是估算值 |
+| `rag_kb_retrieval_stage_duration_seconds` | Histogram | `consumer,stage,outcome` | 授权、dense、sparse、融合、重排、复核、pack |
+| `rag_kb_retrieval_candidates` | Histogram | `consumer,stage` | dense、sparse、fused、revalidated、packed 候选数量 |
+| `rag_kb_retrieval_context_token_estimate` | Histogram | `consumer` | pack 后上下文估算 token，仅是估算值 |
 | `rag_kb_llm_calls_total` | Counter | `operation,provider,outcome` | 同步回答和 Agent 模型调用 |
 | `rag_kb_llm_call_duration_seconds` | Histogram | `operation,provider,outcome` | 同上 |
 | `rag_kb_llm_tokens_total` | Counter | `operation,provider,direction` | 供应商真实 usage，`direction` 为 input/output |
@@ -312,6 +313,8 @@ HTTP server span
 | `rag_kb_worker_capability_available` | Gauge | `worker_kind,capability,protocol` | task Worker 的活动 capability lease 快照 |
 
 所有 `worker_kind` 均由运行模式收敛到固定低基数集合 `task`、`ingestion`、`projection`，不能来自外部输入或实例 ID。
+
+所有 retrieval metric 与 span 的 `consumer`/`retrieval_consumer` 只允许固定枚举 `fast`、`durable`，由共享 `EnterpriseRetriever` 的生产工厂注入；不得用 query、task、tenant、user、文档、chunk 或请求 ID 区分检索消费者。
 
 ### 6.3 Histogram bucket
 
@@ -455,7 +458,7 @@ security.boundary_violated
 | HTTP | `web/app.py:create_app()` | route、method、status、duration、request/trace ID | 请求体、query string、header、响应正文 |
 | 身份 | `web/dependencies.py:resolve_auth_context()` | 认证结果类别、request ID | token、角色、attributes |
 | 问答 | `application/query_service.py:KnowledgeQueryService.query()` | outcome、reason、总时长、证据数量 | question、answer、citation 正文 |
-| 检索 | `application/enterprise_retriever.py:EnterpriseRetriever.search()` | 每阶段时长、候选数量、context token estimate | query、chunk、ACL principal、score 明细 |
+| 检索 | `application/enterprise_retriever.py:EnterpriseRetriever.search()` | 固定 `retrieval_consumer`、每阶段时长、候选数量、context token estimate | query、chunk、ACL principal、score 明细 |
 | 模型 | `answerer.py:DeepSeekAnswerModel.answer()` | provider/model、时长、usage、outcome | messages、context、output |
 | Agent | `application/task_worker.py:_run_claimed()` | mode、run ID、结果、时长、恢复类型 | goal、interrupt/resume 内容 |
 | checkpoint | `agent/checkpointer.py:put()/put_writes()` | outcome、时长、stale 类别 | checkpoint、pending write 内容 |

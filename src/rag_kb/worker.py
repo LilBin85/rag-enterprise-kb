@@ -32,13 +32,11 @@ from rag_kb.application.task_retention_service import TaskRetentionService
 from rag_kb.application.task_worker import TaskWorker
 from rag_kb.application.tool_execution_service import ToolExecutionService
 from rag_kb.application.upload_reconciler import UploadReservationReconciler
-from rag_kb.application.enterprise_retriever import EnterpriseRetriever
 from rag_kb.application.tool_registry import ToolRegistry
-from rag_kb.config import get_settings, resolve_retrieval_limits, task_budgets_from_settings
+from rag_kb.config import get_settings, task_budgets_from_settings
 from rag_kb.domain.tasks import TaskBudgets
 from rag_kb.embedder import BgeM3Embedder
 from rag_kb.infrastructure.database import build_database
-from rag_kb.infrastructure.database.acl_repository import DatabaseAuthorizationPort
 from rag_kb.infrastructure.database.approval_lifecycle import (
     DatabaseApprovalLifecycle,
 )
@@ -66,8 +64,8 @@ from rag_kb.infrastructure.database.projection_repository import (
 )
 from rag_kb.infrastructure.ingestion.local_document_parser import LocalDocumentParser
 from rag_kb.infrastructure.object_store import LocalObjectStore
+from rag_kb.infrastructure.retrieval.factory import build_enterprise_retriever
 from rag_kb.infrastructure.vectorstore.qdrant_document_index import QdrantDocumentIndex
-from rag_kb.infrastructure.vectorstore.qdrant_authorized_search import QdrantAuthorizedSearch
 from rag_kb.infrastructure.tools.factory import build_tool_registry
 from rag_kb.observability import (
     MetadataOnlyLlmCallback,
@@ -352,23 +350,7 @@ def build_task_worker(
     telemetry = current_observability()
     database = build_database(settings.database_url)
     objects = LocalObjectStore(settings.object_store_root)
-    embedder = BgeM3Embedder()
-    vectors = QdrantAuthorizedSearch(
-        QdrantClient(url=settings.qdrant_url),
-        embedder,
-        collection=settings.qdrant_v2_collection,
-    )
-    candidate_k, context_k = resolve_retrieval_limits(settings)
-    retriever = EnterpriseRetriever(
-        DatabaseAuthorizationPort(database),
-        vectors,
-        candidate_k=candidate_k,
-        context_k=context_k,
-        context_token_budget=settings.retrieval_context_token_budget,
-        rrf_k=settings.retrieval_rrf_k,
-        hybrid_enabled=settings.enable_hybrid_retrieval,
-        dense_score_threshold=settings.retrieval_score_threshold,
-    )
+    retriever = build_enterprise_retriever(settings, database, consumer="durable")
     registry: ToolRegistry = build_tool_registry(
         database=database,
         artifact_root=settings.object_store_root,

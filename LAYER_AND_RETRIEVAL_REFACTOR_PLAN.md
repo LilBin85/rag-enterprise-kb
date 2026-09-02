@@ -5,7 +5,7 @@
 > 适用仓库：`rag-enterprise-kb`
 > 前置完成项：API 已退出 TaskWorker 执行链；task、ingestion、projection 已拆为三个 Worker 模式
 > 本文范围：第 3 项“单向化 application/infrastructure 依赖并增加边界测试”；第 4 项“明确 Fast Path 与 Durable Path，统一 Retrieval Core”
-> 本轮实施范围：仅 L0、L1、L2、L3、L4、L5、L6、F1；R1、R2、R3 保持待执行且不在本轮改动。
+> 初始实施范围：L0、L1、L2、L3、L4、L5、L6、F1；R1、R2、R3 在后续本轮工作中完成，见第 7、8 章执行记录。
 
 ## 0. 结论先行
 
@@ -353,6 +353,14 @@ upload_reconciler
   - 确认 task Worker 仍只在 task 进程初始化 Agent 与检索运行时。
 - 验收：静态扫描证明 Web/worker 不再直接各自拼装 `EnterpriseRetriever`；非法 retrieval config 两条路径一致 fail-fast。
 
+#### R1 实施记录
+
+- 状态：已完成。
+- 实际改动文件：新增 `infrastructure/retrieval/{__init__,factory}.py`、`tests/test_retrieval_factory.py`；修改 Web/Worker 组合根、Worker runtime 测试与架构边界测试。
+- 架构决策：`build_enterprise_retriever(settings, database)` 是唯一生产装配点，先解析 retrieval limits，再创建 BGE、Qdrant search 与 ACL adapter；Web 在 `build_knowledge_query_service()` 内惰性导入工厂，保持 API 启动不导入 embedder/Agent/Worker。
+- 验证证据：`conda run -n rag-kb --no-capture-output python -m pytest -q tests/test_retrieval_factory.py tests/test_retriever_limits.py tests/test_worker_runtime.py tests/test_new_app_factory.py tests/test_architecture_boundaries.py` 通过（55 passed）；`conda run -n rag-kb --no-capture-output python -m compileall -q src tests` 与 `git diff --check` 通过。
+- 遗留风险：pytest 无法写入既有 `.pytest_cache`，产生 1 条权限 warning；未修改或清理该缓存。F1 隔离 PostgreSQL/Qdrant integration 已通过（65 passed）。
+
 ### R2：双路径契约与一致性测试
 
 - 复杂度：中等。
@@ -363,6 +371,14 @@ upload_reconciler
   - Durable 工具的 `limit` 只能截取 core 结果前缀，不能重新检索或改变排序；
   - 证明 Fast refusal 与 Durable ToolMessage 可以不同，但不能改变底层候选事实。
 - 验收：注入配置漂移或候选重排反例时测试失败。
+
+#### R2 实施记录
+
+- 状态：已完成。
+- 实际改动文件：新增 `tests/test_retrieval_path_conformance.py`。
+- 架构决策：一致性测试复用同一 `EnterpriseRetriever` 与 fake authorization/vector ports，分别注入 Fast Query 和 Durable `search_knowledge`；测试只比较共享 `RetrievalResult` 事实，保留各自 evidence 生命周期与响应语义。
+- 验证证据：`conda run -n rag-kb --no-capture-output python -m pytest -q tests/test_retrieval_path_conformance.py tests/test_enterprise_query_service.py tests/test_read_tool_adapters.py tests/test_enterprise_retriever_security.py tests/test_stage3_retrieval_pipeline.py` 通过（34 passed）。
+- 遗留风险：pytest 无法写入既有 `.pytest_cache`，产生 1 条权限 warning；未修改或清理该缓存。F1 隔离 PostgreSQL/Qdrant integration 已通过（65 passed）。
 
 ### L2：Fast Query 的持久化端口
 
@@ -508,6 +524,14 @@ upload_reconciler
   - 不手写未经机器报告支持的测试数字或提交哈希。
 - 验收：文档与路由、Worker 和 readiness 实际行为一致。
 
+#### R3 实施记录
+
+- 状态：已完成。
+- 实际改动文件：修改 `README.md`、`使用指南.md`、`docs/architecture.md`、`docs/observability-plan.md`、共享 Retrieval Core、生产 factory 与 observability 测试。
+- 架构决策：两个组合根通过同一 factory 传入固定 consumer（Fast=`fast`，Durable=`durable`）；共享 Core 将其写入 span/log，并作为三个 retrieval metrics 的低基数 label。consumer 不接受 query、task、tenant、user、文档或 chunk 值。
+- 验证证据：`conda run -n rag-kb --no-capture-output python -m pytest -q tests/test_retrieval_factory.py tests/test_retrieval_path_conformance.py tests/test_enterprise_retriever_security.py tests/test_worker_runtime.py tests/test_new_app_factory.py tests/test_architecture_boundaries.py tests/test_deployment_acceptance_static.py tests/test_observability.py tests/test_benchmark_observability.py` 通过（81 passed）；`conda run -n rag-kb --no-capture-output python -m compileall -q src tests` 与 `git diff --check` 通过。
+- 遗留风险：pytest 无法写入既有 `.pytest_cache`，产生 1 条权限 warning；未修改或清理该缓存。F1 隔离 PostgreSQL/Qdrant integration 已通过（65 passed）。
+
 ### F1：严格边界与最终回归
 
 - 复杂度：高。
@@ -530,21 +554,30 @@ upload_reconciler
 - Retrieval 证据：真实 BGE-M3/PostgreSQL/Qdrant benchmark 的 test split 为 Recall@5=`1.0`、MRR=`1.0`、no-answer accuracy=`1.0`、ACL leak rate=`0.0`；脚本自证随机 tenant、collection 与对象根清理完成。
 - 正式报告：`docs/acceptance/latest.json` 为 `passed`，绑定源码提交与 clean-worktree SHA，记录 588 项全量、检索、M1 与 M2 的机器证据。本轮未执行 R1/R2/R3。
 
+#### F1 本轮执行记录（2026-09-02）
+
+- 状态：真实 PostgreSQL/Qdrant 集成已完成；绑定本轮源码提交的正式报告仍未验证。
+- 静态门禁：架构边界测试通过；生产 `EnterpriseRetriever(...)` 仅在 `infrastructure/retrieval/factory.py` 构造，Web 与 task Worker 分别调用同一 factory，Web 不再直接创建 BGE/Qdrant/limits。
+- 本地验证：`conda run -n rag-kb --no-capture-output python -m pytest -q` 通过（548 passed, 45 skipped）；`conda run -n rag-kb --no-capture-output python -m pytest -q -m integration` 通过（20 passed, 45 skipped, 528 deselected）；`conda run -n rag-kb --no-capture-output python -m alembic heads` 输出 `20260831_0015 (head)`；`docker compose config --quiet`、`conda run -n rag-kb --no-capture-output python -m compileall -q src tests` 与 `git diff --check` 通过。
+- 真实集成：仅启动 Compose `postgres`、`qdrant`，不启动 API、Worker、`migrate` 或 `qdrant-init`。使用随机临时 PostgreSQL 角色、主库和空迁移库；主库迁移到 `20260831_0015` 后，`conda run -n rag-kb --no-capture-output python -m pytest -q -m integration` 为 `65 passed, 528 deselected, 1 warning`。Qdrant 仅使用测试随机 collection。
+- 清理与 warning：测试后已终止连接并删除两个临时数据库、临时角色与唯一 basetemp；复查无 `stage3_component_*`、`stage3_pipeline_*` 或 `projection_convergence_*` collection 残留。pytest 仍因既有 `.pytest_cache` ACL 产生 1 条权限 warning；未修改或清理历史 `.tmp`/`.pytest_cache`。
+- 报告限制：`docs/acceptance/latest.json` 保留为 `ed056ac` 历史基线，不能表示当前未提交工作树。未生成新报告，因为正式报告必须绑定包含本轮源码的 clean source commit，且真实 PostgreSQL/Qdrant、M1/M2 与检索 benchmark 证据尚未在本轮重跑。
+
 ## 8. 执行状态表
 
 | 节点 | 状态 | 主要产物 | 验证证据 | 遗留风险 |
 | --- | --- | --- | --- | --- |
-| L0 基线与棘轮 | 已完成 | `tests/test_architecture_boundaries.py` | AST 反例、35 项静态/API/Worker 测试、8 项 observability 测试、编译与 Compose 均通过 | 真实 PostgreSQL/Qdrant 回归待相关节点 |
-| L1 检索 DTO/端口 | 已完成 | `application.ports.retrieval` | 80 项检索/API/Worker/架构测试通过；真实集成 4 项因环境未配置跳过 | 真实 PostgreSQL/Qdrant 回归待可用环境 |
-| R1 统一生产工厂 | 待执行 | retrieval factory | - | - |
-| R2 双路径一致性 | 待执行 | conformance tests | - | - |
-| L2 Fast Query 持久化端口 | 已完成 | `KnowledgeQueryLifecyclePort` 与数据库 adapter | 78 项 Fast Query/API/ACL/Worker/架构测试通过；8 项 PostgreSQL 测试因环境未配置跳过 | 真实 PostgreSQL fencing/撤权回归待可用环境 |
-| L3 文档摄取投影边界 | 已完成 | document/indexing/object-store ports 与 `DatabaseDocumentLifecycle` | 171 项定向测试通过，4 项真实集成因环境跳过；编译、Compose、diff 通过 | 真实 PostgreSQL/Qdrant 回归待可用环境 |
-| L4 查询结果正文边界 | 已完成 | `application.ports.task_read` 与 `DatabaseTask*Reader` | 186 项定向测试通过，19 项真实 PostgreSQL 集成因环境跳过；编译、Compose、diff 通过 | L6 尚余 4 条 application→agent 依赖 |
-| L5 高风险任务事务边界 | 已完成 | retention/approval/tool/task worker ports | L5.4 已清零 application→infrastructure/SQLAlchemy；L6 后全量本地历史结果 542 passed、45 skipped | F1 最终回归已完成；R1/R2/R3 按本轮范围保持待执行 |
-| L6 Agent 小环收口 | 已完成 | `application.agent_contract` 与 agent shim/serde 双路径 allowlist | 全量本地 542 passed、45 项真实集成因环境跳过；编译、diff、serde round-trip 通过 | F1 最终回归已完成；R1/R2/R3 按本轮范围保持待执行 |
-| R3 文档与观测 | 待执行 | 路径选择说明 | - | - |
-| F1 最终回归 | 已完成 | 零 allowlist 与验收证据 | 静态门禁、27 项定向集、编译/diff、65 项 integration、588 项全量、真实 M1/M2 与 BGE-M3 检索 benchmark 均通过；`TaskWorker` 直接使用 LangGraph/LangChain 经决策允许 | R1/R2/R3 按本轮范围保持待执行 |
+| L0 基线与棘轮 | 已完成 | `tests/test_architecture_boundaries.py` | AST 反例、35 项静态/API/Worker 测试、8 项 observability 测试、编译与 Compose 均通过 | F1 真实集成已通过；正式报告待 clean source commit |
+| L1 检索 DTO/端口 | 已完成 | `application.ports.retrieval` | 80 项检索/API/Worker/架构测试通过；F1 PostgreSQL/Qdrant integration 65 passed | 正式报告待 clean source commit |
+| R1 统一生产工厂 | 已完成 | retrieval factory | 55 passed、编译与 diff 通过；F1 PostgreSQL/Qdrant integration 65 passed | `.pytest_cache` 权限 warning；正式报告待 clean source commit |
+| R2 双路径一致性 | 已完成 | conformance tests | 34 passed；F1 PostgreSQL/Qdrant integration 65 passed | `.pytest_cache` 权限 warning；正式报告待 clean source commit |
+| L2 Fast Query 持久化端口 | 已完成 | `KnowledgeQueryLifecyclePort` 与数据库 adapter | 78 项 Fast Query/API/ACL/Worker/架构测试通过；F1 PostgreSQL/Qdrant integration 65 passed | 正式报告待 clean source commit |
+| L3 文档摄取投影边界 | 已完成 | document/indexing/object-store ports 与 `DatabaseDocumentLifecycle` | 171 项定向测试通过；F1 PostgreSQL/Qdrant integration 65 passed；编译、Compose、diff 通过 | 正式报告待 clean source commit |
+| L4 查询结果正文边界 | 已完成 | `application.ports.task_read` 与 `DatabaseTask*Reader` | 186 项定向测试通过；F1 PostgreSQL/Qdrant integration 65 passed；编译、Compose、diff 通过 | 正式报告待 clean source commit |
+| L5 高风险任务事务边界 | 已完成 | retention/approval/tool/task worker ports | L5.4 已清零 application→infrastructure/SQLAlchemy；F1 PostgreSQL/Qdrant integration 65 passed | 正式报告待 clean source commit |
+| L6 Agent 小环收口 | 已完成 | `application.agent_contract` 与 agent shim/serde 双路径 allowlist | F1 PostgreSQL/Qdrant integration 65 passed；编译、diff、serde round-trip 通过 | 正式报告待 clean source commit |
+| R3 文档与观测 | 已完成 | 路径选择说明与 `fast|durable` telemetry | 81 passed、编译与 diff 通过；F1 PostgreSQL/Qdrant integration 65 passed | `.pytest_cache` 权限 warning；正式报告待 clean source commit |
+| F1 最终回归 | 真实集成完成，正式报告待提交 | 零 allowlist 与验收证据 | 当前工作树：548 passed、45 skipped；隔离 PostgreSQL/Qdrant integration 65 passed、528 deselected；迁移 head、Compose、编译、diff 通过 | `latest.json` 仍绑定历史提交；新报告须绑定包含本轮源码的 clean source commit |
 
 ## 9. 测试矩阵
 

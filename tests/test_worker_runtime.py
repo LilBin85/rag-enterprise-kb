@@ -72,17 +72,8 @@ def _patch_build_chain(monkeypatch, events: list[str], *, agent_build_error: Exc
 
     monkeypatch.setattr(worker_module, "build_database", lambda _url: object())
     monkeypatch.setattr(worker_module, "LocalObjectStore", lambda _root: object())
-    monkeypatch.setattr(worker_module, "BgeM3Embedder", lambda: object())
     monkeypatch.setattr(
-        worker_module,
-        "QdrantAuthorizedSearch",
-        lambda *_args, **_kwargs: object(),
-    )
-    monkeypatch.setattr(worker_module, "resolve_retrieval_limits", lambda _s: (5, 5))
-    monkeypatch.setattr(
-        worker_module,
-        "EnterpriseRetriever",
-        lambda *_args, **_kwargs: object(),
+        worker_module, "build_enterprise_retriever", lambda *_args, **_kwargs: object()
     )
     monkeypatch.setattr(
         worker_module,

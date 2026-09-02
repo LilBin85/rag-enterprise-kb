@@ -127,6 +127,15 @@ def _absolute_from_imports(path: Path) -> set[str]:
     }
 
 
+def _called_names(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+
 def test_architecture_boundary_violations_are_exactly_allowlisted() -> None:
     _assert_boundary_ratchet()
 
@@ -143,6 +152,24 @@ def test_retrieval_adapters_depend_on_stable_retrieval_contract() -> None:
         assert "rag_kb.application.ports.retrieval" in imports
         assert "rag_kb.application.enterprise_retriever" not in imports
         assert "rag_kb.application.retrieval_fusion" not in imports
+
+
+def test_retrieval_composition_roots_share_the_production_factory() -> None:
+    roots = ("web/dependencies.py", "worker.py")
+    for relative_path in roots:
+        path = SOURCE_ROOT / relative_path
+        assert "rag_kb.infrastructure.retrieval.factory" in _absolute_from_imports(path)
+        assert "build_enterprise_retriever" in _called_names(path)
+        assert "EnterpriseRetriever" not in _called_names(path)
+
+    factory_imports = _absolute_from_imports(
+        SOURCE_ROOT / "infrastructure/retrieval/factory.py"
+    )
+    assert "rag_kb.application.enterprise_retriever" in factory_imports
+    assert not any(
+        module == "rag_kb.worker" or module.startswith("rag_kb.agent.")
+        for module in factory_imports
+    )
 
 
 def test_fast_query_persistence_depends_on_stable_lifecycle_contract() -> None:

@@ -68,6 +68,7 @@ _SAFE_LOG_FIELDS = frozenset(
         "worker_kind",
         "queue_kind",
         "phase",
+        "retrieval_consumer",
         "candidate_count",
         "context_token_estimate",
         "input_tokens",
@@ -105,6 +106,7 @@ _KNOWLEDGE_REASONS = frozenset(
 _RETRIEVAL_STAGES = frozenset(
     {"authorization", "dense", "sparse", "fuse", "rerank", "revalidate", "pack"}
 )
+_RETRIEVAL_CONSUMERS = frozenset({"fast", "durable"})
 _INGESTION_JOB_PHASES = frozenset({"ingest", "publish", "cleanup"})
 _INGESTION_PHASES = frozenset({"parse", "index", "publish", "bind", "retire"})
 _INGESTION_OUTCOMES = frozenset(
@@ -596,19 +598,20 @@ class Observability:
         self._retrieval_duration = Histogram(
             "rag_kb_retrieval_stage_duration_seconds",
             "Retrieval stage duration in seconds.",
-            ("stage", "outcome"),
+            ("consumer", "stage", "outcome"),
             buckets=_LONG_DURATION_BUCKETS,
             registry=self.registry,
         )
         self._retrieval_candidates = Histogram(
             "rag_kb_retrieval_candidates",
             "Retrieval candidates by bounded stage.",
-            ("stage",),
+            ("consumer", "stage"),
             registry=self.registry,
         )
         self._retrieval_context_tokens = Histogram(
             "rag_kb_retrieval_context_token_estimate",
             "Estimated packed context tokens.",
+            ("consumer",),
             registry=self.registry,
         )
         self._llm_calls = Counter(
@@ -963,20 +966,27 @@ class Observability:
         self._knowledge_duration.labels(outcome=outcome).observe(duration_seconds)
 
     def record_retrieval_stage(
-        self, *, stage: str, outcome: str, duration_seconds: float
+        self, *, stage: str, outcome: str, duration_seconds: float, consumer: str
     ) -> None:
         if not self.metrics_enabled:
             return
         stage = stage if stage in _RETRIEVAL_STAGES else "authorization"
-        self._retrieval_duration.labels(stage=stage, outcome=outcome).observe(duration_seconds)
+        consumer = _bounded_metric_value(consumer, _RETRIEVAL_CONSUMERS, "fast")
+        self._retrieval_duration.labels(
+            consumer=consumer, stage=stage, outcome=outcome
+        ).observe(duration_seconds)
 
-    def record_retrieval_candidates(self, *, stage: str, count: int) -> None:
+    def record_retrieval_candidates(self, *, stage: str, count: int, consumer: str) -> None:
         if self.metrics_enabled and stage in {"dense", "sparse", "fused", "revalidated", "packed"}:
-            self._retrieval_candidates.labels(stage=stage).observe(max(0, count))
+            consumer = _bounded_metric_value(consumer, _RETRIEVAL_CONSUMERS, "fast")
+            self._retrieval_candidates.labels(consumer=consumer, stage=stage).observe(
+                max(0, count)
+            )
 
-    def record_context_token_estimate(self, count: int) -> None:
+    def record_context_token_estimate(self, count: int, *, consumer: str) -> None:
         if self.metrics_enabled:
-            self._retrieval_context_tokens.observe(max(0, count))
+            consumer = _bounded_metric_value(consumer, _RETRIEVAL_CONSUMERS, "fast")
+            self._retrieval_context_tokens.labels(consumer=consumer).observe(max(0, count))
 
     def record_llm(
         self,

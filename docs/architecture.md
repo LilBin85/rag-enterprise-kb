@@ -4,9 +4,21 @@
 
 PostgreSQL 保存租户、主体、文档版本、ACL、Research 与 controlled_action 任务、耐久恢复命令、审批、产物、工具调用和证据账本，是任务、恢复命令和权限状态的事实源；Qdrant 只保存可重建的向量 projection。任何检索候选必须同时通过 SQL 授权集和 Qdrant payload 过滤：tenant、active/current、version generation、allowed principals。后台队列继续使用 PostgreSQL claim/lease/fencing，没有新增 Redis、Celery、Kafka 或其他消息中间件。
 
-## 请求路径
+## Fast Path 与 Durable Path
 
-`/v1/knowledge/query` 由服务端身份解析后调用 `KnowledgeQueryService`，检索器只返回当前授权候选；候选先进入 `evidence_records`，模型只能选择本次账本中的 chunk。拒答判定分两层：确定性证据门只在检索层拦截字面可验证的缺失（问题点名的数量/单位、ASCII 锚点在证据中不存在）；主谓语义是否足以回答由回答模型在受约束生成时以 verdict 判定（上下文不足必须 refusal），最终引用一律经证据账本复核构造，模型无法编造出处。
+`EnterpriseRetriever` 是唯一 Retrieval Core。infrastructure factory 为 Fast Path 和 Durable Path 解析同一 retrieval settings，并装配相同的 BGE、Qdrant 授权搜索、SQL ACL adapter、候选/上下文限制、RRF、hybrid、阈值和证据充分性策略。它们只共享 `RetrievalResult`，不共享 evidence task 生命周期、回答/ToolMessage、HTTP 时序或 Agent 状态。
+
+| 场景 | Fast Path | Durable Path |
+| --- | --- | --- |
+| 入口 | `POST /v1/knowledge/query` | `POST /v1/tasks`，后续 result/continue/approval API |
+| 适用 | 单问题、低步骤数、无需澄清、审批或产物 | 多文档研究、版本比较、澄清、审批、受控写入或产物 |
+| 执行 | API 中的 `KnowledgeQueryService` | task-worker 中的 Agent 与受控工具 |
+| 返回 | 同步 answer/refusal 与重验 citations | 创建/恢复 `202 Accepted`，结果异步读取 |
+| 独立职责 | 内部 query fencing/evidence、单次回答 | task/checkpoint、工具预算、HITL、耐久恢复 |
+
+Fast Path 时序：`HTTP → KnowledgeQueryService → EnterpriseRetriever → Fast evidence ledger → constrained answer → citation revalidation → HTTP response`。`/v1/knowledge/query` 由服务端身份解析后调用 `KnowledgeQueryService`，检索器只返回当前授权候选；候选先进入 `evidence_records`，模型只能选择本次账本中的 chunk。拒答判定分两层：确定性证据门只在检索层拦截字面可验证的缺失（问题点名的数量/单位、ASCII 锚点在证据中不存在）；主谓语义是否足以回答由回答模型在受约束生成时以 verdict 判定（上下文不足必须 refusal），最终引用一律经证据账本复核构造，模型无法编造出处。
+
+Durable Path 时序：`HTTP → PostgreSQL task → task-worker/Agent → search_knowledge → EnterpriseRetriever → Durable evidence ledger → ToolMessage/checkpoint → async result`。`search_knowledge` 的 `limit` 只从 Core 已排序候选取前缀，不能重检索或改变排序。Fast Path 的 refusal 与 Durable ToolMessage 可以不同，但底层 fingerprint、ACL、候选顺序和 insufficiency code 必须一致。
 
 `POST /v1/documents` 建立首个版本，`POST /v1/documents/{document_id}/versions` 在同一文档下建立新版本；路径和 metadata 的 document_id 必须一致。文档上传先建立 SQL 预留并独占写入对象；摄取 worker 解析并保存 manifest 后分配新投影世代。上传、版本新增、删除和投影变更共享同文档 guard，避免跨存储操作相互越过。
 

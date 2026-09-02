@@ -131,10 +131,11 @@ def test_retrieval_telemetry_records_all_stages_without_dynamic_input_labels() -
                 Authorization(),
                 Vectors(),
                 hybrid_enabled=True,
-                reranker=Reranker(lambda item: item),
-                candidate_k=5,
-                context_k=2,
-                context_token_budget=100,
+            reranker=Reranker(lambda item: item),
+            candidate_k=5,
+            context_k=2,
+            context_token_budget=100,
+            consumer="durable",
             ).search(secret, auth())
         payload = observability.metrics_payload().decode()
         spans = exporter.get_finished_spans()
@@ -157,6 +158,12 @@ def test_retrieval_telemetry_records_all_stages_without_dynamic_input_labels() -
     assert 'stage="fused"' in payload
     assert 'stage="revalidated"' in payload
     assert 'stage="packed"' in payload
+    assert 'consumer="durable"' in payload
+    assert all(
+        span.attributes["retrieval_consumer"] == "durable"
+        for span in spans
+        if span.name.startswith("retrieval.")
+    )
     assert secret not in payload
     assert secret not in rendered_spans
 

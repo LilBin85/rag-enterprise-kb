@@ -27,6 +27,17 @@ flowchart LR
 
 PostgreSQL 是任务、恢复命令和权限状态的唯一事实源，Qdrant 只是可重建、可收敛的检索投影；Agent 身份、工具和审批绑定均由服务端注入。队列继续由 PostgreSQL claim/lease/fencing 驱动，没有新增 Redis、Celery、Kafka 或其他消息中间件。
 
+## Fast Path 与 Durable Path
+
+`EnterpriseRetriever` 是唯一共享 Retrieval Core。它由 infrastructure factory 以同一组授权、Qdrant、BGE、候选/上下文限制、RRF、hybrid、阈值和证据充分性配置装配；两条路径只共享检索事实，不合并任务生命周期或响应语义。
+
+| 场景 | 选择 | 时序 | 返回 |
+| --- | --- | --- | --- |
+| 单问题、低步骤数、无需澄清或审批 | Fast Path：`POST /v1/knowledge/query` | API → `KnowledgeQueryService` → Retrieval Core → Fast evidence ledger → 受约束回答与 citation 复核 | 同步 `answer` 或 `refusal` |
+| 多文档研究、版本比较、澄清、审批或受控写入 | Durable Path：`POST /v1/tasks` | API → PostgreSQL task → task-worker/Agent → `search_knowledge` → Retrieval Core → Durable evidence ledger → ToolMessage/checkpoint | 创建与恢复返回 `202`，结果异步读取 |
+
+Fast Path 不依赖 task-worker capability；Durable Path 保留 Agent、工具预算、checkpoint 与 HITL。检索 telemetry 仅用固定 `retrieval_consumer=fast|durable` 区分消费者，不记录 query、task、tenant 或 user 标签。
+
 ## 三分钟演示
 
 前置：Docker Desktop 已启动，`.env` 已配置 `DEEPSEEK_API_KEY`、`DEMO_ROLE_TOKENS` 和本地 BGE-M3 缓存。已有镜像和模型缓存时，只需一条命令：

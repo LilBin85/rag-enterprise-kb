@@ -141,6 +141,7 @@ def test_metric_label_contract_is_fixed_and_excludes_sensitive_or_high_cardinali
         "outcome",
         "reason",
         "stage",
+        "consumer",
         "operation",
         "provider",
         "direction",

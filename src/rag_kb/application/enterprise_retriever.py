@@ -6,7 +6,7 @@ import hashlib
 import math
 from contextlib import contextmanager
 from time import perf_counter
-from typing import Callable, Sequence
+from typing import Callable, Literal, Sequence
 
 from rag_kb.application.evidence_sufficiency import DeterministicEvidenceSufficiencyPolicy
 from rag_kb.application.ports.retrieval import (
@@ -40,13 +40,18 @@ class RetrievalSecurityError(RuntimeError):
 
 
 @contextmanager
-def _retrieval_stage(stage: str):
+def _retrieval_stage(stage: str, consumer: Literal["fast", "durable"]):
     started_at = perf_counter()
     error_code: str | None = None
     outcome = "succeeded"
     with observe_span(
         f"retrieval.{stage}",
-        attributes={"component": "retrieval", "operation": "retrieval.search", "phase": stage},
+        attributes={
+            "component": "retrieval",
+            "operation": "retrieval.search",
+            "phase": stage,
+            "retrieval_consumer": consumer,
+        },
     ) as span:
         try:
             yield span
@@ -70,13 +75,16 @@ def _retrieval_stage(stage: str):
                     stage=stage,
                     outcome=outcome,
                     duration_seconds=duration_seconds,
+                    consumer=consumer,
                 )
 
 
-def _record_candidate_count(stage: str, count: int) -> None:
+def _record_candidate_count(
+    stage: str, count: int, consumer: Literal["fast", "durable"]
+) -> None:
     telemetry = current_observability()
     if telemetry is not None:
-        telemetry.record_retrieval_candidates(stage=stage, count=count)
+        telemetry.record_retrieval_candidates(stage=stage, count=count, consumer=consumer)
 
 
 class EnterpriseRetriever(RetrieverPort):
@@ -91,6 +99,7 @@ class EnterpriseRetriever(RetrieverPort):
         rrf_k: int = 60,
         hybrid_enabled: bool = False,
         dense_score_threshold: float | None = None,
+        consumer: Literal["fast", "durable"] = "fast",
         reranker: RerankerPort | None = None,
         sufficiency_policy: EvidenceSufficiencyPort | None = None,
         token_estimator: Callable[[str], int] | None = None,
@@ -104,6 +113,8 @@ class EnterpriseRetriever(RetrieverPort):
             or not math.isfinite(float(dense_score_threshold))
         ):
             raise ValueError("invalid_dense_score_threshold")
+        if consumer not in {"fast", "durable"}:
+            raise ValueError("invalid_retrieval_consumer")
         self._authorization = authorization
         self._vectors = vectors
         self._candidate_k = candidate_k
@@ -112,6 +123,7 @@ class EnterpriseRetriever(RetrieverPort):
         self._rrf_k = rrf_k
         self._hybrid_enabled = hybrid_enabled
         self._dense_score_threshold = dense_score_threshold
+        self._consumer = consumer
         self._reranker = reranker
         self._sufficiency_policy = sufficiency_policy or DeterministicEvidenceSufficiencyPolicy()
         self._token_estimator = token_estimator or self._estimate_tokens
@@ -122,7 +134,11 @@ class EnterpriseRetriever(RetrieverPort):
         outcome = "failure"
         with observe_span(
             "retrieval.search",
-            attributes={"component": "retrieval", "operation": "retrieval.search"},
+            attributes={
+                "component": "retrieval",
+                "operation": "retrieval.search",
+                "retrieval_consumer": self._consumer,
+            },
         ) as span:
             try:
                 result = self._search(query, auth)
@@ -162,6 +178,7 @@ class EnterpriseRetriever(RetrieverPort):
                     error_category=category,
                     error_code=error_code,
                     duration_ms=duration_seconds * 1_000,
+                    retrieval_consumer=self._consumer,
                 )
 
     def _search(self, query: str, auth: AuthContext) -> RetrievalResult:
@@ -169,7 +186,7 @@ class EnterpriseRetriever(RetrieverPort):
         fingerprint = "sha256:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()
         if not normalized:
             return self._empty(fingerprint, "invalid_query")
-        with _retrieval_stage("authorization"):
+        with _retrieval_stage("authorization", self._consumer):
             if not auth.has_permission(Permission.KNOWLEDGE_READ):
                 return self._empty(fingerprint, "knowledge_read_denied")
             authorized = self._authorization.authorized_active_versions(auth)
@@ -178,7 +195,7 @@ class EnterpriseRetriever(RetrieverPort):
             if not authorized.version_ids:
                 return self._empty(fingerprint, "no_authorized_evidence")
 
-        with _retrieval_stage("dense") as dense_span:
+        with _retrieval_stage("dense", self._consumer) as dense_span:
             dense = self._vectors.search_dense(
                 normalized,
                 tenant_id=auth.tenant_id,
@@ -190,9 +207,9 @@ class EnterpriseRetriever(RetrieverPort):
                 score_threshold=self._dense_score_threshold,
             )
             dense_span.set_attribute("candidate_count", len(dense))
-        _record_candidate_count("dense", len(dense))
+        _record_candidate_count("dense", len(dense), self._consumer)
 
-        with _retrieval_stage("sparse") as sparse_span:
+        with _retrieval_stage("sparse", self._consumer) as sparse_span:
             sparse = (
                 self._vectors.search_sparse(
                     normalized,
@@ -208,9 +225,9 @@ class EnterpriseRetriever(RetrieverPort):
                 else ()
             )
             sparse_span.set_attribute("candidate_count", len(sparse))
-        _record_candidate_count("sparse", len(sparse))
+        _record_candidate_count("sparse", len(sparse), self._consumer)
 
-        with _retrieval_stage("fuse") as fuse_span:
+        with _retrieval_stage("fuse", self._consumer) as fuse_span:
             self._validate_vector_boundary(
                 auth,
                 authorized.version_ids,
@@ -220,15 +237,15 @@ class EnterpriseRetriever(RetrieverPort):
             )
             fused = reciprocal_rank_fusion(dense, sparse, rrf_k=self._rrf_k)
             fuse_span.set_attribute("candidate_count", len(fused))
-        _record_candidate_count("fused", len(fused))
+        _record_candidate_count("fused", len(fused), self._consumer)
 
-        with _retrieval_stage("rerank"):
+        with _retrieval_stage("rerank", self._consumer):
             if self._reranker is not None and fused:
                 reranked = self._reranker.rerank(normalized, fused)
                 self._validate_reranker_boundary(fused, reranked)
                 fused = reranked
 
-        with _retrieval_stage("revalidate") as revalidate_span:
+        with _retrieval_stage("revalidate", self._consumer) as revalidate_span:
             returned_versions = frozenset(candidate.version_id for candidate in fused)
             still_authorized = self._authorization.revalidate_versions(auth, returned_versions)
             revalidated = tuple(
@@ -247,9 +264,9 @@ class EnterpriseRetriever(RetrieverPort):
                 revalidated,
             )
             revalidate_span.set_attribute("candidate_count", len(revalidated))
-        _record_candidate_count("revalidated", len(revalidated))
+        _record_candidate_count("revalidated", len(revalidated), self._consumer)
 
-        with _retrieval_stage("pack") as pack_span:
+        with _retrieval_stage("pack", self._consumer) as pack_span:
             packed = pack_context(
                 scoped_revalidated,
                 context_k=self._context_k,
@@ -272,10 +289,12 @@ class EnterpriseRetriever(RetrieverPort):
                     )
             pack_span.set_attribute("candidate_count", len(packed.candidates))
             pack_span.set_attribute("context_token_estimate", packed.context_token_estimate)
-        _record_candidate_count("packed", len(packed.candidates))
+        _record_candidate_count("packed", len(packed.candidates), self._consumer)
         telemetry = current_observability()
         if telemetry is not None:
-            telemetry.record_context_token_estimate(packed.context_token_estimate)
+            telemetry.record_context_token_estimate(
+                packed.context_token_estimate, consumer=self._consumer
+            )
         return packed.model_copy(update={"query_fingerprint": fingerprint})
 
     @staticmethod

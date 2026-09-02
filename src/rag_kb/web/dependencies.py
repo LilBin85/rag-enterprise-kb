@@ -139,34 +139,14 @@ def build_readiness_probe() -> ReadinessProbe:
 def build_knowledge_query_service() -> KnowledgeQueryService:
     # 新问答链只读取现有 schema/collection；请求路径不执行 DDL 或模型下载探测。
     from rag_kb.answerer import DeepSeekAnswerModel
-    from rag_kb.application.enterprise_retriever import EnterpriseRetriever
-    from rag_kb.config import resolve_retrieval_limits
     from rag_kb.infrastructure.database.knowledge_query_lifecycle import (
         DatabaseKnowledgeQueryLifecycle,
     )
-    from rag_kb.embedder import BgeM3Embedder
-    from rag_kb.infrastructure.database.acl_repository import DatabaseAuthorizationPort
-    from rag_kb.infrastructure.vectorstore.qdrant_authorized_search import QdrantAuthorizedSearch
+    from rag_kb.infrastructure.retrieval.factory import build_enterprise_retriever
 
     settings = get_settings()
-    candidate_k, context_k = resolve_retrieval_limits(settings)
     database = build_database(settings.database_url)
-    embedder = BgeM3Embedder()
-    vectors = QdrantAuthorizedSearch(
-        QdrantClient(url=settings.qdrant_url),
-        embedder,
-        collection=settings.qdrant_v2_collection,
-    )
-    retriever = EnterpriseRetriever(
-        DatabaseAuthorizationPort(database),
-        vectors,
-        candidate_k=candidate_k,
-        context_k=context_k,
-        context_token_budget=settings.retrieval_context_token_budget,
-        rrf_k=settings.retrieval_rrf_k,
-        hybrid_enabled=settings.enable_hybrid_retrieval,
-        dense_score_threshold=settings.retrieval_score_threshold,
-    )
+    retriever = build_enterprise_retriever(settings, database, consumer="fast")
     return KnowledgeQueryService(
         DatabaseKnowledgeQueryLifecycle(database),
         retriever,
