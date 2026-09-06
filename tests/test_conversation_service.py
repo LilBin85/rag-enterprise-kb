@@ -228,9 +228,22 @@ def test_clarification_reply_and_resume_command_commit_together(service) -> None
         task_id=submitted.task.task_id,
         expected_task_state_version=paused.state_version,
     )
+    replay = conversations.submit(
+        auth=_auth(),
+        conversation_id=created.conversation_id,
+        idempotency_key="clarification-1",
+        kind="clarification",
+        content="比较 2025 年版和 2024 年版",
+        turn_id=submitted.turn_id,
+        task_id=submitted.task.task_id,
+        expected_task_state_version=paused.state_version,
+    )
 
     assert resumed.status_code == 202
     assert resumed.turn_status == "running"
+    assert replay.status_code == 202
+    assert replay.idempotent_replay is True
+    assert replay.user_message == resumed.user_message
     with database.sessions() as session:
         turn = session.get(ConversationTurnRow, submitted.turn_id)
         commands = tuple(session.scalars(select(TaskResumeCommandRow)))

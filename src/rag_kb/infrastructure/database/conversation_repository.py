@@ -809,12 +809,7 @@ class DatabaseConversationRepository:
                 )
                 .with_for_update()
             )
-            if (
-                turn is None
-                or turn.task_id != task_id
-                or turn.status != ConversationTurnStatus.WAITING_FOR_USER.value
-                or turn.task_state_version != task_state_version
-            ):
+            if turn is None:
                 raise ConversationRepositoryError("clarification_binding_invalid")
             existing = session.scalar(
                 select(ConversationMessageRow).where(
@@ -827,6 +822,12 @@ class DatabaseConversationRepository:
                 if existing.request_hash != request_fingerprint:
                     raise ConversationRepositoryError("idempotency_conflict")
                 return turn, existing, True
+            if (
+                turn.task_id != task_id
+                or turn.status != ConversationTurnStatus.WAITING_FOR_USER.value
+                or turn.task_state_version != task_state_version
+            ):
+                raise ConversationRepositoryError("clarification_binding_invalid")
             resume_repository.enqueue_user_resume_command_in_session(
                 session,
                 auth=auth,
