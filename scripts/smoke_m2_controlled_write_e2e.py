@@ -242,6 +242,32 @@ def _accepted_resume_command_id(payload: dict[str, object]) -> str:
     return command_id
 
 
+def _create_controlled_task(client, *, headers: dict[str, str], goal: str) -> tuple[str, str, str]:
+    conversation = _expect(
+        client.post("/v1/conversations", headers=headers, json={}),
+        201,
+        "conversations",
+    )
+    conversation_id = conversation.get("conversation_id")
+    if not isinstance(conversation_id, str):
+        raise SmokeError("conversation_id_missing")
+    submitted = _expect(
+        client.post(
+            f"/v1/conversations/{conversation_id}/messages",
+            headers={**headers, "Idempotency-Key": uuid4().hex},
+            json={"kind": "new", "mode": "controlled_action", "content": goal},
+        ),
+        202,
+        "conversation_message",
+    )
+    turn_id = submitted.get("turn_id")
+    task = submitted.get("task")
+    task_id = task.get("task_id") if isinstance(task, dict) else None
+    if not isinstance(turn_id, str) or not isinstance(task_id, str):
+        raise SmokeError("conversation_task_binding_missing")
+    return conversation_id, turn_id, task_id
+
+
 def _seed_identities_and_versions(database, objects, *, tenant_id: str) -> tuple[str, tuple[object, ...]]:
     """写入两个已投影版本，compare_document_versions 真实生成 Evidence Ledger。"""
     from sqlalchemy import select
@@ -536,6 +562,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         from rag_kb.agent.tools import build_controlled_action_tools
         from rag_kb.application.approval_service import ApprovalService
         from rag_kb.application.artifact_content_service import ArtifactContentService
+        from rag_kb.application.conversation_service import ConversationService
         from rag_kb.application.task_worker import TaskWorker
         from rag_kb.application.tool_execution_service import ToolExecutionService
         from rag_kb.application.tool_registry import ToolRegistry
@@ -544,6 +571,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         from rag_kb.infrastructure.auth.providers import DemoTokenIdentityProvider
         from rag_kb.infrastructure.database import build_database
         from rag_kb.infrastructure.database.approval_lifecycle import DatabaseApprovalLifecycle
+        from rag_kb.infrastructure.database.conversation_repository import (
+            DatabaseConversationRepository,
+        )
         from rag_kb.infrastructure.database.task_execution import (
             DatabaseTaskAuthContextPort,
             DatabaseTaskEvidencePort,
@@ -561,6 +591,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         from rag_kb.web.dependencies import (
             build_approval_service,
             build_artifact_content_service,
+            build_conversation_service,
             build_identity_provider,
             build_task_repository,
         )
@@ -672,6 +703,11 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         app.dependency_overrides[build_task_repository] = lambda: repository
         app.dependency_overrides[build_approval_service] = lambda: approvals
         app.dependency_overrides[build_artifact_content_service] = lambda: ArtifactContentService(DatabaseArtifactContentReader(database, objects))
+        app.dependency_overrides[build_conversation_service] = lambda: ConversationService(
+            DatabaseConversationRepository(database),
+            repository,
+            controlled_action_enabled=True,
+        )
 
         def make_worker(task_id: str, *, approved: bool = False, clarification: bool = False):
             messages = (
@@ -722,17 +758,13 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         tool_surfaces: list[str] = []
         primary: dict[str, object] = {}
         primary_command_id: str | None = None
-        clarification_command_id: str | None = None
         with patch.object(artifact_module, "uuid4", lambda: UUID(_ARTIFACT_ID)), TestClient(app) as client:
             for index in range(0 if args.observability_smoke else 29):
-                created = _expect(
-                    client.post("/v1/tasks", headers=headers["owner"], json={"task_mode": "controlled_action", "goal": f"M2 批量拒绝验收任务 {index + 1}"}),
-                    202,
-                    "tasks",
+                _conversation_id, _turn_id, task_id = _create_controlled_task(
+                    client,
+                    headers=headers["owner"],
+                    goal=f"M2 批量拒绝验收任务 {index + 1}",
                 )
-                task_id = created.get("task_id")
-                if not isinstance(task_id, str):
-                    raise SmokeError("task_id_missing")
                 task_ids.append(task_id)
                 worker, _agent = make_worker(task_id)
                 with app.state.observability.activate():
@@ -771,14 +803,11 @@ def run(args: argparse.Namespace) -> dict[str, object]:
                 if consumed.status != "finished" or report_adapter.calls != 0:
                     raise SmokeError("rejected_worker_consume_contract_invalid")
 
-            created = _expect(
-                client.post("/v1/tasks", headers=headers["owner"], json={"task_mode": "controlled_action", "goal": "依据两版制度证据生成隔离报告。"}),
-                202,
-                "primary_task",
+            _primary_conversation_id, _primary_turn_id, primary_task_id = _create_controlled_task(
+                client,
+                headers=headers["owner"],
+                goal="依据两版制度证据生成隔离报告。",
             )
-            primary_task_id = created.get("task_id")
-            if not isinstance(primary_task_id, str):
-                raise SmokeError("primary_task_id_missing")
             task_ids.append(primary_task_id)
             primary_worker, primary_agent = make_worker(primary_task_id, approved=True)
             with app.state.observability.activate():
@@ -849,14 +878,11 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             tool_surfaces.extend(str(message.content) for message in snapshot.values.get("messages", ()) if getattr(message, "type", "") == "tool")
             primary = {"task_id": primary_task_id, "approval_id": approval_id, "result": result, "artifact": artifact, "content": content.content}
 
-            clarification_created = _expect(
-                client.post("/v1/tasks", headers=headers["owner"], json={"task_mode": "controlled_action", "goal": "范围尚未确认，请请求澄清。"}),
-                202,
-                "clarification_task",
+            clarification_conversation_id, clarification_turn_id, clarification_id = _create_controlled_task(
+                client,
+                headers=headers["owner"],
+                goal="范围尚未确认，请请求澄清。",
             )
-            clarification_id = clarification_created.get("task_id")
-            if not isinstance(clarification_id, str):
-                raise SmokeError("clarification_task_id_missing")
             task_ids.append(clarification_id)
             clarification_worker, _clarification_agent = make_worker(clarification_id, clarification=True)
             with app.state.observability.activate():
@@ -864,31 +890,43 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             if clarification_status != "waiting_for_user":
                 raise SmokeError("controlled_clarification_not_waiting")
             clarification_state = _expect(client.get(f"/v1/tasks/{clarification_id}", headers=headers["owner"]), 200, "clarification_state")
+            clarification_key = uuid4().hex
             continued = _expect(
                 client.post(
-                    f"/v1/tasks/{clarification_id}/continue",
-                    headers=headers["owner"],
-                    json={"answer": "仅生成本地隔离报告。", "expected_state_version": clarification_state["state_version"]},
+                    f"/v1/conversations/{clarification_conversation_id}/messages",
+                    headers={**headers["owner"], "Idempotency-Key": clarification_key},
+                    json={
+                        "kind": "clarification",
+                        "content": "仅生成本地隔离报告。",
+                        "turn_id": clarification_turn_id,
+                        "task_id": clarification_id,
+                        "expected_task_state_version": clarification_state["state_version"],
+                    },
                 ),
                 202,
-                "continue",
+                "clarification",
             )
-            clarification_command_id = _accepted_resume_command_id(continued)
-            if continued.get("status") != "waiting_for_user":
-                raise SmokeError("controlled_continue_not_waiting")
+            if continued.get("turn_status") != "running":
+                raise SmokeError("controlled_clarification_not_running")
             response_surfaces.append(json.dumps(continued, ensure_ascii=False, sort_keys=True))
             repeated_continue = _expect(
                 client.post(
-                    f"/v1/tasks/{clarification_id}/continue",
-                    headers=headers["owner"],
-                    json={"answer": "仅生成本地隔离报告。", "expected_state_version": clarification_state["state_version"]},
+                    f"/v1/conversations/{clarification_conversation_id}/messages",
+                    headers={**headers["owner"], "Idempotency-Key": clarification_key},
+                    json={
+                        "kind": "clarification",
+                        "content": "仅生成本地隔离报告。",
+                        "turn_id": clarification_turn_id,
+                        "task_id": clarification_id,
+                        "expected_task_state_version": clarification_state["state_version"],
+                    },
                 ),
                 202,
-                "continue_repeat",
+                "clarification_repeat",
             )
             response_surfaces.append(json.dumps(repeated_continue, ensure_ascii=False, sort_keys=True))
-            if _accepted_resume_command_id(repeated_continue) != clarification_command_id:
-                raise SmokeError("duplicate_continue_command_created")
+            if not repeated_continue.get("idempotent_replay"):
+                raise SmokeError("duplicate_clarification_not_replayed")
             with app.state.observability.activate():
                 consumed = clarification_worker.run_once()
             if consumed.status != "finished":
@@ -934,7 +972,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             )
         if approval is None or artifact_row is None or tool_call is None:
             raise SmokeError("primary_binding_rows_missing")
-        if primary_command_id is None or clarification_command_id is None:
+        if primary_command_id is None:
             raise SmokeError("resume_command_id_missing")
         primary_commands = [row for row in resume_commands if row[1] == primary_task_id]
         clarification_commands = [row for row in resume_commands if row[1] == clarification_id]
@@ -942,7 +980,6 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             len(primary_commands) != 1
             or primary_commands[0][0] != primary_command_id
             or len(clarification_commands) != 1
-            or clarification_commands[0][0] != clarification_command_id
         ):
             raise SmokeError("duplicate_resume_command_persisted")
         if any(status != "consumed" or body is not None for _, _, status, body, _ in resume_commands):

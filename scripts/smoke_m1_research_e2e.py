@@ -245,10 +245,31 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     serializer_evidence = _check_serializer_is_strict()
     _initialize()
 
+    from rag_kb.application.conversation_service import ConversationService
+    from rag_kb.config import get_settings
+    from rag_kb.infrastructure.database import build_database
+    from rag_kb.infrastructure.database.conversation_repository import (
+        DatabaseConversationRepository,
+    )
+    from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
+    from rag_kb.web.app import create_app
+    from rag_kb.web.dependencies import build_conversation_service
+
+    settings = get_settings()
+    database = build_database(settings.database_url)
+    tasks = DatabaseTaskRepository(
+        database,
+        task_capability_name=settings.task_agent_capability_name,
+        task_capability_protocol_version=settings.task_agent_protocol_version,
+    )
+    app = create_app()
+    app.dependency_overrides[build_conversation_service] = lambda: ConversationService(
+        DatabaseConversationRepository(database), tasks
+    )
     port = _pick_port(args.port)
     base_url = f"http://127.0.0.1:{port}"
     server = uvicorn.Server(
-        uvicorn.Config("rag_kb.main:app", host="127.0.0.1", port=port, log_level="warning")
+        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     )
     api_thread = threading.Thread(target=server.run, daemon=True)
     api_thread.start()
@@ -344,13 +365,26 @@ def run(args: argparse.Namespace) -> dict[str, object]:
 
             worker = build_task_worker(worker_id="m1-e2e-task")
             try:
-                task = _expect(
+                conversation = _expect(
                     client.post(
-                        "/v1/tasks",
+                        "/v1/conversations",
                         headers=headers,
+                        json={},
+                    ),
+                    201,
+                    "conversations",
+                )
+                conversation_id = conversation.get("conversation_id")
+                if not isinstance(conversation_id, str):
+                    raise SmokeError("conversation_id_missing")
+                submitted = _expect(
+                    client.post(
+                        f"/v1/conversations/{conversation_id}/messages",
+                        headers={**headers, "Idempotency-Key": uuid4().hex},
                         json={
-                            "task_mode": "research",
-                            "goal": (
+                            "kind": "new",
+                            "mode": "research",
+                            "content": (
                                 f"第一轮只调用 list_document_versions 确认文档 {document_id} 的版本，"
                                 "等待它的 ToolMessage 后，第二轮只调用 compare_document_versions 比较版本 1 和 2 的年假变化；"
                                 "第三轮只调用 search_knowledge 找出当前版本员工入职满 1 年后的带薪年假天数；"
@@ -360,9 +394,10 @@ def run(args: argparse.Namespace) -> dict[str, object]:
                         },
                     ),
                     202,
-                    "tasks",
+                    "conversation_message",
                 )
-                task_id = task.get("task_id")
+                task = submitted.get("task")
+                task_id = task.get("task_id") if isinstance(task, dict) else None
                 if not isinstance(task_id, str):
                     raise SmokeError("task_id_missing")
                 outcome = worker.run_once()
@@ -424,6 +459,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     finally:
         server.should_exit = True
         api_thread.join(timeout=10)
+        app.dependency_overrides.clear()
+        database.engine.dispose()
 
 
 def main() -> int:
