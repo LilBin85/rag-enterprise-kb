@@ -66,6 +66,9 @@ class TaskState(StrictModel):
     """只承载业务生命周期、中断摘要与最终结果引用；不保存消息、计划或观察。"""
 
     task_id: str
+    # 可选会话绑定不改变旧任务的恢复语义；公开字段统一使用 turn_id。
+    conversation_id: str | None = Field(default=None, max_length=64)
+    turn_id: str | None = Field(default=None, max_length=64)
     auth_context_ref: str
     goal: str
     task_mode: TaskMode
@@ -95,6 +98,8 @@ class TaskState(StrictModel):
 
     @model_validator(mode="after")
     def validate_pause_and_cancel_bindings(self) -> "TaskState":
+        if (self.conversation_id is None) != (self.turn_id is None):
+            raise ValueError("task_conversation_binding_invalid")
         if (self.status is TaskStatus.CANCELLED) != self.cancelled:
             raise ValueError("task_cancel_binding_invalid")
         if self.status is TaskStatus.WAITING_FOR_USER and not (

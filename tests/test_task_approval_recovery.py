@@ -252,7 +252,10 @@ def _build_stage(tmp_path: Path, *, task_mode: TaskMode) -> SimpleNamespace:
     )
     with database.engine.begin() as connection:
         connection.execute(
-            text("INSERT INTO tenants VALUES ('tenant-a', 'Tenant A', 1, CURRENT_TIMESTAMP)")
+            text(
+                "INSERT INTO tenants (tenant_id, name, active, created_at) "
+                "VALUES ('tenant-a', 'Tenant A', 1, CURRENT_TIMESTAMP)"
+            )
         )
         connection.execute(
             text(

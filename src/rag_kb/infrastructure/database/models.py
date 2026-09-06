@@ -47,7 +47,15 @@ class TenantRow(Base):
     tenant_id: Mapped[str] = mapped_column(String(200), primary_key=True)
     name: Mapped[str] = mapped_column(String(300), nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    conversation_retention_days: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+    __table_args__ = (
+        CheckConstraint(
+            "conversation_retention_days IS NULL OR conversation_retention_days > 0",
+            name="conversation_retention_days_positive",
+        ),
+    )
 
 
 class PrincipalRow(Base):
@@ -350,6 +358,196 @@ class IngestionJobRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
 
+_CONVERSATION_ACTIVE_TURN_STATUSES = (
+    "'routing', 'planning', 'running', 'waiting_for_user', 'waiting_for_approval'"
+)
+
+
+class ConversationRow(Base):
+    """会话正文的 PostgreSQL 事实源；删除采用正文清理而非级联删审计。"""
+
+    __tablename__ = "conversations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"],
+            ["principals.tenant_id", "principals.user_id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("tenant_id", "conversation_id", name="uq_conversations_tenant_conversation"),
+        CheckConstraint("status IN ('active', 'deleting', 'deleted')", name="status_valid"),
+        CheckConstraint("state_version > 0", name="state_version_positive"),
+        CheckConstraint("summary_through_sequence >= 0", name="summary_sequence_nonnegative"),
+        CheckConstraint("memory_version >= 0", name="memory_version_nonnegative"),
+        CheckConstraint(
+            "(status = 'active' AND deleting_at IS NULL AND deleted_at IS NULL) OR "
+            "(status = 'deleting' AND deleting_at IS NOT NULL AND deleted_at IS NULL) OR "
+            "(status = 'deleted' AND deleting_at IS NOT NULL AND deleted_at IS NOT NULL)",
+            name="deletion_binding_complete",
+        ),
+        Index("ix_conversations_owner_updated", "tenant_id", "user_id", "status", "updated_at"),
+        Index("ix_conversations_content_retention", "status", "content_expires_at"),
+    )
+
+    conversation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(200), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    state_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
+    summary: Mapped[str | None] = mapped_column(Text)
+    summary_through_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    memory_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    memory_hash: Mapped[str | None] = mapped_column(String(80))
+    summary_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    content_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleting_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
+class ConversationTurnRow(Base):
+    __tablename__ = "conversation_turns"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "conversation_id"],
+            ["conversations.tenant_id", "conversations.conversation_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"],
+            ["principals.tenant_id", "principals.user_id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "tenant_id", "conversation_id", "turn_id",
+            name="uq_conversation_turns_tenant_conversation_turn",
+        ),
+        UniqueConstraint(
+            "tenant_id", "conversation_id", "sequence",
+            name="uq_conversation_turns_sequence",
+        ),
+        UniqueConstraint(
+            "tenant_id", "user_id", "conversation_id", "idempotency_key",
+            name="uq_conversation_turns_idempotency",
+        ),
+        UniqueConstraint("tenant_id", "task_id", name="uq_conversation_turns_task"),
+        CheckConstraint("sequence > 0", name="sequence_positive"),
+        CheckConstraint(
+            "task_state_version IS NULL OR task_state_version > 0",
+            name="task_state_version_positive",
+        ),
+        CheckConstraint("submission_kind IN ('new', 'clarification')", name="submission_kind_valid"),
+        CheckConstraint(
+            "requested_mode IN ('auto', 'answer', 'research', 'controlled_action')",
+            name="requested_mode_valid",
+        ),
+        CheckConstraint(
+            "selected_mode IS NULL OR selected_mode IN ('answer', 'research', 'controlled_action')",
+            name="selected_mode_valid",
+        ),
+        CheckConstraint(
+            "(status = 'routing' AND selected_mode IS NULL AND task_id IS NULL) OR "
+            "(status <> 'routing' AND selected_mode IS NOT NULL)",
+            name="routing_binding_complete",
+        ),
+        CheckConstraint(
+            "status IN ('routing', 'planning', 'running', 'waiting_for_user', "
+            "'waiting_for_approval', 'succeeded', 'refused', 'failed', 'cancelled')",
+            name="status_valid",
+        ),
+        Index(
+            "uq_conversation_turns_one_active",
+            "tenant_id",
+            "conversation_id",
+            unique=True,
+            sqlite_where=text(f"status IN ({_CONVERSATION_ACTIVE_TURN_STATUSES})"),
+            postgresql_where=text(f"status IN ({_CONVERSATION_ACTIVE_TURN_STATUSES})"),
+        ),
+        Index("ix_conversation_turns_owner_updated", "tenant_id", "conversation_id", "updated_at"),
+    )
+
+    turn_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    conversation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    submission_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    requested_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    selected_mode: Mapped[str | None] = mapped_column(String(32))
+    route_reason_code: Mapped[str | None] = mapped_column(String(100))
+    resolved_input: Mapped[str | None] = mapped_column(Text)
+    resolved_input_hash: Mapped[str | None] = mapped_column(String(80))
+    task_id: Mapped[str | None] = mapped_column(String(64))
+    task_state_version: Mapped[int | None] = mapped_column(Integer)
+    context_hash: Mapped[str | None] = mapped_column(String(80))
+    context_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON_TYPE, nullable=False, default=list, server_default=text("'[]'")
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
+class ConversationMessageRow(Base):
+    __tablename__ = "conversation_messages"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "conversation_id", "turn_id"],
+            [
+                "conversation_turns.tenant_id",
+                "conversation_turns.conversation_id",
+                "conversation_turns.turn_id",
+            ],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "tenant_id", "conversation_id", "sequence",
+            name="uq_conversation_messages_sequence",
+        ),
+        UniqueConstraint(
+            "tenant_id", "conversation_id", "idempotency_key",
+            name="uq_conversation_messages_idempotency",
+        ),
+        CheckConstraint("sequence > 0", name="sequence_positive"),
+        CheckConstraint("role IN ('user', 'assistant')", name="role_valid"),
+        CheckConstraint(
+            "(content IS NOT NULL AND content_purged_at IS NULL) OR "
+            "(content IS NULL AND content_purged_at IS NOT NULL)",
+            name="content_purge_binding_complete",
+        ),
+        Index("ix_conversation_messages_page", "tenant_id", "conversation_id", "sequence"),
+    )
+
+    message_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    conversation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    turn_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    content: Mapped[str | None] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(200))
+    request_hash: Mapped[str | None] = mapped_column(String(80))
+    task_id: Mapped[str | None] = mapped_column(String(64))
+    evidence_ids: Mapped[list[str]] = mapped_column(
+        JSON_TYPE, nullable=False, default=list, server_default=text("'[]'")
+    )
+    artifacts: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON_TYPE, nullable=False, default=list, server_default=text("'[]'")
+    )
+    redacted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    content_purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
 class AgentTaskRow(Base):
     __tablename__ = "agent_tasks"
     __table_args__ = (
@@ -415,6 +613,20 @@ class AgentTaskRow(Base):
             name="task_protocol_complete",
         ),
         CheckConstraint(
+            "(conversation_id IS NULL AND conversation_turn_id IS NULL) OR "
+            "(conversation_id IS NOT NULL AND conversation_turn_id IS NOT NULL)",
+            name="conversation_binding_complete",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "conversation_id", "conversation_turn_id"],
+            [
+                "conversation_turns.tenant_id",
+                "conversation_turns.conversation_id",
+                "conversation_turns.turn_id",
+            ],
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
             "CASE WHEN task_mode <> 'research' OR status NOT IN ('succeeded', 'refused') "
             "THEN 1 WHEN result_purged_at IS NULL THEN CASE WHEN result_kind = 'research' "
             "AND result_ref IS NOT NULL AND length(trim(result_ref)) > 0 "
@@ -450,6 +662,12 @@ class AgentTaskRow(Base):
             "available_at",
             "created_at",
         ),
+        Index(
+            "ix_agent_tasks_conversation_turn",
+            "tenant_id",
+            "conversation_id",
+            "conversation_turn_id",
+        ),
     )
 
     task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -457,6 +675,9 @@ class AgentTaskRow(Base):
         String(200), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False
     )
     user_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    # 会话绑定是可选的；保留所有未绑定的旧任务恢复语义。
+    conversation_id: Mapped[str | None] = mapped_column(String(64))
+    conversation_turn_id: Mapped[str | None] = mapped_column(String(64))
     task_mode: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     goal: Mapped[str] = mapped_column(Text, nullable=False)

@@ -230,122 +230,9 @@ def _headers(token: str = "owner-token") -> dict[str, str]:
     return {"Authorization": f"Bearer {token}", "X-Request-ID": "task-request"}
 
 
-def test_create_and_get_task_expose_only_business_lifecycle(setup_app) -> None:
-    client, repository = setup_app
-    created = client.post(
-        "/v1/tasks",
-        headers=_headers(),
-        json={"goal": "核对上线制度", "task_mode": "research"},
-    )
-    fetched = client.get("/v1/tasks/task-1", headers=_headers())
-
-    assert created.status_code == 202
-    assert fetched.status_code == 200
-    assert repository.created[0]["task_mode"] is TaskMode.RESEARCH
-    assert {"auth_context_ref", "lease_generation", "current_node", "pending_question"}.isdisjoint(
-        fetched.json()
-    )
-    assert fetched.json()["result_available"] is False
 
 
-def test_create_rejects_non_research_task_modes(setup_app) -> None:
-    client, repository = setup_app
-    response = client.post(
-        "/v1/tasks",
-        headers=_headers(),
-        json={"goal": "查询制度", "task_mode": "knowledge_query"},
-    )
-    assert response.status_code == 422
-    assert repository.created == []
 
-
-def test_create_controlled_action_requires_enabled_gate_and_live_capability(
-    setup_app, monkeypatch
-) -> None:
-    client, repository = setup_app
-    monkeypatch.setattr(
-        tasks_router,
-        "get_settings",
-        lambda: SimpleNamespace(enable_controlled_action_tasks=False),
-    )
-
-    disabled = client.post(
-        "/v1/tasks",
-        headers=_headers(),
-        json={"goal": "创建报告草稿", "task_mode": "controlled_action"},
-    )
-
-    assert disabled.status_code == 503
-    assert repository.created == []
-
-    monkeypatch.setattr(
-        tasks_router,
-        "get_settings",
-        lambda: SimpleNamespace(enable_controlled_action_tasks=True),
-    )
-    repository.create_error = "task_agent_unavailable"
-    unavailable = client.post(
-        "/v1/tasks",
-        headers=_headers(),
-        json={"goal": "创建报告草稿", "task_mode": "controlled_action"},
-    )
-
-    assert unavailable.status_code == 503
-    assert repository.created == []
-
-
-def test_create_controlled_action_uses_server_protocol_and_rejects_injection(
-    setup_app, monkeypatch
-) -> None:
-    client, repository = setup_app
-    monkeypatch.setattr(
-        tasks_router,
-        "get_settings",
-        lambda: SimpleNamespace(enable_controlled_action_tasks=True),
-    )
-    repository.current = _state(task_mode=TaskMode.CONTROLLED_ACTION)
-
-    created = client.post(
-        "/v1/tasks",
-        headers=_headers(),
-        json={"goal": "创建报告草稿", "task_mode": "controlled_action"},
-    )
-    injected = client.post(
-        "/v1/tasks",
-        headers=_headers(),
-        json={
-            "goal": "创建报告草稿",
-            "task_mode": "controlled_action",
-            "thread_id": "client-thread",
-            "checkpoint_id": "client-checkpoint",
-            "required_capability_name": "other-agent",
-            "required_protocol_version": "other-version",
-            "storage_key": "artifacts/private/sentinel",
-        },
-    )
-
-    assert created.status_code == 202
-    assert created.json()["task_mode"] == "controlled_action"
-    assert len(repository.created) == 1
-    assert repository.created[0]["goal"] == "创建报告草稿"
-    assert repository.created[0]["task_mode"] is TaskMode.CONTROLLED_ACTION
-    assert set(repository.created[0]) == {"auth", "goal", "task_mode"}
-    assert injected.status_code == 422
-    assert "artifacts/private/sentinel" not in injected.text
-
-
-def test_create_returns_503_without_compatible_worker_capability(setup_app) -> None:
-    client, repository = setup_app
-    repository.create_error = "research_agent_unavailable"
-
-    response = client.post(
-        "/v1/tasks",
-        headers=_headers(),
-        json={"goal": "核对上线制度", "task_mode": "research"},
-    )
-
-    assert response.status_code == 503
-    assert repository.created == []
 
 
 def test_result_is_read_from_server_side_reference(setup_app) -> None:
@@ -410,163 +297,8 @@ def test_result_contract_distinguishes_expired_unavailable_and_integrity(setup_a
     assert client.get("/v1/tasks/task-1/result", headers=_headers()).status_code == 409
 
 
-def test_continue_only_enqueues_durable_command_without_worker_construction(setup_app) -> None:
-    client, repository = setup_app
-    repository.current = _state(
-        status=TaskStatus.WAITING_FOR_USER,
-        interrupt_kind="user_clarification",
-        interrupt_summary="需要哪个部门？",
-    )
-
-    response = client.post(
-        "/v1/tasks/task-1/continue",
-        headers=_headers(),
-        json={"answer": "人力资源部", "expected_state_version": 1},
-    )
-    repeated = client.post(
-        "/v1/tasks/task-1/continue",
-        headers=_headers(),
-        json={"answer": "人力资源部", "expected_state_version": 1},
-    )
-    conflicting = client.post(
-        "/v1/tasks/task-1/continue",
-        headers=_headers(),
-        json={"answer": "财务部", "expected_state_version": 1},
-    )
-
-    assert response.status_code == 202
-    assert repeated.status_code == 202
-    assert conflicting.status_code == 409
-    assert len(repository.enqueued) == 1
-    assert repository.enqueued[0]["task_id"] == "task-1"
-    assert repository.enqueued[0]["expected_state_version"] == 1
-    assert repository.enqueued[0]["answer"] == "人力资源部"
-    assert response.json()["resume_command"] == {
-        "command_id": "resume-command-1",
-        "status": "accepted",
-    }
-    assert repeated.json()["resume_command"] == response.json()["resume_command"]
-    assert "answer" not in response.json()
-    assert response.json()["status"] == "waiting_for_user"
-    assert response.json()["result_available"] is False
 
 
-def test_continue_enqueue_failures_before_and_after_persist_are_retry_safe(
-    setup_app, monkeypatch
-) -> None:
-    client, repository = setup_app
-    repository.current = _state(
-        status=TaskStatus.WAITING_FOR_USER,
-        interrupt_kind="user_clarification",
-        interrupt_summary="需要哪个部门？",
-    )
-
-    before_enqueue = client.post(
-        "/v1/tasks/task-1/continue",
-        headers=_headers(),
-        json={"answer": "财务部", "expected_state_version": 2},
-    )
-    assert before_enqueue.status_code == 409
-    assert repository.enqueued == []
-
-    original_get_task = repository.get_task
-    fail_once = True
-
-    def fail_after_enqueue(*, auth, task_id: str) -> TaskState:
-        nonlocal fail_once
-        if fail_once and repository.enqueued:
-            fail_once = False
-            raise TaskRepositoryError("task_resume_conflict")
-        return original_get_task(auth=auth, task_id=task_id)
-
-    monkeypatch.setattr(repository, "get_task", fail_after_enqueue)
-    after_enqueue = client.post(
-        "/v1/tasks/task-1/continue",
-        headers=_headers(),
-        json={"answer": "财务部", "expected_state_version": 1},
-    )
-    retried = client.post(
-        "/v1/tasks/task-1/continue",
-        headers=_headers(),
-        json={"answer": "财务部", "expected_state_version": 1},
-    )
-
-    assert after_enqueue.status_code == 409
-    assert "财务部" not in after_enqueue.text
-    assert retried.status_code == 202
-    assert len(repository.enqueued) == 1
-    assert retried.json()["resume_command"] == {
-        "command_id": "resume-command-1",
-        "status": "accepted",
-    }
-
-
-def test_continue_rejects_injected_resume_fields_and_tool_approval(setup_app) -> None:
-    client, repository = setup_app
-    repository.current = _state(
-        task_mode=TaskMode.CONTROLLED_ACTION,
-        status=TaskStatus.WAITING_FOR_APPROVAL,
-        interrupt_kind="tool_approval",
-        interrupt_summary="等待人工审批",
-        interrupt_ref="approval-1",
-    )
-
-    wrong_route = client.post(
-        "/v1/tasks/task-1/continue",
-        headers=_headers(),
-        json={"answer": "批准", "expected_state_version": 1},
-    )
-    injected = client.post(
-        "/v1/tasks/task-1/continue",
-        headers=_headers(),
-        json={
-            "answer": "人力资源部",
-            "expected_state_version": 1,
-            "thread_id": "client-thread",
-            "checkpoint_id": "client-checkpoint",
-            "resume": {"decisions": [{"type": "approve"}]},
-        },
-    )
-
-    assert wrong_route.status_code == 409
-    assert injected.status_code == 422
-    assert repository.enqueued == []
-
-
-def test_continue_preserves_permission_tenant_version_and_length_boundaries(setup_app) -> None:
-    client, repository = setup_app
-    repository.current = _state(
-        status=TaskStatus.WAITING_FOR_USER,
-        interrupt_kind="user_clarification",
-        interrupt_summary="需要哪个部门？",
-    )
-
-    denied = client.post(
-        "/v1/tasks/task-1/continue",
-        headers=_headers("denied-token"),
-        json={"answer": "人力资源部", "expected_state_version": 1},
-    )
-    cross_tenant = client.post(
-        "/v1/tasks/task-1/continue",
-        headers=_headers("outsider-token"),
-        json={"answer": "人力资源部", "expected_state_version": 1},
-    )
-    stale = client.post(
-        "/v1/tasks/task-1/continue",
-        headers=_headers(),
-        json={"answer": "人力资源部", "expected_state_version": 2},
-    )
-    too_long = client.post(
-        "/v1/tasks/task-1/continue",
-        headers=_headers(),
-        json={"answer": "a" * 2_001, "expected_state_version": 1},
-    )
-
-    assert denied.status_code == 403
-    assert cross_tenant.status_code == 404
-    assert stale.status_code == 409
-    assert too_long.status_code == 422
-    assert repository.enqueued == []
 
 
 def test_cancel_events_and_cross_tenant_errors_are_stable(setup_app) -> None:
@@ -591,3 +323,25 @@ def test_cancel_events_and_cross_tenant_errors_are_stable(setup_app) -> None:
     assert cancelled.json()["status"] == "cancelled"
     assert stale.status_code == 409
     assert len(repository.cancelled) == 1
+
+
+
+
+def test_legacy_task_write_endpoints_are_removed(setup_app) -> None:
+    client, repository = setup_app
+
+    assert client.post(
+        "/v1/tasks",
+        headers=_headers(),
+        json={"goal": "问题", "task_mode": "research"},
+    ).status_code == 404
+    assert client.post(
+        "/v1/tasks/task-1/continue",
+        headers=_headers(),
+        json={"answer": "答案", "expected_state_version": 1},
+    ).status_code == 404
+    paths = client.app.openapi()["paths"]
+    assert "/v1/tasks" not in paths
+    assert "/v1/tasks/{task_id}/continue" not in paths
+    assert repository.created == []
+    assert repository.enqueued == []

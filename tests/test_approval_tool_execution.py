@@ -123,7 +123,12 @@ def stage5(tmp_path: Path):
     requester = AuthContext(tenant_id="tenant-a", user_id="requester", attributes={"permissions": ["artifact:write", "knowledge:read", "document:read"]}, request_id="request-1")
     approver = AuthContext(tenant_id="tenant-a", user_id="approver", attributes={"permissions": ["task:approve"]}, request_id="approve-1")
     with database.engine.begin() as connection:
-        connection.execute(text("INSERT INTO tenants VALUES ('tenant-a', 'Tenant A', 1, CURRENT_TIMESTAMP)"))
+        connection.execute(
+            text(
+                "INSERT INTO tenants (tenant_id, name, active, created_at) "
+                "VALUES ('tenant-a', 'Tenant A', 1, CURRENT_TIMESTAMP)"
+            )
+        )
         connection.execute(
             text("INSERT INTO principals (tenant_id,user_id,roles,attributes,active,created_at) VALUES ('tenant-a', 'requester', '[]', :attributes, 1, CURRENT_TIMESTAMP)"),
             {"attributes": '{"permissions":["artifact:write","knowledge:read","document:read"]}'},

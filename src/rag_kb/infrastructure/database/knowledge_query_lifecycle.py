@@ -38,7 +38,11 @@ class DatabaseKnowledgeQueryLifecycle(KnowledgeQueryLifecyclePort):
         lease_owner: str,
         lease_seconds: int,
         lease_generation: int,
+        conversation_id: str | None = None,
+        turn_id: str | None = None,
     ) -> tuple[EvidenceRecord, ...]:
+        if (conversation_id is None) != (turn_id is None):
+            raise ValueError("task_conversation_binding_invalid")
         with UnitOfWork(self._database) as work:
             assert work.session is not None
             work.session.add(
@@ -46,6 +50,8 @@ class DatabaseKnowledgeQueryLifecycle(KnowledgeQueryLifecyclePort):
                     task_id=task_id,
                     tenant_id=auth.tenant_id,
                     user_id=auth.user_id,
+                    conversation_id=conversation_id,
+                    conversation_turn_id=turn_id,
                     task_mode="knowledge_query",
                     status="running",
                     goal=f"knowledge_query:{query_fingerprint}",
@@ -72,6 +78,7 @@ class DatabaseKnowledgeQueryLifecycle(KnowledgeQueryLifecyclePort):
         evidence_ids: tuple[str, ...],
         lease_owner: str,
         lease_generation: int,
+        defer_terminal: bool = False,
     ) -> tuple[Citation, ...]:
         with UnitOfWork(self._database) as work:
             assert work.session is not None
@@ -81,7 +88,7 @@ class DatabaseKnowledgeQueryLifecycle(KnowledgeQueryLifecyclePort):
                 evidence_ids=evidence_ids,
                 auth=auth,
             )
-            if not self._close_owned_query(
+            if not defer_terminal and not self._close_owned_query(
                 work.session,
                 task_id=task_id,
                 auth=auth,

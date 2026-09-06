@@ -3,30 +3,9 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from rag_kb.domain.tasks import TaskMode, TaskStatus
-
-
-class TaskCreateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    goal: str = Field(min_length=1, max_length=8_000)
-    task_mode: TaskMode
-
-    @field_validator("task_mode")
-    @classmethod
-    def require_public_mode(cls, value: TaskMode) -> TaskMode:
-        if value not in {TaskMode.RESEARCH, TaskMode.CONTROLLED_ACTION}:
-            raise ValueError("仅支持 research 或 controlled_action 任务")
-        return value
-
-
-class TaskContinueRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    answer: str = Field(min_length=1, max_length=2_000)
-    expected_state_version: int = Field(ge=1)
 
 
 class TaskCancelRequest(BaseModel):
@@ -41,6 +20,8 @@ class TaskResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     task_id: str
+    conversation_id: str | None = None
+    turn_id: str | None = None
     goal: str
     task_mode: TaskMode
     status: TaskStatus
@@ -58,12 +39,6 @@ class ResumeCommandResponse(BaseModel):
 
     command_id: str
     status: Literal["accepted"] = "accepted"
-
-
-class TaskContinueResponse(TaskResponse):
-    """continue 的兼容任务响应，额外表达命令已入队。"""
-
-    resume_command: ResumeCommandResponse | None = None
 
 
 class TaskEventResponse(BaseModel):

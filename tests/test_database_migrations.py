@@ -22,6 +22,9 @@ EXPECTED_TABLES = {
     "approvals",
     "artifacts",
     "chunk_metadata",
+    "conversation_messages",
+    "conversation_turns",
+    "conversations",
     "document_versions",
     "documents",
     "evidence_records",
@@ -666,7 +669,7 @@ def test_m2_protocol_and_artifact_lifecycle_round_trip_preserves_history(tmp_pat
     }
 
     command.upgrade(config, "head")
-    assert EXPECTED_DATABASE_REVISION == "20260831_0015"
+    assert EXPECTED_DATABASE_REVISION == "20260906_0016"
     inspector = inspect(database.engine)
     assert "required_protocol_version" in {
         item["name"] for item in inspector.get_columns("agent_tasks")
@@ -1120,6 +1123,27 @@ def test_alembic_upgrade_and_downgrade_on_sqlite_adapter(tmp_path: Path) -> None
     command.downgrade(config, "base")
 
     assert inspect(database.engine).get_table_names() == ["alembic_version"]
+
+
+def test_conversation_downgrade_refuses_persisted_conversation_data(tmp_path: Path) -> None:
+    database_path = tmp_path / "conversation-downgrade.sqlite3"
+    config = Config(str(ROOT_DIR / "alembic.ini"))
+    config.attributes["database_url"] = sqlite_url(database_path)
+    command.upgrade(config, "head")
+    database = build_database(sqlite_url(database_path))
+    with database.engine.begin() as connection:
+        insert_principal(connection, "tenant-conversation", "user-conversation")
+        connection.execute(
+            text(
+                "INSERT INTO conversations (conversation_id, tenant_id, user_id, status, "
+                "state_version, summary_through_sequence, memory_version, created_at, updated_at) "
+                "VALUES ('conversation-a', 'tenant-conversation', 'user-conversation', 'active', "
+                "1, 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+
+    with pytest.raises(RuntimeError, match="conversation_downgrade_data_present"):
+        command.downgrade(config, "20260831_0015")
 
 
 def test_observability_m0_migration_preserves_legacy_correlation_id(tmp_path: Path) -> None:

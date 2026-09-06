@@ -55,6 +55,9 @@ from rag_kb.infrastructure.database.task_repository import (
 from rag_kb.infrastructure.database.index_projection_metadata import (
     DatabaseDocumentIndexMetadataPort,
 )
+from rag_kb.infrastructure.database.conversation_repository import (
+    DatabaseConversationRepository,
+)
 from rag_kb.infrastructure.database.document_lifecycle import (
     DatabaseDocumentLifecycle,
     DocumentRegistryIngestionJobPort,
@@ -488,6 +491,7 @@ def build_task_retention() -> TaskRetentionService:
         raise TaskAgentConfigurationError(str(exc)) from exc
     try:
         repository = DatabaseTaskRepository(database)
+        conversations = DatabaseConversationRepository(database)
         return TaskRetentionService(
             lifecycle=DatabaseTaskRetentionLifecycle(database, repository),
             objects=objects,
@@ -495,6 +499,8 @@ def build_task_retention() -> TaskRetentionService:
             checkpointer=checkpointer,
             orphan_grace_seconds=settings.result_object_orphan_grace_seconds,
             close=connection.close,
+            conversation_purger=conversations.purge_deleting,
+            conversation_expirer=conversations.mark_expired_for_deletion,
         )
     except Exception:
         connection.close()
@@ -624,6 +630,18 @@ def _run_task_maintenance(
             (
                 "waiting_task",
                 lambda: task_retention.expire_waiting_tasks(limit=_RECOVERY_BATCH_SIZE),
+            ),
+            (
+                "conversation_retention_expiry",
+                lambda: task_retention.expire_conversations(
+                    limit=_RECOVERY_BATCH_SIZE
+                ),
+            ),
+            (
+                "conversation_content_retention",
+                lambda: task_retention.purge_conversation_content(
+                    limit=_RECOVERY_BATCH_SIZE
+                ),
             ),
             (
                 "tool_result_retention",

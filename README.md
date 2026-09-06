@@ -35,8 +35,8 @@ PostgreSQL 是任务、恢复命令和权限状态的唯一事实源，Qdrant �
 
 | 场景 | 选择 | 时序 | 返回 |
 | --- | --- | --- | --- |
-| 单问题、低步骤数、无需澄清或审批 | Fast Path：`POST /v1/knowledge/query` | API → `KnowledgeQueryService` → Retrieval Core → Fast evidence ledger → 受约束回答与 citation 复核 | 同步 `answer` 或 `refusal` |
-| 多文档研究、版本比较、澄清、审批或受控写入 | Durable Path：`POST /v1/tasks` | API → PostgreSQL task → task-worker/Agent → `search_knowledge` → Retrieval Core → Durable evidence ledger → ToolMessage/checkpoint | 创建与恢复返回 `202`，结果异步读取 |
+| 单问题、低步骤数、无需澄清或审批 | 统一会话的快速执行器 | `POST /v1/conversations/{id}/messages` → 会话路由 → Retrieval Core → 受约束回答与 citation 复核 | 同步 `200` |
+| 多文档研究、版本比较、澄清、审批或受控写入 | 统一会话的耐久智能体 | 同一消息入口 → PostgreSQL task → task-worker/Agent → Retrieval Core → Durable evidence ledger | 接受返回 `202`，结果异步读取 |
 
 Fast Path 不依赖 task-worker capability；Durable Path 保留 Agent、工具预算、checkpoint 与 HITL。检索 telemetry 仅用固定 `retrieval_consumer=fast|durable` 区分消费者，不记录 query、task、tenant 或 user 标签。
 
@@ -100,7 +100,7 @@ docker compose --profile observability up --build -d
 conda activate rag-kb
 docker compose up -d qdrant
 $env:RAG_KB_DATABASE_URL = "postgresql+psycopg://<用户>:<密码>@localhost:5432/<数据库>"
-alembic upgrade head                 # 当前迁移目标：20260831_0015
+alembic upgrade head                 # 当前迁移目标：20260906_0016
 python scripts/init_agent_checkpointer.py
 python -m rag_kb.qdrant_init         # 幂等创建并校验企业 Qdrant schema
 .\scripts\start_api.ps1             # FastAPI :8000
@@ -132,17 +132,22 @@ conda run -n rag-kb --no-capture-output python -m rag_kb.worker --queue projecti
 
 ## API
 
-- `POST /v1/knowledge/query`：服务端身份问答。
+- `POST /v1/conversations`、`GET /v1/conversations`、`GET /v1/conversations/{conversation_id}`、`GET /v1/conversations/{conversation_id}/messages`、`DELETE /v1/conversations/{conversation_id}`：统一会话的创建、读取、历史和异步删除。
+- `POST /v1/conversations/{conversation_id}/messages`：唯一公开的用户消息入口，必须带 `Idempotency-Key`；`new` 消息可选择 `auto|answer|research|controlled_action`，`clarification` 必须绑定既有 turn/task/version。快速回答返回 `200`，耐久任务返回 `202`。
 - `POST /v1/documents`：multipart 上传新文档，必须带 `Idempotency-Key`，返回 `202`。
 - `POST /v1/documents/{document_id}/versions`：上传同一文档的新版本；路径和 metadata 的 `document_id` 必须一致，并使用新的 `Idempotency-Key`。
 - `GET /v1/documents/{document_id}`、`GET /v1/ingestion-jobs/{job_id}`：租户与 ACL 约束的查询。
-- `POST /v1/tasks` 接受 `research` 与 `controlled_action`；后者还要求 feature gate 开启和兼容 Worker lease。`GET /v1/tasks/{task_id}/result` 返回服务端重验的结果；`POST /v1/tasks/{task_id}/continue` 只接受服务端确认的澄清恢复请求，成功返回 `202 Accepted`。
+- `GET /v1/tasks/{task_id}`、`GET /v1/tasks/{task_id}/result`、`GET /v1/tasks/{task_id}/events`、`GET /v1/tasks/{task_id}/artifacts/{artifact_id}/content` 与 `POST /v1/tasks/{task_id}/cancel` 保留为受控任务读取/取消接口；任务响应可关联其 `conversation_id` 与 `turn_id`。
 - `GET /v1/approvals`、`GET /v1/approvals/{approval_id}`、`POST /v1/approvals/{approval_id}/decision`：仅 `task:approve` 审批者可发现和决定待审批动作；决定成功返回 `202 Accepted`，同一决定重试保持幂等，相反决定返回稳定 `409` 冲突。
 - `GET /v1/tasks/{task_id}/artifacts/{artifact_id}/content`：仅任务 owner 且拥有 `task:read` 时读取正文；未就绪为 `409`、过期或已清理为 `410`、完整性失败为 `500`，响应不暴露对象键或文件元数据。
 
 身份来自 `Authorization: Bearer ...` 或本地演示 `X-Demo-Role-Token`，角色不能由请求正文提升。本地演示主体的初始化请运行 `python scripts/init_demo_principals.py`，它按令牌真实解析的 permissions attributes 写入，不要手工插入空 attributes 的记录。应用只提供版本化 `/v1` 业务接口。
 
-上述两个恢复接口的 `202` 只表示 API 已完成认证、授权、版本校验并把恢复命令耐久提交到 PostgreSQL，不表示 Agent、工具或任务已经同步恢复完成；API 返回时任务仍可能是 `waiting_for_user` 或 `waiting_for_approval`。API 不构造 LangGraph `Command`、不运行 Agent、也不执行工具；只有 `task-worker` 能领取命令、重新校验服务端绑定并构造服务端恢复载荷。Worker 暂时离线不会撤销已提交命令，命令会留在 PostgreSQL 等待消费；响应不暴露恢复命令敏感载荷或内部执行绑定。
+会话消息的 `202` 只表示 API 已完成认证、授权、版本校验并把耐久任务提交到 PostgreSQL，不表示 Agent、工具或任务已经同步完成。API 不构造 LangGraph `Command`、不运行 Agent、也不执行工具；只有 `task-worker` 能领取任务、重新校验服务端绑定并构造服务端执行载荷。Worker 暂时离线不会撤销已提交任务；响应不暴露内部执行绑定。
+
+### 破坏性升级：统一会话入口
+
+`POST /v1/knowledge/query`、`POST /v1/tasks` 和 `POST /v1/tasks/{task_id}/continue` 已移除，不提供兼容代理。调用方应先创建会话，再通过 `POST /v1/conversations/{conversation_id}/messages` 提交 `new` 或绑定任务版本的 `clarification` 消息；请保存返回的 conversation、turn 与 task 标识。
 
 ## 验证
 

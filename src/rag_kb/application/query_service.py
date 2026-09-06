@@ -6,7 +6,7 @@ from time import perf_counter
 from typing import Literal, Protocol
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from rag_kb.application.ports.knowledge_query import KnowledgeQueryLifecyclePort
 from rag_kb.application.ports.retrieval import RetrieverPort
@@ -68,6 +68,8 @@ class KnowledgeQueryResult(BaseModel):
     answer: str | None = None
     refusal: Refusal | None = None
     citations: tuple[Citation, ...] = ()
+    # 只供统一会话持久化绑定；任何 HTTP 响应都不能暴露内部 evidence id。
+    evidence_ids: tuple[str, ...] = Field(default=(), exclude=True, repr=False)
 
 
 class KnowledgeQueryService:
@@ -83,7 +85,15 @@ class KnowledgeQueryService:
         self._retriever = retriever
         self._model = model
 
-    def query(self, question: str, auth: AuthContext) -> KnowledgeQueryResult:
+    def query(
+        self,
+        question: str,
+        auth: AuthContext,
+        *,
+        task_id: str | None = None,
+        conversation_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> KnowledgeQueryResult:
         started_at = perf_counter()
         outcome = "failure"
         reason = "retrieval_failure"
@@ -93,7 +103,13 @@ class KnowledgeQueryService:
             attributes={"component": "knowledge", "operation": "knowledge.query"},
         ) as span:
             try:
-                response = self._query(question, auth)
+                response = self._query(
+                    question,
+                    auth,
+                    task_id=task_id,
+                    conversation_id=conversation_id,
+                    turn_id=turn_id,
+                )
                 if response.verdict == "answer":
                     outcome, reason = "answer", "none"
                 elif response.refusal is not None and response.refusal.kind == "retrieval_failure":
@@ -137,7 +153,15 @@ class KnowledgeQueryService:
                     duration_ms=duration_seconds * 1_000,
                 )
 
-    def _query(self, question: str, auth: AuthContext) -> KnowledgeQueryResult:
+    def _query(
+        self,
+        question: str,
+        auth: AuthContext,
+        *,
+        task_id: str | None = None,
+        conversation_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> KnowledgeQueryResult:
         try:
             result = self._retriever.search(question, auth)
         except Exception:
@@ -150,8 +174,15 @@ class KnowledgeQueryService:
             )
             return self._refusal(kind)
 
-        task_id = uuid4().hex
+        task_id = task_id or uuid4().hex
+        conversation_bound = conversation_id is not None and turn_id is not None
         try:
+            binding: dict[str, str | None] = {}
+            if conversation_id is not None or turn_id is not None:
+                binding = {
+                    "conversation_id": conversation_id,
+                    "turn_id": turn_id,
+                }
             records = self._lifecycle.start_fenced_query_with_evidence(
                 task_id=task_id,
                 query_fingerprint=result.query_fingerprint,
@@ -160,6 +191,7 @@ class KnowledgeQueryService:
                 lease_owner=_SYNC_LEASE_OWNER,
                 lease_seconds=_SYNC_LEASE_SECONDS,
                 lease_generation=_SYNC_LEASE_GENERATION,
+                **binding,
             )
         except Exception:
             raise _QueryFailure("evidence_record_failed") from None
@@ -167,6 +199,9 @@ class KnowledgeQueryService:
         try:
             verdict = self._model.answer(question, list(result.candidates))
         except Exception:
+            if conversation_bound:
+                # 会话路径由同一事务写任务、轮次和助手拒答，不提前分裂结算。
+                return self._refusal("retrieval_failure")
             self._finish_task(task_id, auth, status="failed", error_code="answer_model_failed")
             raise _QueryFailure("answer_model_failed") from None
         if verdict.verdict != "answer":
@@ -175,12 +210,14 @@ class KnowledgeQueryService:
                 if verdict.refusal_kind == "conflict"
                 else "insufficient_evidence"
             )
-            self._finish_task(task_id, auth, status="succeeded")
+            if not conversation_bound:
+                self._finish_task(task_id, auth, status="succeeded")
             return self._refusal(kind)
 
         used_ids = verdict.used_chunk_ids
         if len(used_ids) != len(set(used_ids)):
-            self._finish_task(task_id, auth, status="failed", error_code="duplicate_model_citation")
+            if not conversation_bound:
+                self._finish_task(task_id, auth, status="failed", error_code="duplicate_model_citation")
             return self._refusal("conflicting_evidence")
         evidence_by_chunk = {
             candidate.chunk_id: record.evidence_id
@@ -189,10 +226,12 @@ class KnowledgeQueryService:
         try:
             evidence_ids = tuple(evidence_by_chunk[chunk_id] for chunk_id in used_ids)
         except KeyError:
-            self._finish_task(task_id, auth, status="failed", error_code="unknown_model_citation")
+            if not conversation_bound:
+                self._finish_task(task_id, auth, status="failed", error_code="unknown_model_citation")
             return self._refusal("conflicting_evidence")
         if not evidence_ids or not verdict.answer.strip():
-            self._finish_task(task_id, auth, status="failed", error_code="empty_supported_answer")
+            if not conversation_bound:
+                self._finish_task(task_id, auth, status="failed", error_code="empty_supported_answer")
             return self._refusal("conflicting_evidence")
 
         try:
@@ -202,8 +241,11 @@ class KnowledgeQueryService:
                 evidence_ids=evidence_ids,
                 lease_owner=_SYNC_LEASE_OWNER,
                 lease_generation=_SYNC_LEASE_GENERATION,
+                defer_terminal=conversation_bound,
             )
         except Exception:
+            if conversation_bound:
+                return self._refusal("retrieval_failure")
             self._finish_task(task_id, auth, status="failed", error_code="citation_revalidation_failed")
             raise _QueryFailure(
                 "citation_revalidation_failed", refusal_kind="conflicting_evidence"
@@ -212,6 +254,7 @@ class KnowledgeQueryService:
             verdict="answer",
             answer=verdict.answer.strip(),
             citations=citations,
+            evidence_ids=evidence_ids,
         )
 
     def _finish_task(

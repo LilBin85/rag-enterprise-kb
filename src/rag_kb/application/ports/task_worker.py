@@ -134,6 +134,9 @@ class TaskWorkerLifecyclePort(Protocol):
         run_id: str,
         auth_request_id: str | None = None,
         counts: dict[str, int] | None = None,
+        conversation_message: str | None = None,
+        conversation_evidence_ids: tuple[str, ...] = (),
+        conversation_artifacts: tuple[dict[str, object], ...] = (),
     ) -> TaskState: ...
 
     def settle_applied_resume_command(self, *, command_id: str) -> ResumeCommand | None: ...

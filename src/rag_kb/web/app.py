@@ -18,10 +18,10 @@ from rag_kb.observability import (
     normalize_request_id,
 )
 from rag_kb.web.routers.health import router as health_router
-from rag_kb.web.routers.knowledge import router as knowledge_router
 from rag_kb.web.routers.documents import router as documents_router
 from rag_kb.web.routers.tasks import router as tasks_router
 from rag_kb.web.routers.approvals import router as approvals_router
+from rag_kb.web.routers.conversations import router as conversations_router
 
 
 def _route_template(request: Request) -> str:
@@ -131,8 +131,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
     app.include_router(health_router)
-    app.include_router(knowledge_router)
     app.include_router(documents_router)
+    app.include_router(conversations_router)
     app.include_router(tasks_router)
     app.include_router(approvals_router)
 

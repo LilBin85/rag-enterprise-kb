@@ -21,6 +21,8 @@ class KnowledgeQueryLifecyclePort(Protocol):
         lease_owner: str,
         lease_seconds: int,
         lease_generation: int,
+        conversation_id: str | None = None,
+        turn_id: str | None = None,
     ) -> tuple[EvidenceRecord, ...]: ...
 
     def finish_fenced_query_with_citations(
@@ -31,6 +33,7 @@ class KnowledgeQueryLifecyclePort(Protocol):
         evidence_ids: tuple[str, ...],
         lease_owner: str,
         lease_generation: int,
+        defer_terminal: bool = False,
     ) -> tuple[Citation, ...]: ...
 
     def close_fenced_query(

@@ -138,6 +138,8 @@ def _command_from_row(row: TaskResumeCommandRow) -> ResumeCommand:
 def _state_from_row(row: AgentTaskRow) -> TaskState:
     return TaskState(
         task_id=row.task_id,
+        conversation_id=row.conversation_id,
+        turn_id=row.conversation_turn_id,
         auth_context_ref=row.auth_context_ref,
         goal=row.goal,
         task_mode=TaskMode(row.task_mode),
@@ -157,6 +159,8 @@ def _state_from_row(row: AgentTaskRow) -> TaskState:
         deadline=_aware(row.deadline),
         cancelled=row.cancelled,
     )
+
+
 
 
 class DatabaseTaskRepository:
@@ -214,9 +218,45 @@ class DatabaseTaskRepository:
         budgets: TaskBudgets | None = None,
         deadline: datetime | None = None,
         task_id: str | None = None,
+        conversation_id: str | None = None,
+        turn_id: str | None = None,
     ) -> TaskState:
+        with UnitOfWork(self._database) as work:
+            assert work.session is not None
+            return self.create_task_in_session(
+                work.session,
+                auth=auth,
+                goal=goal,
+                task_mode=task_mode,
+                budgets=budgets,
+                deadline=deadline,
+                task_id=task_id,
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+            )
+
+    def create_task_in_session(
+        self,
+        session,
+        *,
+        auth: AuthContext,
+        goal: str,
+        task_mode: TaskMode,
+        budgets: TaskBudgets | None = None,
+        deadline: datetime | None = None,
+        task_id: str | None = None,
+        conversation_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> TaskState:
+        """供会话编排复用的同一事务建任务原语。
+
+        调用方必须已经锁住会话/轮次；这里仍在插入前以 capability 行锁完成
+        可用性检查，避免把会话绑定到永远不可领取的耐久任务。
+        """
         if not goal.strip():
             raise ValueError("task_goal_required")
+        if (conversation_id is None) != (turn_id is None):
+            raise ValueError("task_conversation_binding_invalid")
         configured = budgets if budgets is not None else self._default_budgets
         deadline = _aware(deadline)
         auth_ref = canonical_fingerprint(
@@ -229,55 +269,55 @@ class DatabaseTaskRepository:
                 "attributes": auth.attributes,
             },
         )
-        with UnitOfWork(self._database) as work:
-            assert work.session is not None
-            now = self._lease_now(work.session)
-            if deadline is None:
-                deadline = now + timedelta(seconds=configured.max_runtime_seconds)
-            if deadline <= now:
-                raise TaskRepositoryError("task_deadline_expired")
-            if (
-                task_mode in {TaskMode.RESEARCH, TaskMode.CONTROLLED_ACTION}
-                and self._creation_capability_required
-                and not self._has_active_capability_in_session(
-                    work.session,
-                    capability_name=self._task_capability_name,
-                    protocol_version=self._task_capability_protocol_version,
-                    for_update=True,
-                )
-            ):
-                raise TaskRepositoryError(
-                    "research_agent_unavailable"
-                    if task_mode is TaskMode.RESEARCH
-                    else "task_agent_unavailable"
-                )
-            pending_traceparent, pending_tracestate = current_trace_headers()
-            row = AgentTaskRow(
-                task_id=task_id or uuid4().hex,
-                tenant_id=auth.tenant_id,
-                user_id=auth.user_id,
-                task_mode=task_mode.value,
-                status=TaskStatus.PLANNING.value,
-                goal=goal.strip(),
-                auth_context_ref=auth_ref,
-                budgets=configured.model_dump(mode="json"),
-                deadline=deadline,
-                available_at=now,
-                required_capability_name=self._task_capability_name,
-                required_protocol_version=self._task_capability_protocol_version,
-                pending_traceparent=pending_traceparent,
-                pending_tracestate=pending_tracestate,
+        now = self._lease_now(session)
+        if deadline is None:
+            deadline = now + timedelta(seconds=configured.max_runtime_seconds)
+        if deadline <= now:
+            raise TaskRepositoryError("task_deadline_expired")
+        if (
+            task_mode in {TaskMode.RESEARCH, TaskMode.CONTROLLED_ACTION}
+            and self._creation_capability_required
+            and not self._has_active_capability_in_session(
+                session,
+                capability_name=self._task_capability_name,
+                protocol_version=self._task_capability_protocol_version,
+                for_update=True,
             )
-            work.session.add(row)
-            work.session.flush()
-            self._append_event(
-                work.session,
-                row,
-                event_type="task_created",
-                correlation_id=auth.request_id,
-                run_id=None,
+        ):
+            raise TaskRepositoryError(
+                "research_agent_unavailable"
+                if task_mode is TaskMode.RESEARCH
+                else "task_agent_unavailable"
             )
-            return _state_from_row(row)
+        pending_traceparent, pending_tracestate = current_trace_headers()
+        row = AgentTaskRow(
+            task_id=task_id or uuid4().hex,
+            tenant_id=auth.tenant_id,
+            user_id=auth.user_id,
+            conversation_id=conversation_id,
+            conversation_turn_id=turn_id,
+            task_mode=task_mode.value,
+            status=TaskStatus.PLANNING.value,
+            goal=goal.strip(),
+            auth_context_ref=auth_ref,
+            budgets=configured.model_dump(mode="json"),
+            deadline=deadline,
+            available_at=now,
+            required_capability_name=self._task_capability_name,
+            required_protocol_version=self._task_capability_protocol_version,
+            pending_traceparent=pending_traceparent,
+            pending_tracestate=pending_tracestate,
+        )
+        session.add(row)
+        session.flush()
+        self._append_event(
+            session,
+            row,
+            event_type="task_created",
+            correlation_id=auth.request_id,
+            run_id=None,
+        )
+        return _state_from_row(row)
 
     def get_task(self, *, auth: AuthContext, task_id: str) -> TaskState:
         with self._database.sessions() as session:
@@ -291,6 +331,31 @@ class DatabaseTaskRepository:
             if row is None:
                 raise TaskRepositoryError("task_not_found")
             return _state_from_row(row)
+
+    def conversation_context_for_task(
+        self, *, tenant_id: str, task_id: str
+    ) -> tuple[tuple[dict[str, str], ...], str | None]:
+        """读取任务创建时冻结的会话快照；恢复时只用于重建运行 context。"""
+        from rag_kb.infrastructure.database.conversation_repository import context_hash
+        from rag_kb.infrastructure.database.models import ConversationTurnRow
+
+        with self._database.sessions() as session:
+            row = session.scalar(
+                select(ConversationTurnRow).where(
+                    ConversationTurnRow.tenant_id == tenant_id,
+                    ConversationTurnRow.task_id == task_id,
+                )
+            )
+            if row is None:
+                return (), None
+            snapshot = tuple(
+                {"role": str(item.get("role", "user")), "content": str(item.get("content", ""))}
+                for item in (row.context_snapshot or [])
+                if isinstance(item, dict) and str(item.get("content", "")).strip()
+            )
+            if row.context_hash != context_hash(snapshot):
+                return (), None
+            return snapshot, row.context_hash
 
     def register_capability(
         self,
@@ -925,6 +990,7 @@ class DatabaseTaskRepository:
             row.lease_generation += 1
             row.status = TaskStatus.RUNNING.value
             row.updated_at = now
+            self._sync_conversation_turn(work.session, row, now=now)
             work.session.flush()
             return TaskLease(
                 state=_state_from_row(row),
@@ -1014,34 +1080,52 @@ class DatabaseTaskRepository:
         answer: str,
     ) -> ResumeCommand:
         """锁定 task 后只写耐久命令；不构造 Agent 或 checkpoint。"""
+        with UnitOfWork(self._database) as work:
+            assert work.session is not None
+            return self.enqueue_user_resume_command_in_session(
+                work.session,
+                auth=auth,
+                task_id=task_id,
+                expected_state_version=expected_state_version,
+                answer=answer,
+            )
+
+    def enqueue_user_resume_command_in_session(
+        self,
+        session,
+        *,
+        auth: AuthContext,
+        task_id: str,
+        expected_state_version: int,
+        answer: str,
+    ) -> ResumeCommand:
+        """在调用方事务中锁定任务并写入澄清恢复命令。"""
         payload_body = self._normalize_resume_body(
             answer, required=True, maximum_length=2_000
         )
-        with UnitOfWork(self._database) as work:
-            assert work.session is not None
-            self._begin_resume_write(work.session)
-            task = self._lock_resume_task(
-                work.session,
-                tenant_id=auth.tenant_id,
-                task_id=task_id,
-                skip_locked=False,
-            )
-            if task is None or task.user_id != auth.user_id:
-                # 与既有 task 读取一致，不以跨租户/非所有者差异泄漏存在性。
-                raise TaskRepositoryError("task_not_found")
-            now = self._lease_now(work.session)
-            return self.enqueue_resume_command_in_session(
-                work.session,
-                task=task,
-                actor_principal_id=auth.user_id,
-                actor_kind="user",
-                kind=ResumeCommandKind.USER_CLARIFICATION,
-                expected_task_state_version=expected_state_version,
-                payload_body=payload_body,
-                approval=None,
-                decision=None,
-                now=now,
-            )
+        self._begin_resume_write(session)
+        task = self._lock_resume_task(
+            session,
+            tenant_id=auth.tenant_id,
+            task_id=task_id,
+            skip_locked=False,
+        )
+        if task is None or task.user_id != auth.user_id:
+            # 与既有 task 读取一致，不以跨租户/非所有者差异泄漏存在性。
+            raise TaskRepositoryError("task_not_found")
+        now = self._lease_now(session)
+        return self.enqueue_resume_command_in_session(
+            session,
+            task=task,
+            actor_principal_id=auth.user_id,
+            actor_kind="user",
+            kind=ResumeCommandKind.USER_CLARIFICATION,
+            expected_task_state_version=expected_state_version,
+            payload_body=payload_body,
+            approval=None,
+            decision=None,
+            now=now,
+        )
 
     def enqueue_approval_resume_command(
         self,
@@ -1537,6 +1621,7 @@ class DatabaseTaskRepository:
                 command.updated_at = now
             else:
                 return None
+            self._sync_conversation_turn(work.session, task, now=now)
             work.session.flush()
             return ResumeCommandLease(
                 command=_command_from_row(command),
@@ -2174,6 +2259,7 @@ class DatabaseTaskRepository:
                 now=now,
                 failure_code=failure_code,
             )
+            self._sync_conversation_turn(work.session, task, now=now)
             work.session.flush()
             return _command_from_row(command)
 
@@ -2367,6 +2453,7 @@ class DatabaseTaskRepository:
                         correlation_id="task_resume_expired",
                         run_id=None,
                     )
+                    self._sync_conversation_turn(work.session, task, now=now)
                 self._terminalize_resume_command(
                     command,
                     status=ResumeCommandStatus.EXPIRED,
@@ -2675,6 +2762,7 @@ class DatabaseTaskRepository:
                 row.lease_expires_at = None
                 row.state_version += 1
                 row.updated_at = now
+                self._sync_conversation_turn(work.session, row, now=now)
                 work.session.flush()
                 self._append_event(
                     work.session,
@@ -2715,6 +2803,7 @@ class DatabaseTaskRepository:
                 row.lease_expires_at = None
                 row.state_version += 1
                 row.updated_at = now
+                self._sync_conversation_turn(work.session, row, now=now)
             return len(rows)
 
     def release_lease(self, lease: TaskLease) -> None:
@@ -2818,6 +2907,9 @@ class DatabaseTaskRepository:
             row.lease_expires_at = None
             row.state_version += 1
             row.updated_at = now
+            self._sync_conversation_turn(
+                work.session, row, now=now, clarification_question=row.interrupt_summary
+            )
             work.session.flush()
             self._append_event(
                 work.session,
@@ -2879,6 +2971,7 @@ class DatabaseTaskRepository:
             row.lease_expires_at = None
             row.state_version += 1
             row.updated_at = now
+            self._sync_conversation_turn(work.session, row, now=now)
             work.session.flush()
             self._append_event(
                 work.session,
@@ -2901,6 +2994,9 @@ class DatabaseTaskRepository:
         run_id: str,
         auth_request_id: str | None = None,
         counts: dict[str, int] | None = None,
+        conversation_message: str | None = None,
+        conversation_evidence_ids: tuple[str, ...] = (),
+        conversation_artifacts: tuple[dict[str, object], ...] = (),
     ) -> TaskState:
         """终态写入：succeeded 必须原子绑定有效结果（计划 §11.4 门禁）。"""
         if status not in _TERMINAL_STATUSES:
@@ -2985,6 +3081,14 @@ class DatabaseTaskRepository:
             row.lease_expires_at = None
             row.state_version += 1
             row.updated_at = now
+            self._sync_conversation_turn(
+                work.session,
+                row,
+                now=now,
+                terminal_message=conversation_message,
+                terminal_evidence_ids=conversation_evidence_ids,
+                terminal_artifacts=conversation_artifacts,
+            )
             work.session.flush()
             self._append_event(
                 work.session,
@@ -3053,6 +3157,7 @@ class DatabaseTaskRepository:
             row.lease_expires_at = None
             row.state_version += 1
             row.updated_at = now
+            self._sync_conversation_turn(work.session, row, now=now)
             work.session.flush()
             self._append_event(
                 work.session,
@@ -3070,6 +3175,137 @@ class DatabaseTaskRepository:
             raise TaskRepositoryError("task_lease_generation_stale")
         if expires_at is None or expires_at <= now:
             raise TaskRepositoryError("task_lease_expired")
+
+    @staticmethod
+    def _sync_conversation_turn(
+        session,
+        row: AgentTaskRow,
+        *,
+        now: datetime,
+        clarification_question: str | None = None,
+        terminal_message: str | None = None,
+        terminal_evidence_ids: tuple[str, ...] = (),
+        terminal_artifacts: tuple[dict[str, object], ...] = (),
+    ) -> None:
+        """在任务事务内同步绑定轮次；旧任务没有绑定时保持原行为。"""
+        if row.conversation_id is None or row.conversation_turn_id is None:
+            return
+        from uuid import uuid4
+
+        from rag_kb.infrastructure.database.conversation_repository import request_hash
+        from rag_kb.infrastructure.database.models import (
+            ConversationMessageRow,
+            ConversationRow,
+            ConversationTurnRow,
+        )
+
+        turn = session.scalar(
+            select(ConversationTurnRow)
+            .where(
+                ConversationTurnRow.tenant_id == row.tenant_id,
+                ConversationTurnRow.conversation_id == row.conversation_id,
+                ConversationTurnRow.turn_id == row.conversation_turn_id,
+                ConversationTurnRow.task_id == row.task_id,
+            )
+            .with_for_update()
+        )
+        if turn is None:
+            raise TaskRepositoryError("task_conversation_binding_invalid")
+        from rag_kb.domain.conversations import turn_status_for_task_status
+
+        turn.status = turn_status_for_task_status(row.status).value
+        turn.task_state_version = row.state_version
+        turn.updated_at = now
+        conversation = session.scalar(
+            select(ConversationRow)
+            .where(
+                ConversationRow.tenant_id == row.tenant_id,
+                ConversationRow.conversation_id == row.conversation_id,
+            )
+            .with_for_update()
+        )
+        if conversation is None:
+            raise TaskRepositoryError("task_conversation_binding_invalid")
+        conversation.state_version += 1
+        conversation.updated_at = now
+        if clarification_question:
+            existing = session.scalar(
+                select(ConversationMessageRow.message_id).where(
+                    ConversationMessageRow.tenant_id == row.tenant_id,
+                    ConversationMessageRow.conversation_id == row.conversation_id,
+                    ConversationMessageRow.turn_id == row.conversation_turn_id,
+                    ConversationMessageRow.kind == "clarification_request",
+                    ConversationMessageRow.content_hash
+                    == request_hash({"content": clarification_question}),
+                )
+            )
+            if existing is None:
+                sequence = int(
+                    session.scalar(
+                        select(func.coalesce(func.max(ConversationMessageRow.sequence), 0)).where(
+                            ConversationMessageRow.tenant_id == row.tenant_id,
+                            ConversationMessageRow.conversation_id == row.conversation_id,
+                        )
+                    )
+                    or 0
+                ) + 1
+                session.add(
+                    ConversationMessageRow(
+                        message_id=uuid4().hex,
+                        tenant_id=row.tenant_id,
+                        conversation_id=row.conversation_id,
+                        turn_id=row.conversation_turn_id,
+                        sequence=sequence,
+                        role="assistant",
+                        kind="clarification_request",
+                        content=clarification_question,
+                        content_hash=request_hash({"content": clarification_question}),
+                        task_id=row.task_id,
+                        evidence_ids=[],
+                        artifacts=[],
+                        created_at=now,
+                    )
+                )
+        if terminal_message and row.status in {
+            TaskStatus.SUCCEEDED.value,
+            TaskStatus.REFUSED.value,
+        }:
+            existing = session.scalar(
+                select(ConversationMessageRow.message_id).where(
+                    ConversationMessageRow.tenant_id == row.tenant_id,
+                    ConversationMessageRow.conversation_id == row.conversation_id,
+                    ConversationMessageRow.turn_id == row.conversation_turn_id,
+                    ConversationMessageRow.role == "assistant",
+                    ConversationMessageRow.kind.in_(("answer", "refusal")),
+                )
+            )
+            if existing is None:
+                sequence = int(
+                    session.scalar(
+                        select(func.coalesce(func.max(ConversationMessageRow.sequence), 0)).where(
+                            ConversationMessageRow.tenant_id == row.tenant_id,
+                            ConversationMessageRow.conversation_id == row.conversation_id,
+                        )
+                    )
+                    or 0
+                ) + 1
+                session.add(
+                    ConversationMessageRow(
+                        message_id=uuid4().hex,
+                        tenant_id=row.tenant_id,
+                        conversation_id=row.conversation_id,
+                        turn_id=row.conversation_turn_id,
+                        sequence=sequence,
+                        role="assistant",
+                        kind="answer" if row.status == TaskStatus.SUCCEEDED.value else "refusal",
+                        content=terminal_message[:20_000],
+                        content_hash=request_hash({"content": terminal_message[:20_000]}),
+                        task_id=row.task_id,
+                        evidence_ids=list(terminal_evidence_ids),
+                        artifacts=list(terminal_artifacts),
+                        created_at=now,
+                    )
+                )
 
     @staticmethod
     def _claim_protocol(

@@ -85,7 +85,10 @@ def test_ready_probe_fails_closed() -> None:
 def test_factory_only_exposes_versioned_contracts() -> None:
     paths = create_app().openapi()["paths"]
 
-    assert "/v1/knowledge/query" in paths
+    assert "/v1/conversations" in paths
+    assert "/v1/conversations/{conversation_id}/messages" in paths
+    assert "/v1/knowledge/query" not in paths
+    assert "/v1/tasks" not in paths
     assert "/questions" not in paths
     assert "/documents" not in paths
 

@@ -29,6 +29,10 @@ class AgentRunContext(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     task_id: str = Field(min_length=1, max_length=64)
+    conversation_id: str | None = Field(default=None, max_length=64)
+    turn_id: str | None = Field(default=None, max_length=64)
+    conversation_context_hash: str | None = Field(default=None, max_length=80)
+    conversation_context: tuple[dict[str, str], ...] = Field(default=(), repr=False)
     tenant_id: str = Field(min_length=1, max_length=200)
     user_id: str = Field(min_length=1, max_length=200)
     task_mode: TaskMode

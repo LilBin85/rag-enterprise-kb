@@ -15,6 +15,7 @@ from rag_kb.application.task_query_service import TaskQueryService
 from rag_kb.application.task_result_service import TaskResultService
 from rag_kb.agent.result import AgentResultStore
 from rag_kb.application.document_service import DocumentService
+from rag_kb.application.conversation_service import ConversationService
 from rag_kb.domain.identity import AuthContext
 from rag_kb.infrastructure.auth.providers import DemoTokenIdentityProvider, IdentityProvider
 from rag_kb.infrastructure.database import build_database
@@ -39,7 +40,7 @@ from rag_kb.infrastructure.vectorstore.qdrant_document_index import QdrantDocume
 from rag_kb.observability import normalize_request_id
 
 
-EXPECTED_DATABASE_REVISION = "20260831_0015"
+EXPECTED_DATABASE_REVISION = "20260906_0016"
 
 
 class ReadinessFailure(RuntimeError):
@@ -151,6 +152,26 @@ def build_knowledge_query_service() -> KnowledgeQueryService:
         DatabaseKnowledgeQueryLifecycle(database),
         retriever,
         DeepSeekAnswerModel(settings),
+    )
+
+
+@lru_cache
+def build_conversation_service() -> ConversationService:
+    """仅装配依赖；路由模型在首个真实会话请求时才会被调用。"""
+    from rag_kb.conversation_router import DeepSeekConversationRouter
+    from rag_kb.infrastructure.database.conversation_repository import (
+        DatabaseConversationRepository,
+    )
+
+    settings = get_settings()
+    database = build_database(settings.database_url)
+    tasks = build_task_repository()
+    return ConversationService(
+        DatabaseConversationRepository(database),
+        tasks,
+        knowledge_queries=build_knowledge_query_service(),
+        router=DeepSeekConversationRouter(settings),
+        controlled_action_enabled=settings.enable_controlled_action_tasks,
     )
 
 

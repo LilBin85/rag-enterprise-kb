@@ -34,6 +34,8 @@ class TaskRetentionService:
         orphan_grace_seconds: int,
         now: Callable[[], datetime] | None = None,
         close: Callable[[], None] | None = None,
+        conversation_purger: Callable[..., int] | None = None,
+        conversation_expirer: Callable[..., int] | None = None,
     ) -> None:
         if orphan_grace_seconds <= 0:
             raise ValueError("invalid_result_object_orphan_grace")
@@ -44,6 +46,8 @@ class TaskRetentionService:
         self._orphan_grace = timedelta(seconds=orphan_grace_seconds)
         self._now = now or (lambda: datetime.now(UTC))
         self._close = close
+        self._conversation_purger = conversation_purger
+        self._conversation_expirer = conversation_expirer
         self._orphan_prefix_index = 0
         self._orphan_cursors: dict[str, str | None] = {
             prefix: None for prefix in _RESULT_PREFIXES
@@ -66,6 +70,18 @@ class TaskRetentionService:
 
     def expire_waiting_tasks(self, *, limit: int = 100) -> int:
         return self._lifecycle.expire_waiting_tasks(limit=limit)
+
+    def purge_conversation_content(self, *, limit: int = 100) -> int:
+        self._validate_limit(limit)
+        if self._conversation_purger is None:
+            return 0
+        return self._conversation_purger(limit=limit)
+
+    def expire_conversations(self, *, limit: int = 100) -> int:
+        self._validate_limit(limit)
+        if self._conversation_expirer is None:
+            return 0
+        return self._conversation_expirer(limit=limit)
 
     def purge_expired_tool_results(self, *, limit: int = 100) -> int:
         """正文到期后只清引用；工具的 succeeded 审计结论保持不变。"""

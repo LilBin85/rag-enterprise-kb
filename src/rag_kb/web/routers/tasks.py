@@ -12,7 +12,6 @@ from rag_kb.application.artifact_content_service import (
     ArtifactContentError,
     ArtifactContentService,
 )
-from rag_kb.config import get_settings
 from rag_kb.domain.identity import AuthContext, Permission
 from rag_kb.domain.tasks import TaskMode, TaskState
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository, TaskRepositoryError
@@ -25,11 +24,7 @@ from rag_kb.web.dependencies import (
 )
 from rag_kb.web.schemas.tasks import (
     TaskCancelRequest,
-    TaskContinueRequest,
-    TaskContinueResponse,
-    TaskCreateRequest,
     TaskEventResponse,
-    ResumeCommandResponse,
     TaskResponse,
 )
 
@@ -44,6 +39,8 @@ def _require(auth: AuthContext, permission: Permission) -> None:
 def _task_response(*, state: TaskState, now: datetime) -> TaskResponse:
     return TaskResponse(
         task_id=state.task_id,
+        conversation_id=getattr(state, "conversation_id", None),
+        turn_id=getattr(state, "turn_id", None),
         goal=state.goal,
         task_mode=state.task_mode,
         status=state.status,
@@ -72,31 +69,6 @@ def _repository_error(exc: TaskRepositoryError) -> HTTPException:
     return HTTPException(status_code=409, detail="任务操作冲突")
 
 
-@router.post("", response_model=TaskResponse, status_code=202)
-def create_task(
-    request: TaskCreateRequest,
-    auth: Annotated[AuthContext, Depends(resolve_auth_context)],
-    repository: Annotated[DatabaseTaskRepository, Depends(build_task_repository)],
-) -> TaskResponse:
-    _require(auth, Permission.TASK_CREATE)
-    if (
-        request.task_mode is TaskMode.CONTROLLED_ACTION
-        and not get_settings().enable_controlled_action_tasks
-    ):
-        raise HTTPException(status_code=503, detail="受控动作暂不可用")
-    try:
-        return _task_response(
-            state=repository.create_task(
-                auth=auth, goal=request.goal, task_mode=request.task_mode
-            ),
-            now=repository.current_time(),
-        )
-    except TaskRepositoryError as exc:
-        raise _repository_error(exc) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="任务请求非法") from exc
-
-
 @router.get("/{task_id}/artifacts/{artifact_id}/content")
 def get_artifact_content(
     task_id: str,
@@ -122,22 +94,6 @@ def get_artifact_content(
         raise HTTPException(status_code=500, detail="产物正文校验失败") from None
 
 
-@router.get("/{task_id}", response_model=TaskResponse)
-def get_task(
-    task_id: str,
-    auth: Annotated[AuthContext, Depends(resolve_auth_context)],
-    repository: Annotated[DatabaseTaskRepository, Depends(build_task_repository)],
-) -> TaskResponse:
-    _require(auth, Permission.TASK_READ)
-    try:
-        return _task_response(
-            state=repository.get_task(auth=auth, task_id=task_id),
-            now=repository.current_time(),
-        )
-    except TaskRepositoryError as exc:
-        raise _repository_error(exc) from exc
-
-
 @router.get("/{task_id}/result", response_model=TaskResult)
 def get_result(
     task_id: str,
@@ -158,34 +114,6 @@ def get_result(
         if exc.code in {"task_result_integrity_failed", "task_result_binding_invalid"}:
             raise HTTPException(status_code=500, detail="任务结果校验失败") from None
         raise HTTPException(status_code=409, detail="任务结果不可用") from None
-
-
-@router.post("/{task_id}/continue", response_model=TaskContinueResponse, status_code=202)
-def continue_task(
-    task_id: str,
-    request: TaskContinueRequest,
-    auth: Annotated[AuthContext, Depends(resolve_auth_context)],
-    repository: Annotated[DatabaseTaskRepository, Depends(build_task_repository)],
-) -> TaskContinueResponse:
-    _require(auth, Permission.TASK_READ)
-    try:
-        command = repository.enqueue_user_resume_command(
-            auth=auth,
-            task_id=task_id,
-            expected_state_version=request.expected_state_version,
-            answer=request.answer,
-        )
-        return TaskContinueResponse(
-            **_task_response(
-                state=repository.get_task(auth=auth, task_id=task_id),
-                now=repository.current_time(),
-            ).model_dump(),
-            resume_command=ResumeCommandResponse(command_id=command.command_id),
-        )
-    except TaskRepositoryError as exc:
-        raise _repository_error(exc) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="任务继续请求非法") from exc
 
 
 @router.post("/{task_id}/cancel", response_model=TaskResponse)
@@ -233,3 +161,20 @@ def get_events(
         if exc.code == "task_read_denied":
             raise HTTPException(status_code=403, detail="任务权限不足") from exc
         raise HTTPException(status_code=404, detail="任务不存在") from exc
+
+
+@router.get("/{task_id}", response_model=TaskResponse)
+def get_task(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(resolve_auth_context)],
+    repository: Annotated[DatabaseTaskRepository, Depends(build_task_repository)],
+) -> TaskResponse:
+    """通用动态任务路由必须最后注册，避免吞掉 result/events 等固定后缀。"""
+    _require(auth, Permission.TASK_READ)
+    try:
+        return _task_response(
+            state=repository.get_task(auth=auth, task_id=task_id),
+            now=repository.current_time(),
+        )
+    except TaskRepositoryError as exc:
+        raise _repository_error(exc) from exc
