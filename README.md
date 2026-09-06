@@ -25,6 +25,8 @@ flowchart LR
     TW --> LLM
 ```
 
+交互式图：[系统架构总览](deliverables/rag-interview-study/diagrams/rag-system.architecture.html) · [同步知识问答](deliverables/rag-interview-study/diagrams/fast-query.workflow.html) · [文档摄取](deliverables/rag-interview-study/diagrams/document-ingestion.workflow.html) · [Durable Agent](deliverables/rag-interview-study/diagrams/durable-agent.workflow.html)
+
 PostgreSQL 是任务、恢复命令和权限状态的唯一事实源，Qdrant 只是可重建、可收敛的检索投影；Agent 身份、工具和审批绑定均由服务端注入。队列继续由 PostgreSQL claim/lease/fencing 驱动，没有新增 Redis、Celery、Kafka 或其他消息中间件。
 
 ## Fast Path 与 Durable Path

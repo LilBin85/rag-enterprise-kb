@@ -1,5 +1,7 @@
 # 架构说明
 
+交互式图：[系统架构总览](../deliverables/rag-interview-study/diagrams/rag-system.architecture.html) · [Fast Path 同步问答](../deliverables/rag-interview-study/diagrams/fast-query.workflow.html) · [文档摄取](../deliverables/rag-interview-study/diagrams/document-ingestion.workflow.html) · [Durable Agent](../deliverables/rag-interview-study/diagrams/durable-agent.workflow.html)
+
 ## 事实源与边界
 
 PostgreSQL 保存租户、主体、文档版本、ACL、Research 与 controlled_action 任务、耐久恢复命令、审批、产物、工具调用和证据账本，是任务、恢复命令和权限状态的事实源；Qdrant 只保存可重建的向量 projection。任何检索候选必须同时通过 SQL 授权集和 Qdrant payload 过滤：tenant、active/current、version generation、allowed principals。后台队列继续使用 PostgreSQL claim/lease/fencing，没有新增 Redis、Celery、Kafka 或其他消息中间件。

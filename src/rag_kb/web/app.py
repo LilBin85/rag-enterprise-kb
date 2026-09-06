@@ -25,17 +25,21 @@ from rag_kb.web.routers.approvals import router as approvals_router
 
 
 def _route_template(request: Request) -> str:
+    """提取路由模板（如 /kb/{id}），避免路径参数进入指标标签导致基数膨胀。"""
     route = request.scope.get("route")
     template = getattr(route, "path_format", None) or getattr(route, "path", None)
     return template if isinstance(template, str) and template.startswith("/") else "/unknown"
 
 
 def _status_class(status_code: int) -> str:
+    """将状态码归并为 2xx/4xx/5xx 等类别，用于指标聚合。"""
     return f"{status_code // 100}xx" if 100 <= status_code <= 599 else "unknown"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
+    """构建并装配 FastAPI 应用：可观测性、中间件、异常处理与路由。"""
     settings = settings or get_settings()
+    # 根据配置初始化追踪/指标，并启用 JSON 结构化日志
     observability = Observability(
         enabled=settings.observability_enabled,
         metrics_enabled=settings.metrics_enabled,
@@ -47,6 +51,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        # 应用启动时开启可观测性，退出时释放相关资源
         observability.start()
         try:
             yield
@@ -58,12 +63,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def observe_http(request: Request, call_next) -> Response:
+        # 每个请求的统一观测入口：请求 ID 贯穿、链路追踪、指标与访问日志
         request_id = normalize_request_id(request.headers.get("X-Request-ID"))
         request.state.request_id = request_id
         request_token = bind_request_id(request_id)
         response: Response | None = None
         started_at = perf_counter()
         try:
+            # 从上游 traceparent/tracestate 提取上下文，延续调用链
             parent_context = extract_trace_context(
                 request.headers.get("traceparent"), request.headers.get("tracestate")
             )
@@ -79,6 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         method = request.method
                         duration_seconds = perf_counter() - started_at
                         status_code = response.status_code
+                        # 结束 HTTP span 并记录指标与访问日志
                         observability.finish_http_span(
                             span,
                             route=route,
@@ -98,6 +106,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             outcome=_status_class(status_code),
                             duration_ms=duration_seconds * 1_000,
                         )
+                        # 回写请求 ID，便于客户端与服务端日志关联
                         response.headers["X-Request-ID"] = request_id
             assert response is not None
             return response
@@ -108,12 +117,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def validation_error(
         _request: Request, _exc: RequestValidationError
     ) -> JSONResponse:
+        # 参数校验失败统一返回 422，避免泄露内部校验细节
         return JSONResponse(status_code=422, content={"detail": "请求参数非法"})
 
     if settings.metrics_enabled:
 
         @app.get("/metrics", include_in_schema=False)
         def metrics() -> Response:
+            # Prometheus 抓取端点，不对外暴露在 OpenAPI 文档中
             return Response(
                 content=observability.metrics_payload(),
                 media_type=observability.metrics_content_type,
