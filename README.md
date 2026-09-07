@@ -54,13 +54,13 @@ docker compose up --build -d
 
 | 验收项 | 固定版本实测结果 |
 | --- | ---: |
-| 自动化测试 | 588 / 588 通过，0 失败，0 跳过 |
+| 自动化测试 | 598 / 598 通过，0 失败，0 跳过 |
 | 检索质量 | Recall@5 = 1.00，MRR = 1.00，无答案准确率 = 1.00 |
 | 权限隔离 | ACL 泄漏率 = 0 |
-| M1 只读 Research Agent | 通过；4 次工具调用，3 条引用 |
+| M1 只读 Research Agent | 通过；4 次工具调用，5 条引用 |
 | M2 受控写入 | 通过；31 个任务，21 个场景 |
 
-数据来自机器报告 [docs/acceptance/latest.json](docs/acceptance/latest.json)，当前绑定最近一次受验收的生产代码版本 `01f8263`。报告固化及后续纯文档或仓库维护提交可以拥有更新的 HEAD，但不会扩大该报告的验收范围；任何生产代码改动后都必须重新生成报告，并以 `verdict`、`gates`、`unverified` 和检索质量门为准。
+数据来自机器报告 [docs/acceptance/latest.json](docs/acceptance/latest.json)，当前绑定最近一次受验收的生产代码版本 `9361c8c`。报告固化及后续纯文档或仓库维护提交可以拥有更新的 HEAD，但不会扩大该报告的验收范围；任何生产代码改动后都必须重新生成报告，并以 `verdict`、`gates`、`unverified` 和检索质量门为准。
 
 ## 三个关键技术取舍
 
@@ -198,7 +198,7 @@ conda run -n rag-kb --no-capture-output python scripts/build_project_acceptance_
   --output docs/acceptance/latest.json
 ```
 
-报告中记录的 M1/M2 严格真实 E2E 曾在隔离资源上通过：M1 验证 V1/V2 上传、精确四个 READ 工具与结果引用；M2 验证 31 个受控任务、HITL、批准/拒绝、artifact 隔离、恢复窗口、严格 msgpack 与终态审计。其固定版本全量回归为 `528 passed / 0 failed / 0 skipped`，不是后续工作树结论；脚本不会从文档继承指标或填充缺失数字。
+报告中记录的 M1/M2 严格真实 E2E 曾在隔离资源上通过：M1 验证 V1/V2 上传、精确四个 READ 工具与结果引用；M2 验证 31 个受控任务、HITL、批准/拒绝、artifact 隔离、恢复窗口、严格 msgpack 与终态审计。其固定版本全量回归为 `598 passed / 0 failed / 0 skipped`，不是后续工作树结论；脚本不会从文档继承指标或填充缺失数字。
 
 ## 目录边界
 
