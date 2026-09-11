@@ -1,4 +1,4 @@
-name: 普通测试
+name: 普通回归
 
 on:
   push:
@@ -10,16 +10,22 @@ permissions:
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
           cache: pip
+          cache-dependency-path: |
+            backend/pyproject.toml
+            backend/requirements.txt
       - run: python -m pip install -e ".[dev,evaluation]"
       - run: python -m pytest -q -m "not integration" --junitxml=pytest-unit.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: pytest-unit
-          path: pytest-unit.xml
+          path: backend/pytest-unit.xml

@@ -4,7 +4,7 @@
 
 ## 迁移顺序
 
-1. 运行 `alembic upgrade head`，当前目标为 `20260831_0015`，再运行 `python scripts/init_agent_checkpointer.py` 初始化 checkpointer schema。
+1. 运行 `alembic upgrade head`（在后端工程目录 `backend/` 下执行），当前目标为 `20260911_0017`，再运行 `python backend/scripts/init_agent_checkpointer.py`（仓库根）初始化 checkpointer schema。
 2. 启动 PostgreSQL、Qdrant，再启动 API、`task-worker`、`ingestion-worker` 和 `projection-worker`。只有 `task-worker` 发布 `task-agent/m2-fenced-v1` capability；ingestion 与 projection Worker 不发布 task capability。
 3. 使用新版 `/v1` 客户端；首个版本使用 `POST /v1/documents`，同一文档的后续版本使用 `POST /v1/documents/{document_id}/versions`，两者都必须提供 `Idempotency-Key`。
 4. 旧接口兼容层已删除，客户端必须使用 `/v1` 接口。
@@ -57,7 +57,7 @@
 1. 关闭 Research 任务创建入口（或停止对外接受新任务）。
 2. 停止 `task-worker`、`ingestion-worker` 和 `projection-worker`，确认 task capability lease 已过期或手动删除。
 3. 备份数据库与对象目录（若环境包含需保留数据）。
-4. 执行 `alembic upgrade head` 至 `20260831_0015` 并初始化 checkpointer schema。
+4. 执行 `alembic upgrade head`（在后端工程目录 `backend/` 下执行）至 `20260911_0017` 并初始化 checkpointer schema。
 5. 部署 API、`task-worker`、`ingestion-worker` 和 `projection-worker` 新代码。
 6. 分别启动 `task-worker`、`ingestion-worker` 和 `projection-worker`；确认只有 `task-worker` 发布 capability 名称 `task-agent`、协议 `m2-fenced-v1` 的有效租约，并确认另外两个 Worker 不发布 task capability。
 7. 恢复任务入口；发布前重新执行故障注入、严格真实 E2E 与迁移 round-trip，不能复用历史报告。
@@ -65,12 +65,14 @@
 **禁止混跑**：已上线 0013 后不允许旧协议 Worker 接入任务队列；capability 门会拒绝一切非 `task-agent/m2-fenced-v1` Worker 创建/领取语义。降级只能恢复物理结构，不能恢复已删除的任务/工具/artifact 正文和已终止状态；含 M2 协议、审批或 artifact 生命周期事实的数据不得降级。正文删除不可逆，异常优先前向修复。downgrade/upgrade 后必须重新验证真实 round-trip 命令。
 
 ```powershell
+# 在后端工程目录 backend/ 下运行 alembic 与 pytest
+cd backend
 alembic upgrade head
 alembic current
 conda run -n rag-kb --no-capture-output python -m pytest -q tests/test_database_migrations.py
 ```
 
-`alembic current` 应显示 `20260831_0015 (head)`。PostgreSQL round-trip 测试需要显式空临时库：设置 `RAG_KB_TEST_POSTGRES_MIGRATION_URL` 后运行同一测试文件，upgrade/downgrade/upgrade 序列不得以 metadata 建表伪造。
+`alembic current` 应显示 `20260911_0017 (head)`。PostgreSQL round-trip 测试需要显式空临时库：设置 `RAG_KB_TEST_POSTGRES_MIGRATION_URL` 后运行同一测试文件，upgrade/downgrade/upgrade 序列不得以 metadata 建表伪造。
 
 ## 旧测试与文档
 

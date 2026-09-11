@@ -1,0 +1,575 @@
+"""新版 KnowledgeQueryService 的证据账本与失败关闭契约测试。"""
+
+from __future__ import annotations
+
+import hashlib
+import sys
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from sqlalchemy import select, update
+
+from rag_kb.answerer import DeepSeekAnswerModel, ModelVerdict
+from rag_kb.application.query_service import KnowledgeQueryService, _SYNC_LEASE_SECONDS
+from rag_kb.domain.identity import AuthContext
+from rag_kb.domain.retrieval import RetrievalCandidate, RetrievalResult
+from rag_kb.infrastructure.database import Base, build_database
+from rag_kb.infrastructure.database.knowledge_query_lifecycle import DatabaseKnowledgeQueryLifecycle
+from rag_kb.infrastructure.database.models import (
+    ACLGrantRow,
+    AgentTaskRow,
+    ChunkMetadataRow,
+    DocumentRow,
+    DocumentVersionRow,
+    EvidenceRecordRow,
+    IngestionJobRow,
+    PrincipalRow,
+    TenantRow,
+)
+from rag_kb.infrastructure.database.session import Database
+from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
+from rag_kb.observability import Observability
+
+
+def _auth() -> AuthContext:
+    return AuthContext(
+        tenant_id="tenant-a",
+        user_id="alice",
+        attributes={"permissions": ["knowledge:read", "document:read"]},
+        request_id="query-request",
+    )
+
+
+def _candidate() -> RetrievalCandidate:
+    text = "授权的差旅政策正文"
+    return RetrievalCandidate(
+        tenant_id="tenant-a",
+        document_id="policy",
+        version_id="version-1",
+        document_version=1,
+        projection_generation=1,
+        chunk_id="chunk-1",
+        content_hash="sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        source_locator="section/1",
+        source_file_name="policy.md",
+        fused_score=1.0,
+        text=text,
+    )
+
+
+@pytest.fixture()
+def database(tmp_path: Path) -> Database:
+    chunk_hash = "sha256:" + hashlib.sha256(
+        "授权的差旅政策正文".encode("utf-8")
+    ).hexdigest()
+    db = build_database(f"sqlite+pysqlite:///{(tmp_path / 'query.sqlite3').as_posix()}")
+    Base.metadata.create_all(db.engine)
+    with db.sessions.begin() as session:
+        session.add(TenantRow(tenant_id="tenant-a", name="租户甲"))
+        session.flush()
+        session.add(PrincipalRow(tenant_id="tenant-a", user_id="alice", roles=[], attributes={}))
+        session.flush()
+        session.add(
+            DocumentRow(
+                tenant_id="tenant-a", document_id="policy", title="差旅政策", department="财务",
+                status="active", created_by="alice",
+                projection_generation=1, applied_projection_generation=1,
+                applied_projection_version_id="version-1",
+            )
+        )
+        session.flush()
+        session.add(
+            DocumentVersionRow(
+                version_id="version-1", tenant_id="tenant-a", document_id="policy", version=1,
+                lifecycle_status="active", source_object_key="policy-v1", source_file_name="policy.md",
+                content_hash="sha256:source", index_version="index-v1",
+                desired_projection_generation=1, applied_projection_generation=1,
+            )
+        )
+        session.flush()
+        session.add(
+            ChunkMetadataRow(
+                chunk_id="chunk-1", version_id="version-1", tenant_id="tenant-a", document_id="policy",
+                document_version=1, content_hash=chunk_hash, source_locator="section/1",
+                source_file_name="policy.md", index_version="index-v1",
+            )
+        )
+        session.add(
+            IngestionJobRow(
+                job_id="job-1", tenant_id="tenant-a", version_id="version-1",
+                status="succeeded", indexed_chunk_count=1,
+                index_manifest_digest="sha256:manifest",
+                index_completed_at=datetime.now(UTC),
+                projection_generation=1, projection_lease_generation=1,
+            )
+        )
+        session.add(
+            ACLGrantRow(
+                grant_id="grant-alice", tenant_id="tenant-a", resource_type="document", resource_id="policy",
+                subject_type="user", subject_id="alice",
+                permissions=["knowledge:read", "document:read"],
+            )
+        )
+    return db
+
+
+@dataclass
+class Verdict:
+    verdict: str = "answer"
+    answer: str = "根据授权政策，差旅需要按制度执行。"
+    refusal_kind: str | None = None
+    used_chunk_ids: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.used_chunk_ids is None:
+            self.used_chunk_ids = ["chunk-1"]
+
+
+class FakeRetriever:
+    def __init__(self, result: RetrievalResult):
+        self.result = result
+        self.calls = 0
+        self.scope_document_ids = []
+
+    def search(
+        self,
+        question: str,
+        auth: AuthContext,
+        *,
+        scope_document_id: str | None = None,
+    ) -> RetrievalResult:
+        self.calls += 1
+        self.scope_document_ids.append(scope_document_id)
+        return self.result
+
+
+class FakeModel:
+    def __init__(self, verdict: Verdict | None = None, error: Exception | None = None, on_answer=None):
+        self.verdict = verdict or Verdict()
+        self.error = error
+        self.on_answer = on_answer
+        self.calls: list[list[RetrievalCandidate]] = []
+        self.options: list[dict[str, object]] = []
+
+    def answer(self, question: str, chunks: list[RetrievalCandidate], *, preview=None, **options) -> Verdict:
+        self.calls.append(chunks)
+        self.options.append(options)
+        if self.error:
+            raise self.error
+        if self.on_answer:
+            self.on_answer()
+        if preview is not None:
+            preview(self.verdict.answer)
+        return self.verdict
+
+
+def _service(database: Database, retriever: FakeRetriever, model: FakeModel) -> KnowledgeQueryService:
+    return KnowledgeQueryService(DatabaseKnowledgeQueryLifecycle(database), retriever, model)
+
+
+def _result(candidate: RetrievalCandidate | None = None) -> RetrievalResult:
+    return RetrievalResult(
+        query_fingerprint="query-fingerprint",
+        candidates=() if candidate is None else (candidate,),
+        context_token_estimate=3,
+        sufficient=candidate is not None,
+        insufficiency_code=None if candidate is not None else "no_authorized_evidence",
+    )
+
+
+def _tasks(db: Database) -> list[AgentTaskRow]:
+    with db.sessions() as session:
+        return list(session.scalars(select(AgentTaskRow)).all())
+
+
+def _telemetry() -> tuple[Observability, InMemorySpanExporter]:
+    observability = Observability(
+        enabled=True,
+        metrics_enabled=True,
+        service_name="rag-kb-test",
+        otlp_endpoint="",
+        trace_sample_ratio=1.0,
+    )
+    observability.start()
+    exporter = InMemorySpanExporter()
+    assert observability.provider is not None
+    observability.provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return observability, exporter
+
+
+def test_answer_retrieves_once_records_ledger_and_returns_ledger_citations(database: Database) -> None:
+    retriever = FakeRetriever(_result(_candidate()))
+    model = FakeModel()
+    result = _service(database, retriever, model).query("差旅怎么报销", _auth())
+
+    assert result.verdict == "answer"
+    assert retriever.calls == 1
+    assert retriever.scope_document_ids == [None]
+    assert len(model.calls) == 1 and model.calls[0][0].chunk_id == "chunk-1"
+    assert len(result.citations) == 1 and result.citations[0].chunk_id == "chunk-1"
+    assert result.citations[0].document_title == "差旅政策"
+    with database.sessions() as session:
+        task = session.scalar(select(AgentTaskRow))
+        evidence = session.scalars(select(EvidenceRecordRow)).all()
+        assert task is not None and task.status == "succeeded"
+        assert len(evidence) == 1 and evidence[0].version_id == "version-1"
+        assert "text" not in EvidenceRecordRow.__table__.columns
+
+
+def test_query_passes_explicit_document_scope_to_retriever(database: Database) -> None:
+    retriever = FakeRetriever(_result(_candidate()))
+
+    result = _service(database, retriever, FakeModel()).query(
+        "总结这份文档",
+        _auth(),
+        scope_document_id="policy",
+    )
+
+    assert result.verdict == "answer"
+    assert retriever.scope_document_ids == ["policy"]
+
+
+def test_query_passes_original_question_and_low_trust_history_only_to_answer_model(
+    database: Database,
+) -> None:
+    retriever = FakeRetriever(_result(_candidate()))
+    model = FakeModel()
+    history = ({"role": "assistant", "content": "5. 入职首日事项"},)
+
+    result = _service(database, retriever, model).query(
+        "查询入职首日事项的负责人",
+        _auth(),
+        original_question="其中哪一项发生在入职当天？负责人是谁？",
+        conversation_context=history,
+    )
+
+    assert result.verdict == "answer"
+    assert model.options == [
+        {
+            "original_question": "其中哪一项发生在入职当天？负责人是谁？",
+            "conversation_context": history,
+        }
+    ]
+
+
+def test_answer_prompt_separates_history_from_authorized_evidence() -> None:
+    messages = DeepSeekAnswerModel._messages(
+        "查询入职首日事项的负责人",
+        [_candidate()],
+        original_question="其中哪一项发生在入职当天？负责人是谁？",
+        conversation_context=(
+            {"role": "assistant", "content": "5. 入职首日事项；负责人：员工本人"},
+        ),
+    )
+
+    assert "低信任会话上下文只能用于理解指代" in messages[0].content
+    assert "原始追问:" in messages[1].content
+    assert "独立检索问题:" in messages[1].content
+    assert "低信任会话上下文（不得作为事实证据）:" in messages[1].content
+    assert "当前授权证据:" in messages[1].content
+    assert messages[1].content.index("低信任会话上下文") < messages[1].content.index("当前授权证据")
+
+
+@pytest.mark.parametrize(
+    "verdict",
+    [Verdict(used_chunk_ids=["forged-chunk"]), Verdict(used_chunk_ids=["chunk-1", "chunk-1"])],
+)
+def test_forged_or_duplicate_model_chunk_ids_fail_closed(database: Database, verdict: Verdict) -> None:
+    retriever = FakeRetriever(_result(_candidate()))
+    result = _service(database, retriever, FakeModel(verdict)).query("问题", _auth())
+
+    assert result.verdict == "refusal"
+    assert result.citations == ()
+    assert retriever.calls == 1
+    assert _tasks(database)[0].status == "failed"
+
+
+def test_model_exception_fails_task_and_no_answer(database: Database) -> None:
+    retriever = FakeRetriever(_result(_candidate()))
+    result = _service(database, retriever, FakeModel(error=RuntimeError("model down"))).query(
+        "问题", _auth()
+    )
+
+    assert result.verdict == "refusal"
+    assert result.refusal is not None and result.refusal.kind == "retrieval_failure"
+    assert retriever.calls == 1
+    assert _tasks(database)[0].status == "failed"
+
+
+def test_conversation_model_exception_keeps_public_refusal_and_internal_failure_stage(
+) -> None:
+    lifecycle = SimpleNamespace(
+        start_fenced_query_with_evidence=lambda **_kwargs: [
+            SimpleNamespace(evidence_id="evidence-1")
+        ]
+    )
+    result = KnowledgeQueryService(
+        lifecycle,
+        FakeRetriever(_result(_candidate())),
+        FakeModel(error=ConnectionError("model down")),
+    ).query(
+        "问题",
+        _auth(),
+        conversation_id="conversation-1",
+        turn_id="turn-1",
+    )
+
+    assert result.refusal is not None and result.refusal.kind == "retrieval_failure"
+    assert result.failure_code == "answer_generation_failure"
+    assert "failure_code" not in result.model_dump(mode="json")
+
+
+def test_query_telemetry_distinguishes_answer_refusal_and_failure_without_content_leak(
+    database: Database,
+) -> None:
+    observability, exporter = _telemetry()
+    secret = "Bearer fake-token private-question private-answer object/path"
+    try:
+        with observability.activate():
+            assert _service(
+                database, FakeRetriever(_result(_candidate())), FakeModel()
+            ).query(secret, _auth()).verdict == "answer"
+            assert _service(
+                database, FakeRetriever(_result()), FakeModel()
+            ).query(secret, _auth()).verdict == "refusal"
+            assert _service(
+                database,
+                FakeRetriever(_result(_candidate())),
+                FakeModel(error=RuntimeError(secret)),
+            ).query(secret, _auth()).verdict == "refusal"
+        payload = observability.metrics_payload().decode()
+        spans = [span for span in exporter.get_finished_spans() if span.name == "knowledge.query"]
+        rendered_spans = repr(spans)
+    finally:
+        observability.shutdown()
+
+    assert [span.attributes["outcome"] for span in spans] == ["answer", "refusal", "failure"]
+    assert [span.status.status_code.name for span in spans] == ["UNSET", "UNSET", "ERROR"]
+    assert 'outcome="answer",reason="none"' in payload
+    assert 'outcome="refusal",reason="no_authorized_evidence"' in payload
+    assert 'outcome="failure",reason="retrieval_failure"' in payload
+    assert secret not in payload
+    assert secret not in rendered_spans
+
+
+def test_no_candidate_skips_model_and_task_creation(database: Database) -> None:
+    retriever = FakeRetriever(_result())
+    model = FakeModel()
+    result = _service(database, retriever, model).query("无资料问题", _auth())
+
+    assert result.verdict == "refusal"
+    assert result.refusal is not None and result.refusal.kind == "no_authorized_evidence"
+    assert retriever.calls == 1 and model.calls == []
+    assert _tasks(database) == []
+
+
+def test_sync_task_is_leased_during_request_and_released_at_terminal(database: Database) -> None:
+    """同步问答任务在请求期间持有自租约，异步任务 worker 不得领取；
+    终态写入时释放租约（lease 约束要求终态任务无租约）。"""
+
+    def inspect_lease() -> None:
+        with database.sessions() as session:
+            task = session.scalar(select(AgentTaskRow))
+            assert task is not None
+            assert task.lease_owner == "api-sync-knowledge-query"
+            assert task.lease_expires_at is not None
+            assert task.lease_generation == 1
+            assert task.status == "running"
+
+    retriever = FakeRetriever(_result(_candidate()))
+    result = _service(
+        database, retriever, FakeModel(on_answer=inspect_lease)
+    ).query("问题", _auth())
+
+    assert result.verdict == "answer"
+    task = _tasks(database)[0]
+    assert task.status == "succeeded"
+    assert task.state_version == 2
+    assert task.lease_owner is None and task.lease_expires_at is None
+
+
+def test_sync_task_lease_released_on_failure(database: Database) -> None:
+    retriever = FakeRetriever(_result(_candidate()))
+    result = _service(
+        database, retriever, FakeModel(error=RuntimeError("model down"))
+    ).query("问题", _auth())
+
+    assert result.verdict == "refusal"
+    task = _tasks(database)[0]
+    assert task.status == "failed"
+    assert task.lease_owner is None and task.lease_expires_at is None
+
+
+def test_streaming_query_uses_one_model_call_and_emits_ephemeral_updates(database: Database) -> None:
+    previews: list[str] = []
+    statuses: list[str] = []
+    executions = []
+    model = FakeModel()
+
+    result = _service(database, FakeRetriever(_result(_candidate())), model).query(
+        "问题",
+        _auth(),
+        task_id="stream-task",
+        preview=previews.append,
+        status=statuses.append,
+        on_generation_started=executions.append,
+    )
+
+    assert result.verdict == "answer"
+    assert len(model.calls) == 1
+    assert previews == [model.verdict.answer]
+    assert statuses == ["retrieving", "generating", "validating"]
+    assert len(executions) == 1
+    assert result.execution == executions[0]
+    assert _tasks(database)[0].status == "succeeded"
+
+
+def test_late_sync_answer_cannot_overwrite_recovered_terminal_task(database: Database) -> None:
+    def recover_task() -> None:
+        with database.engine.begin() as connection:
+            connection.execute(
+                update(AgentTaskRow)
+                .where(AgentTaskRow.task_mode == "knowledge_query")
+                .values(
+                    status="failed",
+                    last_error_code="query_recovered",
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    lease_generation=AgentTaskRow.lease_generation + 1,
+                    state_version=AgentTaskRow.state_version + 1,
+                )
+            )
+
+    result = _service(
+        database,
+        FakeRetriever(_result(_candidate())),
+        FakeModel(on_answer=recover_task),
+    ).query("问题", _auth())
+
+    task = _tasks(database)[0]
+    assert result.verdict == "refusal"
+    assert task.status == "failed"
+    assert task.last_error_code == "query_recovered"
+    assert task.lease_generation == 2
+
+
+def test_expired_sync_query_is_reaped_without_planner(database: Database) -> None:
+    with database.sessions.begin() as session:
+        session.add(
+            AgentTaskRow(
+                task_id="expired-query",
+                tenant_id="tenant-a",
+                user_id="alice",
+                task_mode="knowledge_query",
+                status="running",
+                goal="knowledge_query:test",
+                auth_context_ref="sha256:test",
+                lease_owner="api-sync-knowledge-query",
+                lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+                lease_generation=1,
+            )
+        )
+
+    repository = DatabaseTaskRepository(database)
+    assert repository.expire_stale_knowledge_queries() == 1
+    task = next(item for item in _tasks(database) if item.task_id == "expired-query")
+    assert task.status == "failed"
+    assert task.last_error_code == "knowledge_query_lease_expired"
+    assert task.lease_owner is None and task.lease_expires_at is None
+
+
+def test_deepseek_answer_timeout_is_shorter_than_sync_lease(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeChatDeepSeek:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+        def with_structured_output(self, _schema):
+            return object()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "langchain_deepseek",
+        SimpleNamespace(ChatDeepSeek=FakeChatDeepSeek),
+    )
+    DeepSeekAnswerModel(
+        SimpleNamespace(
+            deepseek_model="test",
+            deepseek_api_key="test",
+            deepseek_base_url="https://example.invalid",
+        )
+    )
+
+    assert isinstance(captured.get("timeout"), int)
+    assert captured["timeout"] < _SYNC_LEASE_SECONDS
+    assert captured["max_retries"] == 0
+
+
+def test_deepseek_streaming_answer_previews_json_without_second_model_call(monkeypatch) -> None:
+    captured: dict[str, object] = {"stream_calls": 0, "structured_calls": 0}
+
+    class FakeStructured:
+        def stream(self, _messages):
+            captured["stream_calls"] = int(captured["stream_calls"]) + 1
+            yield ModelVerdict(verdict="answer", answer="第一")
+            yield ModelVerdict(
+                verdict="answer", answer="第一段\n第二", used_chunk_ids=["chunk-1"]
+            )
+
+        def invoke(self, _messages):
+            captured["structured_calls"] = int(captured["structured_calls"]) + 1
+            raise AssertionError("流式回答不得触发第二次模型调用")
+
+    class FakeChatDeepSeek:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def with_structured_output(self, _schema):
+            return FakeStructured()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "langchain_deepseek",
+        SimpleNamespace(ChatDeepSeek=FakeChatDeepSeek),
+    )
+    monkeypatch.setattr(
+        DeepSeekAnswerModel,
+        "_messages",
+        staticmethod(lambda *_args, **_kwargs: []),
+    )
+    previews: list[str] = []
+    model = DeepSeekAnswerModel(
+        SimpleNamespace(
+            deepseek_model="test",
+            deepseek_api_key="test",
+            deepseek_base_url="https://example.invalid",
+        )
+    )
+
+    verdict = model.answer("问题", [_candidate()], preview=previews.append)
+
+    assert verdict.answer == "第一段\n第二"
+    assert previews == ["第一", "第一段\n第二"]
+    assert captured == {"stream_calls": 1, "structured_calls": 0}
+
+
+def test_revoked_after_model_cannot_produce_citation(database: Database) -> None:
+    retriever = FakeRetriever(_result(_candidate()))
+
+    def revoke() -> None:
+        with database.sessions.begin() as session:
+            session.query(ACLGrantRow).filter_by(grant_id="grant-alice").delete()
+
+    result = _service(database, retriever, FakeModel(on_answer=revoke)).query("问题", _auth())
+
+    assert result.verdict == "refusal"
+    assert result.refusal is not None and result.refusal.kind == "conflicting_evidence"
+    assert result.citations == ()
+    assert retriever.calls == 1
+    assert _tasks(database)[0].status == "failed"

@@ -1,6 +1,6 @@
 # 架构说明
 
-交互式图：[系统架构总览](../deliverables/rag-interview-study/diagrams/rag-system.architecture.html) · [Fast Path 同步问答](../deliverables/rag-interview-study/diagrams/fast-query.workflow.html) · [文档摄取](../deliverables/rag-interview-study/diagrams/document-ingestion.workflow.html) · [Durable Agent](../deliverables/rag-interview-study/diagrams/durable-agent.workflow.html)
+交互式图：[系统架构总览](../deliverables/rag-interview-study/diagrams/rag-system.architecture.html) · [Fast Path 问答](../deliverables/rag-interview-study/diagrams/fast-query.workflow.html) · [文档摄取](../deliverables/rag-interview-study/diagrams/document-ingestion.workflow.html) · [Durable Agent](../deliverables/rag-interview-study/diagrams/durable-agent.workflow.html)
 
 ## 事实源与边界
 
@@ -12,13 +12,13 @@ PostgreSQL 保存租户、主体、文档版本、ACL、Research 与 controlled_
 
 | 场景 | Fast Path | Durable Path |
 | --- | --- | --- |
-| 入口 | `POST /v1/knowledge/query` | `POST /v1/tasks`，后续 result/continue/approval API |
+| 入口 | `POST /v1/conversations/{conversation_id}/messages`，`kind: new` 且最终选择 `answer` | 同一消息入口提交 `research` 或 `controlled_action`；澄清使用绑定 task/version 的 `clarification` |
 | 适用 | 单问题、低步骤数、无需澄清、审批或产物 | 多文档研究、版本比较、澄清、审批、受控写入或产物 |
-| 执行 | API 中的 `KnowledgeQueryService` | task-worker 中的 Agent 与受控工具 |
-| 返回 | 同步 answer/refusal 与重验 citations | 创建/恢复 `202 Accepted`，结果异步读取 |
+| 执行 | API 中的 `ConversationService`、`KnowledgeQueryService` 与受限 SSE 执行器 | task-worker 中的 Agent 与受控工具 |
+| 返回 | JSON `200`，或 `turn.accepted`、`status`、`answer.preview`、`done` 组成的 SSE `200` | 创建或恢复 `202 Accepted`，结果异步读取 |
 | 独立职责 | 内部 query fencing/evidence、单次回答 | task/checkpoint、工具预算、HITL、耐久恢复 |
 
-Fast Path 时序：`HTTP → KnowledgeQueryService → EnterpriseRetriever → Fast evidence ledger → constrained answer → citation revalidation → HTTP response`。`/v1/knowledge/query` 由服务端身份解析后调用 `KnowledgeQueryService`，检索器只返回当前授权候选；候选先进入 `evidence_records`，模型只能选择本次账本中的 chunk。拒答判定分两层：确定性证据门只在检索层拦截字面可验证的缺失（问题点名的数量/单位、ASCII 锚点在证据中不存在）；主谓语义是否足以回答由回答模型在受约束生成时以 verdict 判定（上下文不足必须 refusal），最终引用一律经证据账本复核构造，模型无法编造出处。
+Fast Path 时序：`HTTP 会话消息 → ConversationService → KnowledgeQueryService → EnterpriseRetriever → Fast evidence ledger → constrained answer → citation revalidation → JSON response 或 SSE done`。服务端身份解析后，`ConversationService` 选择普通问答并调用 `KnowledgeQueryService`；请求 `Accept: text/event-stream` 时，受限执行器额外发送 `turn.accepted`、状态和累计草稿。检索器只返回当前授权候选；候选先进入 `evidence_records`，模型只能选择本次账本中的 chunk。拒答判定分两层：确定性证据门只在检索层拦截字面可验证的缺失（问题点名的数量/单位、ASCII 锚点在证据中不存在）；主谓语义是否足以回答由回答模型在受约束生成时以 verdict 判定（上下文不足必须 refusal），最终引用一律经证据账本复核构造，模型无法编造出处。`answer.preview` 不是持久消息或权威输出，只有完成的 `done` 结果才会写入会话。
 
 Durable Path 时序：`HTTP → PostgreSQL task → task-worker/Agent → search_knowledge → EnterpriseRetriever → Durable evidence ledger → ToolMessage/checkpoint → async result`。`search_knowledge` 的 `limit` 只从 Core 已排序候选取前缀，不能重检索或改变排序。Fast Path 的 refusal 与 Durable ToolMessage 可以不同，但底层 fingerprint、ACL、候选顺序和 insufficiency code 必须一致。
 
@@ -38,7 +38,7 @@ Qdrant 的 `allowed_principals` 使用 `user|group|role:<非空标识>`；标识
 
 Research 与 controlled_action 任务均以 `thread_id = task_id` 使用 LangGraph 图执行。PostgreSQL checkpointer 保存 Agent 执行状态；`agent_tasks` 保存业务生命周期、所有者、租约、中断摘要和不可变结果引用。controlled_action 的 WRITE 在同一线程先被 HITL 暂停，再由服务端审批边界校验；Worker 重启后从同一执行状态恢复，不能为历史 Runtime 建立双写或回退路径。
 
-`POST /v1/tasks/{task_id}/continue` 与 `POST /v1/approvals/{approval_id}/decision` 成功时均返回 `202 Accepted`。该响应只表示 API 已完成认证、授权、版本校验并把恢复命令耐久提交到 PostgreSQL，不表示 Agent、工具或任务已经同步恢复完成；API 返回时任务仍可能是 `waiting_for_user` 或 `waiting_for_approval`。API 不构造 LangGraph `Command`、不运行 Agent、也不执行工具；只有 `task-worker` 能领取命令、重新校验服务端绑定并构造服务端恢复载荷。Worker 暂时离线不会撤销已提交命令，命令保留在 PostgreSQL 等待消费。同一决定重试保持幂等，相反决定返回稳定冲突；公开响应不暴露恢复命令敏感载荷或内部执行绑定。
+绑定 task/version 的 `clarification` 会话消息与 `POST /v1/approvals/{approval_id}/decision` 成功时均返回 `202 Accepted`。该响应只表示 API 已完成认证、授权、版本校验并把任务或恢复命令耐久提交到 PostgreSQL，不表示 Agent、工具或任务已经同步恢复完成；API 返回时任务仍可能是 `waiting_for_user` 或 `waiting_for_approval`。API 不构造 LangGraph `Command`、不运行 Agent、也不执行工具；只有 `task-worker` 能领取任务或恢复命令、重新校验服务端绑定并构造服务端执行载荷。Worker 暂时离线不会撤销已提交任务，任务和命令保留在 PostgreSQL 等待消费。同一决定重试保持幂等，相反决定返回稳定冲突；公开响应不暴露恢复命令敏感载荷或内部执行绑定。
 
 任务预算只有一个任务级事实源：创建时由 Settings 派生的 `TaskBudgets` 以 JSON 精确持久化到 `agent_tasks.budgets`，Worker 按租约携带的持久值选择（并按小元组缓存）Agent，模型/工具两个 limit middleware 与 recursion limit 全部来自该值；环境变量只影响新任务的初始派生，不改变已持久化任务。
 
@@ -49,7 +49,7 @@ Research 与 controlled_action 任务均以 `thread_id = task_id` 使用 LangGra
 3. **幂等回放**：身份快照（tenant/user/roles/groups/attributes 的指纹）与回放校验绑定；身份变化后相同 idempotency key 返回 `task_auth_context_changed` 且不读取旧正文。
 4. **最终任务提交**：`finish_task()` 在任务行锁内以 PostgreSQL `clock_timestamp()` 终检租约、状态、取消和 deadline；deadline 已过时只能原子收敛为 `failed/task_deadline_expired` 并补偿未绑定结果对象，不可能先 succeeded 再被后台改写。
 
-只有构建完成的 `task-worker` 才注册 `task-agent/m2-fenced-v1` capability lease（独立心跳续租，与任务 invoke 解耦）；创建 Research 或 controlled_action 任务的仓储门在插入事务内复核 capability 名称、协议版本和租期，缺失、错版本或过期时返回 503，同步知识查询、文档接口和全局 readiness 不受影响。受控创建还受 feature gate 约束。任务执行期间按租约三分之一间隔续租，失败则本次结果不提交，任务保持可安全恢复。
+只有构建完成的 `task-worker` 才注册 `task-agent/m2-fenced-v1` capability lease（独立心跳续租，与任务 invoke 解耦）；统一会话入口选择 Research 或 controlled_action 时，仓储门在插入事务内复核 capability 名称、协议版本和租期，缺失、错版本或过期时返回 503，普通 `answer`、文档接口和全局 readiness 不受影响。受控创建还受 feature gate 约束。任务执行期间按租约三分之一间隔续租，失败则本次结果不提交，任务保持可安全恢复。
 
 执行结论与正文可用性分离：独立的 `TaskRetentionService` 周期收敛 waiting deadline reaper、工具正文 GC、任务 checkpoint/结果 GC 与 `artifacts/` 固定前缀孤儿对象扫描；GC 只删除正文对象并写 purge 标记，绝不改写 succeeded/refused 等历史执行终态。artifact 正文读取要求任务 owner 与 `task:read`，并逐项复核 tenant/task/artifact 绑定、ready 状态、TTL/purge 与 SHA-256；对象键不离开服务边界。结果读取在返回前于行锁内二次复核 deadline、授权和证据账本：到期为 410、未完成/无结果为 409、完整性错误 fail-close 为 500。"object 写成功、DB 绑定前崩溃"的对象由即时补偿加固定前缀 grace 重扫双保险兜底，删除失败保留引用供下轮重试。checkpointer 的 msgpack serializer 只 allowlist `TaskResultCandidate`、显式禁用 pickle fallback，并在 `LANGGRAPH_STRICT_MSGPACK=true` 下叠加运行时 schema allowlist。
 
@@ -65,7 +65,7 @@ Research 与 controlled_action 任务均以 `thread_id = task_id` 使用 LangGra
 | `ingestion-worker` | 文档解析、embedding、索引、上传预留恢复和摄取队列指标；不获得 DeepSeek 配置。 |
 | `projection-worker` | Qdrant 投影收敛、周期审计、修复与重建；不获得 DeepSeek 配置。 |
 
-`/health/ready` 当前只检查 PostgreSQL、Alembic schema revision、Qdrant、Qdrant collection schema 和活动投影是否收敛，不直接检查任一 Worker。`task-worker` 缺失时，capability lease 到期后新建 task 返回 503，已有任务和恢复命令等待消费，但同步 `/v1/knowledge/query` 不受 Agent Worker 影响；`ingestion-worker` 缺失时上传仍可能返回 202，但任务积压且文档长期停在 `pending`；`projection-worker` 缺失时周期审计和修复停止，只有活动投影实际不收敛时 `projection_convergence` 才会使 readiness 失败。
+`/health/ready` 当前只检查 PostgreSQL、Alembic schema revision、Qdrant、Qdrant collection schema 和活动投影是否收敛，不直接检查任一 Worker。`task-worker` 缺失时，capability lease 到期后通过会话消息新建 durable task 返回 503，已有任务和恢复命令等待消费，但普通 `answer` 不受 Agent Worker 影响；`ingestion-worker` 缺失时上传仍可能返回 202，但任务积压且文档长期停在 `pending`；`projection-worker` 缺失时周期审计和修复停止，只有活动投影实际不收敛时 `projection_convergence` 才会使 readiness 失败。
 
 ## 任务工具与结果
 

@@ -41,7 +41,7 @@ API / task-worker / ingestion-worker / projection-worker
 | Prompt、回答、文档正文采集 | 这些内容含企业敏感信息，不能进入 Trace、Metrics 或普通日志 | 有独立的合规存储、审批和最短保留方案时 |
 | 自动化 SQL/HTTP 全量埋点 | 容易采集 SQL、动态 URL 或高噪声 span，首期业务边界 span 更有诊断价值 | 经过属性脱敏和采样验证后 |
 | 模型成本金额 | 现有模型元数据和供应商计费口径不稳定，错误估价比不展示更误导 | 有版本化价格表与账单对账机制后 |
-| 前端观测控制台 | 当前项目没有前端；Grafana 与 Jaeger 已满足工程演示和排障 | 新增产品管理台时 |
+| 浏览器侧观测控制台 | 本地 React/Vite 工作台不采集客户端遥测；Grafana 与 Jaeger 已满足服务端工程演示和排障 | 需要前端性能或用户行为遥测且完成隐私评估时 |
 
 ## 2. 当前基线
 
@@ -227,13 +227,13 @@ HTTP server span
     -> evidence.revalidate
 ```
 
-所有 span 仅记录阶段名称、数量、时长、结果和安全错误类别。`knowledge.query` 的 business outcome 必须显式区分 `answer`、`refusal` 和 `failure`，因为当前同步查询将部分运行失败转换为业务拒答响应，不能仅根据 HTTP 状态码判断质量或故障率。
+所有 span 仅记录阶段名称、数量、时长、结果和安全错误类别。`knowledge.query` 的 business outcome 必须显式区分 `answer`、`refusal` 和 `failure`；它是统一会话普通问答的内部阶段，SSE 首个 HTTP 状态为 `200` 后仍可能以终态事件失败，不能仅根据 HTTP 状态码判断质量或故障率。
 
 ### 5.3 异步任务
 
 任务、摄取和审批恢复跨越 HTTP 进程和 Worker 进程，不能依靠 ContextVar 自动传播。
 
-1. `POST /v1/tasks` 在同一数据库事务中把当前有效 `traceparent` 与可选 `tracestate` 保存到 `agent_tasks.pending_traceparent` 和 `pending_tracestate`。
+1. `POST /v1/conversations/{conversation_id}/messages` 选择 `research` 或 `controlled_action` 时，在同一数据库事务中把当前有效 `traceparent` 与可选 `tracestate` 保存到 `agent_tasks.pending_traceparent` 和 `pending_tracestate`。
 2. `POST /v1/documents` 与版本上传在创建 `ingestion_jobs` 时保存同样字段。
 3. Worker 领取后 extract 已保存的上下文，建立新的 `task.run` 或 `ingestion.run` 根 span，并以 producer span 建立 `Link`。
 4. 不让数分钟、数小时甚至跨审批的执行成为原 HTTP span 的子 span，避免错误的超长父子 Trace。
@@ -358,11 +358,13 @@ HTTP 使用短请求 bucket：
 | Agent 推进 | `agent.advance`、`agent.invoke` | `TaskWorker._advance()` |
 | checkpoint | `checkpoint.write` | `agent/checkpointer.py` |
 | 工具 | `tool.execute`、`tool.adapter`、`tool.verify`、`tool.complete` | `ToolExecutionService.execute()` |
-| 审批 | `approval.transition`、`task.resume` | `ApprovalService`、`TaskWorker.resume_for_approval()` |
+| 审批 | `approval.transition` | `ApprovalService.decide_and_enqueue()` |
 | 摄取 | `ingestion.run`、`ingestion.parse`、`projection.index`、`projection.publish`、`projection.bind`、`projection.retire` | `IngestionWorker.run_once()` |
 | 投影收敛 | `projection.reconcile`、`projection.verify` | `ProjectionReconciler.run_once()` |
 | task 维护 | `worker.task.maintenance`、`worker.task.queue_snapshot` | `task-worker` 的独占维护窗口 |
 | ingestion 维护 | `worker.ingestion.maintenance`、`worker.ingestion.queue_snapshot` | `ingestion-worker` 的独占维护窗口 |
+
+审批 HTTP 事务只记录 `approval.transition`；持久化恢复命令由后台 Worker 以独立根 `task.run` 消费，不伪装为审批请求的同步子 span。
 
 ### 7.2 Span 状态
 
@@ -622,11 +624,11 @@ increase(rag_kb_security_boundary_violations_total[5m]) > 0
 
 | 改动 | 主要文件 |
 |---|---|
-| 新增 `rag_kb.observability` 模块 | `src/rag_kb/observability.py` |
+| 新增 `rag_kb.observability` 模块 | `backend/src/rag_kb/observability.py` |
 | Settings 与生命周期 | `config.py`、`web/app.py` |
 | HTTP middleware、`/metrics`、响应 request ID | `web/app.py` |
 | JSON stdout formatter 和 ContextVar 清理 | `observability.py` |
-| 单元测试 | `tests/test_new_app_factory.py` |
+| 单元测试 | `backend/tests/test_new_app_factory.py` |
 
 完成标准：`/metrics` 可被独立 registry 测试；同一 HTTP 请求的 JSON 日志包含 request/trace ID；任意动态路径不作为 Metrics label；Exporter 不可达时 API 仍可用。
 
@@ -639,7 +641,7 @@ increase(rag_kb_security_boundary_violations_total[5m]) > 0
 | 问答总 span/metric | `application/query_service.py` |
 | 检索阶段 span/metric | `application/enterprise_retriever.py` |
 | 模型 callback、usage 与时长 | `answerer.py`、Agent 构造/调用处 |
-| 不泄漏测试 | `tests/test_enterprise_query_service.py`、`tests/test_enterprise_retriever_security.py` |
+| 不泄漏测试 | `backend/tests/test_enterprise_query_service.py`、`backend/tests/test_enterprise_retriever_security.py` |
 
 完成标准：一个同步查询在 Jaeger 展示授权、检索、模型和引用复核；Metrics 能区分 answer/refusal/failure；Trace 与日志不含问题、chunk 或回答文本。
 
@@ -703,10 +705,10 @@ increase(rag_kb_security_boundary_violations_total[5m]) > 0
 
 1. 使用 `docker compose --profile observability up --build -d` 启动服务。
 2. 访问 `/health/live`、`/health/ready` 和 API `/metrics`，确认 Prometheus target 为 `UP`。
-3. 发起一条可回答的 `/v1/knowledge/query`，用响应 `X-Request-ID` 在 JSON 日志和 Jaeger 中定位同一次调用。
-4. 发起一条证据不足查询，确认 HTTP 仍成功但 `rag_kb_knowledge_queries_total{outcome="refusal"}` 增加，Trace 不标记 ERROR。
-5. 创建一个 research task，确认 Grafana 出现 queue 变化和 task run；Jaeger 展示 `task.run -> agent.invoke -> tool.execute`。
-6. 创建一个 controlled-action task 并经过审批恢复，确认两次 Worker run 通过 Link 关联，审批等待时长进入 Histogram。
+3. 创建会话并提交一条可回答的 `answer` 消息，用响应 `X-Request-ID` 在 JSON 日志和 Jaeger 中定位同一次调用。
+4. 提交一条证据不足的 `answer` 消息，确认 SSE `done` 的业务结果为拒答、`rag_kb_knowledge_queries_total{outcome="refusal"}` 增加，Trace 不标记 ERROR。
+5. 通过会话消息提交一个 `research`，确认 Grafana 出现 queue 变化和 task run；Jaeger 展示 `task.run -> agent.invoke -> tool.execute`。
+6. 通过会话消息提交一个 `controlled_action` 并经过审批恢复，确认两次 Worker run 通过 Link 关联，审批等待时长进入 Histogram。
 7. 上传一个文档，确认 ingestion、projection 和队列 Metrics 更新。
 8. 模拟一个安全边界或 WRITE unknown 测试路径，确认安全 Counter 和 Critical alert 被触发，同时不泄露敏感正文。
 

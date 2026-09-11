@@ -12,6 +12,11 @@ __pycache__/
 # 构建产物
 dist/
 build/
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/test-results/
+frontend/playwright-report/
 
 # 本地数据（冻结语料 data/corpus 需提交，本地临时数据不提交）
 data/local/
@@ -20,3 +25,9 @@ data/local/
 .opencode/
 output/
 deliverables/
+
+# 本地资料与开发计划
+AI_Agent_开发面试资料汇总.txt
+前端开发计划.md
+BACKEND_MIGRATION_PLAN.md
+使用指南.md

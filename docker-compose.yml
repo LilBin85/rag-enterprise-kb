@@ -7,7 +7,7 @@ x-app-runtime: &app_runtime
   OBJECT_STORE_ROOT: /app/data/local/objects
   EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}
   RETRIEVAL_TOP_K: ${RETRIEVAL_TOP_K:-5}
-  RETRIEVAL_CANDIDATE_K: ${RETRIEVAL_CANDIDATE_K:-}
+  RETRIEVAL_CANDIDATE_K: ${RETRIEVAL_CANDIDATE_K:-20}
   RETRIEVAL_CONTEXT_K: ${RETRIEVAL_CONTEXT_K:-}
   RETRIEVAL_SCORE_THRESHOLD: ${RETRIEVAL_SCORE_THRESHOLD:-}
   RETRIEVAL_CONTEXT_TOKEN_BUDGET: ${RETRIEVAL_CONTEXT_TOKEN_BUDGET:-4000}
@@ -66,7 +66,7 @@ services:
       retries: 5
 
   api:
-    build: .
+    build: ./backend
     command: ["uvicorn", "rag_kb.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       <<: *app_runtime
@@ -93,7 +93,7 @@ services:
         condition: service_completed_successfully
 
   migrate:
-    build: .
+    build: ./backend
     command: ["/bin/sh", "-c", "alembic upgrade head && python scripts/init_agent_checkpointer.py"]
     environment:
       DATABASE_URL: postgresql+psycopg://rag_kb:${POSTGRES_PASSWORD:-rag_kb_local_only}@postgres:5432/rag_kb
@@ -102,7 +102,7 @@ services:
         condition: service_healthy
 
   qdrant-init:
-    build: .
+    build: ./backend
     command: ["python", "-m", "rag_kb.qdrant_init"]
     environment:
       QDRANT_URL: http://qdrant:6333
@@ -113,7 +113,7 @@ services:
         condition: service_healthy
 
   task-worker:
-    build: .
+    build: ./backend
     command: ["python", "-m", "rag_kb.worker", "--queue", "task", "--watch"]
     environment:
       <<: *app_runtime
@@ -141,7 +141,7 @@ services:
         condition: service_completed_successfully
 
   ingestion-worker:
-    build: .
+    build: ./backend
     command: ["python", "-m", "rag_kb.worker", "--queue", "ingestion", "--watch"]
     environment:
       <<: *app_runtime
@@ -166,7 +166,7 @@ services:
         condition: service_completed_successfully
 
   projection-worker:
-    build: .
+    build: ./backend
     command: ["python", "-m", "rag_kb.worker", "--queue", "projection", "--watch"]
     environment:
       <<: *app_runtime

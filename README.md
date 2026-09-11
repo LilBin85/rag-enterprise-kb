@@ -3,7 +3,7 @@
 [![普通测试](https://github.com/LilBin85/rag-enterprise-kb/actions/workflows/tests.yml/badge.svg)](https://github.com/LilBin85/rag-enterprise-kb/actions/workflows/tests.yml)
 [![PostgreSQL/Qdrant 集成测试](https://github.com/LilBin85/rag-enterprise-kb/actions/workflows/integration-tests.yml/badge.svg)](https://github.com/LilBin85/rag-enterprise-kb/actions/workflows/integration-tests.yml)
 
-一个面向企业制度与技术规范的可审计 RAG/Agent 后端：在租户与 ACL 隔离下完成文档摄取、证据检索、只读研究和 HITL 受控写入。
+一个面向企业制度与技术规范的可审计 RAG/Agent 服务：在租户与 ACL 隔离下完成文档摄取、证据检索、只读研究和 HITL 受控写入，并提供本地 React/Vite 浏览器工作台。
 
 ## 架构
 
@@ -35,7 +35,7 @@ PostgreSQL 是任务、恢复命令和权限状态的唯一事实源，Qdrant �
 
 | 场景 | 选择 | 时序 | 返回 |
 | --- | --- | --- | --- |
-| 单问题、低步骤数、无需澄清或审批 | 统一会话的快速执行器 | `POST /v1/conversations/{id}/messages` → 会话路由 → Retrieval Core → 受约束回答与 citation 复核 | 同步 `200` |
+| 单问题、低步骤数、无需澄清或审批 | 统一会话的快速执行器 | `POST /v1/conversations/{id}/messages` → 会话路由 → Retrieval Core → 受约束回答与 citation 复核 | JSON `200`，或 SSE `200` 直至 `done` |
 | 多文档研究、版本比较、澄清、审批或受控写入 | 统一会话的耐久智能体 | 同一消息入口 → PostgreSQL task → task-worker/Agent → Retrieval Core → Durable evidence ledger | 接受返回 `202`，结果异步读取 |
 
 Fast Path 不依赖 task-worker capability；Durable Path 保留 Agent、工具预算、checkpoint 与 HITL。检索 telemetry 仅用固定 `retrieval_consumer=fast|durable` 区分消费者，不记录 query、task、tenant 或 user 标签。
@@ -48,7 +48,9 @@ Fast Path 不依赖 task-worker capability；Durable Path 保留 Agent、工具�
 docker compose up --build -d
 ```
 
-服务就绪后打开 [Swagger 操作页](http://localhost:8000/docs)，按“初始化身份 → 上传文档 → 等待摄取成功 → 提问”完成演示；逐步说明见[使用指南](使用指南.md)，健康状态见 [`/health/ready`](http://localhost:8000/health/ready)。
+服务就绪后可打开 [浏览器工作台](http://localhost:5173) 或 [Swagger 操作页](http://localhost:8000/docs)，按“初始化身份 → 上传文档 → 等待摄取成功 → 提问”完成演示；逐步说明见[使用指南](使用指南.md)，健康状态见 [`/health/ready`](http://localhost:8000/health/ready)。
+
+浏览器工作台位于 [`frontend/`](frontend/README.md)：后端就绪后执行 `cd frontend; npm install; npm run dev`，打开 `http://localhost:5173` 即可用演示令牌完成文档上传、流式问答、任务查看和独立审批。`answer.preview` 仅是未校验草稿，`done` 的正式答案与 citations 才是权威结果。
 
 ## 核心指标
 
@@ -60,7 +62,7 @@ docker compose up --build -d
 | M1 只读 Research Agent | 通过；4 次工具调用，5 条引用 |
 | M2 受控写入 | 通过；31 个任务，21 个场景 |
 
-数据来自机器报告 [docs/acceptance/latest.json](docs/acceptance/latest.json)，当前绑定最近一次受验收的生产代码版本 `9361c8c`。报告固化及后续纯文档或仓库维护提交可以拥有更新的 HEAD，但不会扩大该报告的验收范围；任何生产代码改动后都必须重新生成报告，并以 `verdict`、`gates`、`unverified` 和检索质量门为准。
+数据来自机器报告 [docs/acceptance/latest.json](docs/acceptance/latest.json)，当前绑定最近一次受验收的生产代码版本 `9361c8c`。报告固化及后续纯文档或仓库维护提交可以拥有更新的 HEAD，但不会扩大该报告的验收范围；任何生产代码改动后都必须重新生成报告，并以 `verdict`、`gates` 和检索质量门为准。
 
 ## 三个关键技术取舍
 
@@ -100,16 +102,19 @@ docker compose --profile observability up --build -d
 conda activate rag-kb
 docker compose up -d qdrant
 $env:RAG_KB_DATABASE_URL = "postgresql+psycopg://<用户>:<密码>@localhost:5432/<数据库>"
-alembic upgrade head                 # 当前迁移目标：20260906_0016
-python scripts/init_agent_checkpointer.py
+# Alembic 在后端工程目录运行（alembic.ini 位于 backend/）
+cd backend
+alembic upgrade head                 # 当前迁移目标：20260911_0017
+cd ..
+python backend/scripts/init_agent_checkpointer.py
 python -m rag_kb.qdrant_init         # 幂等创建并校验企业 Qdrant schema
-.\scripts\start_api.ps1             # FastAPI :8000
+.\backend\scripts\start_api.ps1     # FastAPI :8000
 conda run -n rag-kb --no-capture-output python -m rag_kb.worker --queue task --watch
 conda run -n rag-kb --no-capture-output python -m rag_kb.worker --queue ingestion --watch
 conda run -n rag-kb --no-capture-output python -m rag_kb.worker --queue projection --watch
 ```
 
-三个命令需要分别在独立终端中持续运行；也可分别执行 `.\scripts\start_worker.ps1 -Queue task`、`.\scripts\start_worker.ps1 -Queue ingestion` 和 `.\scripts\start_worker.ps1 -Queue projection`。不存在默认轮询全部队列的模式。
+三个命令需要分别在独立终端中持续运行；也可分别执行 `.\backend\scripts\start_worker.ps1 -Queue task`、`.\backend\scripts\start_worker.ps1 -Queue ingestion` 和 `.\backend\scripts\start_worker.ps1 -Queue projection`。不存在默认轮询全部队列的模式。
 
 | Worker | 职责与配置边界 |
 | --- | --- |
@@ -121,7 +126,7 @@ conda run -n rag-kb --no-capture-output python -m rag_kb.worker --queue projecti
 
 | 缺失服务 | 实际影响 |
 | --- | --- |
-| `task-worker` | capability lease 到期后新建 task 返回 `503`；已有任务和恢复命令继续保留在 PostgreSQL 中等待消费；同步 `/v1/knowledge/query` 不依赖 Agent Worker。 |
+| `task-worker` | capability lease 到期后，通过会话消息提交的 `research` 或 `controlled_action` 返回 `503`；已有任务和恢复命令继续保留在 PostgreSQL 中等待消费；普通 `answer` 不依赖 Agent Worker。 |
 | `ingestion-worker` | 上传仍可能返回 `202`，但摄取任务积压，文档长期停在 `pending`。 |
 | `projection-worker` | 周期投影审计和修复停止；只有活动投影实际不收敛时，`projection_convergence` 才会使 readiness 失败。 |
 
@@ -133,7 +138,7 @@ conda run -n rag-kb --no-capture-output python -m rag_kb.worker --queue projecti
 ## API
 
 - `POST /v1/conversations`、`GET /v1/conversations`、`GET /v1/conversations/{conversation_id}`、`GET /v1/conversations/{conversation_id}/messages`、`DELETE /v1/conversations/{conversation_id}`：统一会话的创建、读取、历史和异步删除。
-- `POST /v1/conversations/{conversation_id}/messages`：唯一公开的用户消息入口，必须带 `Idempotency-Key`；`new` 消息可选择 `auto|answer|research|controlled_action`，`clarification` 必须绑定既有 turn/task/version。快速回答返回 `200`，耐久任务返回 `202`。
+- `POST /v1/conversations/{conversation_id}/messages`：唯一公开的用户消息入口，必须带 `Idempotency-Key`；`new` 消息可选择 `auto|answer|research|controlled_action`，并可通过 `scope_document_id` 将本轮硬限制在一份当前有权读取的文档内；省略时仍检索全部授权文档。`clarification` 必须绑定既有 turn/task/version。普通 JSON 客户端的快速回答返回 `200`；请求 `Accept: text/event-stream` 时，普通问答以 SSE 返回 `turn.accepted`、`status`、`answer.preview` 和最终 `done` 事件，耐久任务仍返回 `202` JSON。
 - `POST /v1/documents`：multipart 上传新文档，必须带 `Idempotency-Key`，返回 `202`。
 - `POST /v1/documents/{document_id}/versions`：上传同一文档的新版本；路径和 metadata 的 `document_id` 必须一致，并使用新的 `Idempotency-Key`。
 - `GET /v1/documents/{document_id}`、`GET /v1/ingestion-jobs/{job_id}`：租户与 ACL 约束的查询。
@@ -141,7 +146,7 @@ conda run -n rag-kb --no-capture-output python -m rag_kb.worker --queue projecti
 - `GET /v1/approvals`、`GET /v1/approvals/{approval_id}`、`POST /v1/approvals/{approval_id}/decision`：仅 `task:approve` 审批者可发现和决定待审批动作；决定成功返回 `202 Accepted`，同一决定重试保持幂等，相反决定返回稳定 `409` 冲突。
 - `GET /v1/tasks/{task_id}/artifacts/{artifact_id}/content`：仅任务 owner 且拥有 `task:read` 时读取正文；未就绪为 `409`、过期或已清理为 `410`、完整性失败为 `500`，响应不暴露对象键或文件元数据。
 
-身份来自 `Authorization: Bearer ...` 或本地演示 `X-Demo-Role-Token`，角色不能由请求正文提升。本地演示主体的初始化请运行 `python scripts/init_demo_principals.py`，它按令牌真实解析的 permissions attributes 写入，不要手工插入空 attributes 的记录。应用只提供版本化 `/v1` 业务接口。
+身份来自 `Authorization: Bearer ...` 或本地演示 `X-Demo-Role-Token`，角色不能由请求正文提升。本地演示主体的初始化请运行 `python backend/scripts/init_demo_principals.py`，它按令牌真实解析的 permissions attributes 写入，不要手工插入空 attributes 的记录。轮换本地令牌后运行该脚本并重建 `api`，详情见[使用指南](使用指南.md#令牌轮换或新增审批者)。应用只提供版本化 `/v1` 业务接口。
 
 会话消息的 `202` 只表示 API 已完成认证、授权、版本校验并把耐久任务提交到 PostgreSQL，不表示 Agent、工具或任务已经同步完成。API 不构造 LangGraph `Command`、不运行 Agent、也不执行工具；只有 `task-worker` 能领取任务、重新校验服务端绑定并构造服务端执行载荷。Worker 暂时离线不会撤销已提交任务；响应不暴露内部执行绑定。
 
@@ -154,6 +159,8 @@ conda run -n rag-kb --no-capture-output python -m rag_kb.worker --queue projecti
 GitHub Actions 将普通测试与 PostgreSQL/Qdrant 集成测试拆成两条流水线，并分别上传 JUnit 报告；60 例离线任务评测报告见 [docs/acceptance/enterprise-task-evaluation.json](docs/acceptance/enterprise-task-evaluation.json)。
 
 ```powershell
+# 后端测试在后端工程目录 backend/ 下运行
+cd backend
 conda run -n rag-kb --no-capture-output python -m pytest -q `
   tests/test_database_migrations.py `
   tests/test_agent_checkpointer.py `
@@ -163,17 +170,25 @@ conda run -n rag-kb --no-capture-output python -m pytest -q `
 
 conda run -n rag-kb --no-capture-output python -m pytest -q
 
+# 对现有数据执行只读检索诊断；输出不含令牌、查询正文或证据正文
+conda run -n rag-kb --no-capture-output python scripts/diagnose_retrieval.py `
+  --query "差旅报销上限是多少？" `
+  --role employee `
+  --document-id "travel-policy"
+
 # 仅在 RAG_KB_TEST_POSTGRES_URL 已配置且 Qdrant 可达时运行
 conda run -n rag-kb --no-capture-output python -m pytest -q `
   tests/test_postgres_agent_checkpointer.py `
   tests/test_postgres_qdrant_projection_convergence.py
+cd ..
 
 # 真实模型验证：先创建独立 PostgreSQL 数据库、m1_e2e_ 前缀的 Qdrant collection
 # 和独立对象目录；执行结束后删除这些临时资源。环境变量 LANGGRAPH_STRICT_MSGPACK=true
 # 会同时启用 LangGraph 运行时 allowlist 与 schema 推导白名单；脚本还会核验
 # checkpoint serializer 的 pickle_fallback=false 并拒绝 pickle 编码落库。
+# 以下脚本均从仓库根运行。
 $env:LANGGRAPH_STRICT_MSGPACK = "true"
-conda run -n rag-kb --no-capture-output python scripts/smoke_m1_research_e2e.py `
+conda run -n rag-kb --no-capture-output python backend/scripts/smoke_m1_research_e2e.py `
   --allow-live `
   --database-url "postgresql+psycopg://<用户>:<密码>@localhost:5432/<临时数据库>" `
   --qdrant-url "http://localhost:6333" `
@@ -184,17 +199,17 @@ conda run -n rag-kb --no-capture-output python scripts/smoke_m1_research_e2e.py 
   --source "data/corpus/sources/员工休假制度-v2.md" `
   --report "docs/acceptance/m1-research-e2e.json"
 
-conda run -n rag-kb --no-capture-output python scripts/benchmark_enterprise_retrieval.py `
+conda run -n rag-kb --no-capture-output python backend/scripts/benchmark_enterprise_retrieval.py `
   --dataset data/benchmarks/retrieval_acceptance_v2.yaml `
-  --schema schemas/retrieval-acceptance-v2.schema.json `
+  --schema backend/schemas/retrieval-acceptance-v2.schema.json `
   --output data/local/benchmarks/enterprise-retrieval-stage9-sufficiency-aligned.json
-conda run -n rag-kb --no-capture-output python scripts/build_project_acceptance_report.py `
+conda run -n rag-kb --no-capture-output python backend/scripts/build_project_acceptance_report.py `
   --pytest-xml data/local/acceptance/pytest-stage9.xml `
   --retrieval-report data/local/benchmarks/enterprise-retrieval-stage9-sufficiency-aligned.json `
   --m1-e2e-report docs/acceptance/m1-research-e2e.json `
   --m2-e2e-report docs/acceptance/m2-controlled-write-e2e.json `
   --dataset data/benchmarks/retrieval_acceptance_v2.yaml `
-  --config pyproject.toml `
+  --config backend/pyproject.toml `
   --output docs/acceptance/latest.json
 ```
 
@@ -202,4 +217,4 @@ conda run -n rag-kb --no-capture-output python scripts/build_project_acceptance_
 
 ## 目录边界
 
-`src/rag_kb/` 为新应用；`tests/` 为分层回归；`schemas/` 为机器契约；`scripts/` 为可复现入口；`data/benchmarks/` 为任务集。用户的 `.obsidian/`、`output/`、面试材料和历史验收报告均属于受保护资产，不在迁移中删除或覆盖。E2E 结束后，调用方必须删除本次创建的临时 PostgreSQL 数据库、专属 Qdrant collection 和对象目录；正式机器证据为 `docs/acceptance/m1-research-e2e.json`、`docs/acceptance/m2-controlled-write-e2e.json` 与 `docs/acceptance/latest.json`。
+`backend/src/rag_kb/` 为新应用；`backend/tests/` 为分层回归；`backend/schemas/` 为机器契约；`backend/scripts/` 为可复现入口；`data/benchmarks/` 为任务集。用户的 `.obsidian/`、`output/`、面试材料和历史验收报告均属于受保护资产，不在迁移中删除或覆盖。E2E 结束后，调用方必须删除本次创建的临时 PostgreSQL 数据库、专属 Qdrant collection 和对象目录；正式机器证据为 `docs/acceptance/m1-research-e2e.json`、`docs/acceptance/m2-controlled-write-e2e.json` 与 `docs/acceptance/latest.json`。

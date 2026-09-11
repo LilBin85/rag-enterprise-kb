@@ -1,0 +1,385 @@
+"""证据账本：只持久化授权来源映射和哈希，不复制正文。"""
+
+import hashlib
+from datetime import UTC, datetime
+from uuid import NAMESPACE_URL, uuid5
+
+from sqlalchemy import and_, select, tuple_
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import Session
+
+from rag_kb.domain.evidence import EvidenceRecord
+from rag_kb.domain.identity import AuthContext, Permission
+from rag_kb.domain.retrieval import RetrievalCandidate
+from rag_kb.infrastructure.database.acl_repository import ACLRepository
+from rag_kb.infrastructure.database.models import (
+    AgentTaskRow,
+    ChunkMetadataRow,
+    DocumentRow,
+    DocumentVersionRow,
+    EvidenceRecordRow,
+    IngestionJobRow,
+)
+from rag_kb.models import Citation
+
+
+class EvidenceLedgerConflict(RuntimeError):
+    pass
+
+
+_RETRIEVAL_SCOPE = "retrieval"
+_VERSION_COMPARISON_SCOPE = "version_comparison"
+_EVIDENCE_SCOPES = frozenset({_RETRIEVAL_SCOPE, _VERSION_COMPARISON_SCOPE})
+
+
+class EvidenceLedgerRepository:
+    def __init__(self, acl_repository: ACLRepository | None = None) -> None:
+        self._acl = acl_repository or ACLRepository()
+
+    def record_candidates(
+        self,
+        session: Session,
+        *,
+        task_id: str,
+        query_fingerprint: str,
+        auth: AuthContext,
+        candidates: tuple[RetrievalCandidate, ...],
+        evidence_scope: str = _RETRIEVAL_SCOPE,
+    ) -> tuple[EvidenceRecord, ...]:
+        if evidence_scope not in _EVIDENCE_SCOPES:
+            raise ValueError("evidence_scope_invalid")
+        task = session.scalar(
+            select(AgentTaskRow).where(
+                AgentTaskRow.tenant_id == auth.tenant_id,
+                AgentTaskRow.task_id == task_id,
+                AgentTaskRow.user_id == auth.user_id,
+            )
+        )
+        if task is None:
+            raise EvidenceLedgerConflict("evidence_task_binding_invalid")
+        now = datetime.now(UTC)
+        for candidate in candidates:
+            if candidate.tenant_id != auth.tenant_id:
+                raise EvidenceLedgerConflict("cross_tenant_evidence_denied")
+            candidate_hash = "sha256:" + hashlib.sha256(candidate.text.encode("utf-8")).hexdigest()
+            if candidate_hash != candidate.content_hash:
+                raise EvidenceLedgerConflict("evidence_content_hash_mismatch")
+        if not candidates:
+            return ()
+
+        candidate_pairs = {
+            (candidate.version_id, candidate.chunk_id) for candidate in candidates
+        }
+        scope_conditions = (
+            (
+                DocumentVersionRow.lifecycle_status == "active",
+                DocumentRow.applied_projection_version_id == DocumentVersionRow.version_id,
+                DocumentRow.applied_projection_generation
+                == DocumentVersionRow.applied_projection_generation,
+            )
+            if evidence_scope == _RETRIEVAL_SCOPE
+            else (
+                DocumentVersionRow.lifecycle_status.in_(("active", "superseded")),
+                DocumentVersionRow.applied_projection_generation.is_not(None),
+            )
+        )
+        valid_bindings = {
+            tuple(row)
+            for row in session.execute(
+                select(
+                    ChunkMetadataRow.tenant_id,
+                    ChunkMetadataRow.version_id,
+                    ChunkMetadataRow.document_id,
+                    ChunkMetadataRow.document_version,
+                    ChunkMetadataRow.chunk_id,
+                    ChunkMetadataRow.content_hash,
+                    ChunkMetadataRow.source_locator,
+                    ChunkMetadataRow.source_file_name,
+                    DocumentVersionRow.applied_projection_generation,
+                )
+                .join(
+                    DocumentVersionRow,
+                    and_(
+                        DocumentVersionRow.tenant_id == ChunkMetadataRow.tenant_id,
+                        DocumentVersionRow.version_id == ChunkMetadataRow.version_id,
+                        DocumentVersionRow.document_id == ChunkMetadataRow.document_id,
+                        DocumentVersionRow.version == ChunkMetadataRow.document_version,
+                    ),
+                )
+                .join(
+                    DocumentRow,
+                    and_(
+                        DocumentRow.tenant_id == DocumentVersionRow.tenant_id,
+                        DocumentRow.document_id == DocumentVersionRow.document_id,
+                    ),
+                )
+                .join(
+                    IngestionJobRow,
+                    and_(
+                        IngestionJobRow.tenant_id == DocumentVersionRow.tenant_id,
+                        IngestionJobRow.version_id == DocumentVersionRow.version_id,
+                    ),
+                )
+                .where(
+                    ChunkMetadataRow.tenant_id == auth.tenant_id,
+                    tuple_(ChunkMetadataRow.version_id, ChunkMetadataRow.chunk_id).in_(
+                        candidate_pairs
+                    ),
+                    IngestionJobRow.status == "succeeded",
+                    IngestionJobRow.projection_generation
+                    == DocumentVersionRow.applied_projection_generation,
+                    IngestionJobRow.indexed_chunk_count.is_not(None),
+                    IngestionJobRow.index_manifest_digest.is_not(None),
+                    IngestionJobRow.index_completed_at.is_not(None),
+                    *scope_conditions,
+                )
+            )
+        }
+        candidate_bindings = {
+            (
+                candidate.tenant_id,
+                candidate.version_id,
+                candidate.document_id,
+                candidate.document_version,
+                candidate.chunk_id,
+                candidate.content_hash,
+                candidate.source_locator,
+                candidate.source_file_name,
+                candidate.projection_generation,
+            )
+            for candidate in candidates
+        }
+        if not candidate_bindings <= valid_bindings:
+            raise EvidenceLedgerConflict("evidence_authorization_stale")
+        allowed_document_ids = self._acl.authorized_document_ids(
+            session,
+            auth=auth,
+            document_ids=frozenset(
+                binding[2] for binding in valid_bindings if binding in candidate_bindings
+            ),
+            permission=Permission.KNOWLEDGE_READ,
+        )
+        for candidate in candidates:
+            if candidate.document_id not in allowed_document_ids:
+                raise EvidenceLedgerConflict("evidence_authorization_stale")
+
+        evidence_ids: list[str] = []
+        values_list: list[dict[str, object]] = []
+        for candidate in candidates:
+            identity = (
+                auth.tenant_id,
+                task_id,
+                query_fingerprint,
+                candidate.version_id,
+                candidate.chunk_id,
+                candidate.content_hash,
+            )
+            if evidence_scope != _RETRIEVAL_SCOPE:
+                identity += (evidence_scope,)
+            evidence_id = uuid5(
+                NAMESPACE_URL,
+                "|".join(identity),
+            ).hex
+            evidence_ids.append(evidence_id)
+            values_list.append({
+                "evidence_id": evidence_id,
+                "task_id": task_id,
+                "query_fingerprint": query_fingerprint,
+                "tenant_id": auth.tenant_id,
+                "document_id": candidate.document_id,
+                "version_id": candidate.version_id,
+                "document_version": candidate.document_version,
+                "chunk_id": candidate.chunk_id,
+                "content_hash": candidate.content_hash,
+                "source_locator": candidate.source_locator,
+                "evidence_scope": evidence_scope,
+                "permission_granted": True,
+                "supported_claim_ids": [],
+                "retrieved_at": now,
+            })
+        dialect = session.get_bind().dialect.name
+        if dialect == "postgresql":
+            statement = postgresql_insert(EvidenceRecordRow).values(values_list)
+        elif dialect == "sqlite":
+            statement = sqlite_insert(EvidenceRecordRow).values(values_list)
+        else:
+            raise RuntimeError("unsupported_database_dialect")
+        session.execute(
+            statement.on_conflict_do_nothing(
+                index_elements=["evidence_id"],
+            )
+        )
+        persisted_by_id = {
+            row.evidence_id: row
+            for row in session.scalars(
+                select(EvidenceRecordRow).where(
+                    EvidenceRecordRow.evidence_id.in_(evidence_ids)
+                )
+            )
+        }
+
+        records: list[EvidenceRecord] = []
+        for candidate, evidence_id in zip(candidates, evidence_ids, strict=True):
+            persisted = persisted_by_id.get(evidence_id)
+            if persisted is None:
+                raise EvidenceLedgerConflict("evidence_insert_not_visible")
+            immutable_binding = {
+                "task_id": task_id,
+                "query_fingerprint": query_fingerprint,
+                "tenant_id": auth.tenant_id,
+                "document_id": candidate.document_id,
+                "version_id": candidate.version_id,
+                "document_version": candidate.document_version,
+                "chunk_id": candidate.chunk_id,
+                "content_hash": candidate.content_hash,
+                "source_locator": candidate.source_locator,
+                "evidence_scope": evidence_scope,
+                "permission_granted": True,
+                "supported_claim_ids": [],
+            }
+            if any(
+                getattr(persisted, field) != expected
+                for field, expected in immutable_binding.items()
+            ):
+                raise EvidenceLedgerConflict("evidence_immutable_binding_conflict")
+            retrieved_at = persisted.retrieved_at
+            if retrieved_at.tzinfo is None:
+                retrieved_at = retrieved_at.replace(tzinfo=UTC)
+            records.append(
+                EvidenceRecord(
+                    evidence_id=evidence_id,
+                    task_id=task_id,
+                    query_fingerprint=query_fingerprint,
+                    tenant_id=auth.tenant_id,
+                    document_id=candidate.document_id,
+                    version_id=candidate.version_id,
+                    document_version=candidate.document_version,
+                    chunk_id=candidate.chunk_id,
+                    content_hash=candidate.content_hash,
+                    source_locator=candidate.source_locator,
+                    retrieved_at=retrieved_at,
+                    permission_granted=True,
+                )
+            )
+        return tuple(records)
+
+    def citations_from_ledger(
+        self,
+        session: Session,
+        *,
+        task_id: str,
+        evidence_ids: tuple[str, ...],
+        auth: AuthContext,
+    ) -> tuple[Citation, ...]:
+        if len(evidence_ids) != len(set(evidence_ids)):
+            raise EvidenceLedgerConflict("duplicate_evidence_id")
+        if not evidence_ids:
+            return ()
+        task = session.scalar(
+            select(AgentTaskRow).where(
+                AgentTaskRow.tenant_id == auth.tenant_id,
+                AgentTaskRow.task_id == task_id,
+                AgentTaskRow.user_id == auth.user_id,
+            )
+        )
+        if task is None:
+            raise EvidenceLedgerConflict("evidence_task_binding_invalid")
+        rows = session.execute(
+            select(
+                EvidenceRecordRow,
+                ChunkMetadataRow,
+                DocumentVersionRow,
+                DocumentRow,
+                IngestionJobRow,
+            )
+            .join(
+                ChunkMetadataRow,
+                and_(
+                    ChunkMetadataRow.tenant_id == EvidenceRecordRow.tenant_id,
+                    ChunkMetadataRow.version_id == EvidenceRecordRow.version_id,
+                    ChunkMetadataRow.document_id == EvidenceRecordRow.document_id,
+                    ChunkMetadataRow.document_version == EvidenceRecordRow.document_version,
+                    ChunkMetadataRow.chunk_id == EvidenceRecordRow.chunk_id,
+                    ChunkMetadataRow.content_hash == EvidenceRecordRow.content_hash,
+                    ChunkMetadataRow.source_locator == EvidenceRecordRow.source_locator,
+                ),
+            )
+            .join(
+                DocumentVersionRow,
+                and_(
+                    DocumentVersionRow.tenant_id == EvidenceRecordRow.tenant_id,
+                    DocumentVersionRow.document_id == EvidenceRecordRow.document_id,
+                    DocumentVersionRow.version == EvidenceRecordRow.document_version,
+                    DocumentVersionRow.version_id == EvidenceRecordRow.version_id,
+                ),
+            )
+            .join(
+                DocumentRow,
+                and_(
+                    DocumentRow.tenant_id == DocumentVersionRow.tenant_id,
+                    DocumentRow.document_id == DocumentVersionRow.document_id,
+                ),
+            )
+            .join(
+                IngestionJobRow,
+                and_(
+                    IngestionJobRow.tenant_id == DocumentVersionRow.tenant_id,
+                    IngestionJobRow.version_id == DocumentVersionRow.version_id,
+                ),
+            )
+            .where(
+                EvidenceRecordRow.tenant_id == auth.tenant_id,
+                EvidenceRecordRow.task_id == task_id,
+                EvidenceRecordRow.evidence_id.in_(evidence_ids),
+                EvidenceRecordRow.permission_granted.is_(True),
+            )
+        ).all()
+        by_id = {}
+        for evidence, metadata, version, document, job in rows:
+            current_retrieval = (
+                evidence.evidence_scope == _RETRIEVAL_SCOPE
+                and version.lifecycle_status == "active"
+                and document.applied_projection_version_id == version.version_id
+                and document.applied_projection_generation == version.applied_projection_generation
+            )
+            historical_comparison = (
+                evidence.evidence_scope == _VERSION_COMPARISON_SCOPE
+                and version.lifecycle_status in {"active", "superseded"}
+            )
+            if not (
+                (current_retrieval or historical_comparison)
+                and job.status == "succeeded"
+                and job.projection_generation == version.applied_projection_generation
+                and job.indexed_chunk_count is not None
+                and job.index_manifest_digest is not None
+                and job.index_completed_at is not None
+            ):
+                continue
+            by_id[evidence.evidence_id] = (evidence, metadata, document)
+        if set(by_id) != set(evidence_ids):
+            raise EvidenceLedgerConflict("evidence_ledger_binding_invalid")
+        allowed_document_ids = self._acl.authorized_document_ids(
+            session,
+            auth=auth,
+            document_ids=frozenset(
+                evidence.document_id for evidence, _metadata, _document in by_id.values()
+            ),
+            permission=Permission.KNOWLEDGE_READ,
+        )
+        citations: list[Citation] = []
+        for evidence_id in evidence_ids:
+            evidence, metadata, document = by_id[evidence_id]
+            if evidence.document_id not in allowed_document_ids:
+                raise EvidenceLedgerConflict("evidence_authorization_stale")
+            citations.append(
+                Citation(
+                    document_id=evidence.document_id,
+                    document_version=evidence.document_version,
+                    source_file_name=metadata.source_file_name,
+                    source_locator=metadata.source_locator,
+                    chunk_id=evidence.chunk_id,
+                    document_title=document.title,
+                )
+            )
+        return tuple(citations)
