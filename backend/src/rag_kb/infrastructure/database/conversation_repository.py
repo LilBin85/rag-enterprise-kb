@@ -183,7 +183,7 @@ class DatabaseConversationRepository:
             statement = select(ConversationRow).where(
                 ConversationRow.tenant_id == auth.tenant_id,
                 ConversationRow.user_id == auth.user_id,
-                ConversationRow.status != ConversationStatus.DELETED.value,
+                ConversationRow.status == ConversationStatus.ACTIVE.value,
             )
             if cursor:
                 when, conversation_id = _decode_cursor(cursor)
@@ -1077,7 +1077,12 @@ class DatabaseConversationRepository:
         )
 
     def purge_deleting(self, *, limit: int = 100) -> int:
-        """分批清正文并等待现有 task retention 删除结果与 checkpoint。"""
+        """分批清正文并等待现有 task retention 删除结果与 checkpoint。
+
+        清理完成的会话**物理删除行**（turns/messages 由 FK CASCADE 一并移除）；
+        任务行保留为独立记录（goal 打码、解除会话绑定），由任务行保留期收敛。
+        历史遗留的 status='deleted' 空壳行同批物理移除（自愈）。
+        """
         if limit < 1:
             raise ValueError("invalid_sweeper_limit")
         completed = 0
@@ -1184,9 +1189,36 @@ class DatabaseConversationRepository:
                     )
                 )
                 if int(pending or 0) == 0:
-                    conversation.status = ConversationStatus.DELETED.value
-                    conversation.deleted_at = now
+                    # 会话行将被物理删除：任务行转为独立记录，先解除绑定引用。
+                    if task_ids:
+                        session.execute(
+                            update(AgentTaskRow)
+                            .where(AgentTaskRow.task_id.in_(task_ids))
+                            .values(conversation_id=None, conversation_turn_id=None)
+                        )
+                    session.delete(conversation)
                     completed += 1
+            # 历史 deleted 空壳行（旧行为的残留）同批物理移除。
+            husks = tuple(
+                session.scalars(
+                    select(ConversationRow)
+                    .where(ConversationRow.status == ConversationStatus.DELETED.value)
+                    .order_by(ConversationRow.deleted_at, ConversationRow.conversation_id)
+                    .limit(limit)
+                    .with_for_update(skip_locked=True)
+                )
+            )
+            for conversation in husks:
+                session.execute(
+                    update(AgentTaskRow)
+                    .where(
+                        AgentTaskRow.tenant_id == conversation.tenant_id,
+                        AgentTaskRow.conversation_id == conversation.conversation_id,
+                    )
+                    .values(conversation_id=None, conversation_turn_id=None)
+                )
+                session.delete(conversation)
+                completed += 1
         return completed
 
     def mark_expired_for_deletion(self, *, limit: int = 100) -> int:

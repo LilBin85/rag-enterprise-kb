@@ -22,7 +22,7 @@ _ORPHAN_RETRY_CAPACITY = 100
 
 
 class TaskRetentionService:
-    """保留策略只处理正文与 checkpoint，不改写执行结论。"""
+    """保留策略清正文与 checkpoint，行保留期后物理删除终态任务行；不改写执行结论。"""
 
     def __init__(
         self,
@@ -36,14 +36,18 @@ class TaskRetentionService:
         close: Callable[[], None] | None = None,
         conversation_purger: Callable[..., int] | None = None,
         conversation_expirer: Callable[..., int] | None = None,
+        task_row_retention: timedelta | None = None,
     ) -> None:
         if orphan_grace_seconds <= 0:
             raise ValueError("invalid_result_object_orphan_grace")
+        if task_row_retention is not None and task_row_retention < timedelta(0):
+            raise ValueError("invalid_task_row_retention")
         self._lifecycle = lifecycle
         self._objects = objects
         self._results = results
         self._checkpointer = checkpointer
         self._orphan_grace = timedelta(seconds=orphan_grace_seconds)
+        self._task_row_retention = task_row_retention
         self._now = now or (lambda: datetime.now(UTC))
         self._close = close
         self._conversation_purger = conversation_purger
@@ -145,6 +149,18 @@ class TaskRetentionService:
                 logger.error("产物正文删除失败 artifact_id=%s", candidate.artifact_id)
                 continue
             if self._lifecycle.mark_artifact_content_purged(candidate):
+                purged += 1
+        return purged
+
+    def purge_expired_task_rows(self, *, limit: int = 100) -> int:
+        """终态任务行超过行保留期后物理删除；对象正文必须已被前面的 sweep 清空。"""
+        self._validate_limit(limit)
+        if self._task_row_retention is None:
+            return 0
+        cutoff = self._now() - self._task_row_retention
+        purged = 0
+        for candidate in self._lifecycle.expired_task_rows(limit=limit, older_than=cutoff):
+            if self._lifecycle.delete_purged_task_row(candidate, older_than=cutoff):
                 purged += 1
         return purged
 

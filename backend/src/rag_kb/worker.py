@@ -16,6 +16,7 @@ from prometheus_client.exposition import MetricsHandler
 from qdrant_client import QdrantClient
 
 from rag_kb.agent.checkpointer import open_postgres_checkpointer
+from rag_kb.agent.context import AgentRunContext
 from rag_kb.agent.factory import (
     build_controlled_action_agent,
     build_research_agent,
@@ -396,6 +397,23 @@ def build_task_worker(
         research_agents: dict[tuple[int, int], Any] = {}
         controlled_agents: dict[tuple[int, int], Any] = {}
 
+        def observe_tool_batch(event_type: str, context: AgentRunContext, counts: dict[str, int]) -> None:
+            repository.record_tool_batch_event(
+                task_id=context.task_id,
+                worker_id=context.worker_id,
+                lease_generation=context.lease_generation,
+                event_type=event_type,
+                run_id=context.run_id,
+                counts=counts,
+            )
+            if event_type == "tool_batch_completed" and telemetry is not None:
+                telemetry.record_read_tool_batch(
+                    total=counts["total"],
+                    succeeded=counts["succeeded"],
+                    failed=counts["failed"],
+                    duration_seconds=counts["duration_ms"] / 1000,
+                )
+
         def agent_for(budgets: TaskBudgets) -> Any:
             key = (budgets.max_model_calls, budgets.max_tool_calls)
             if key not in research_agents:
@@ -405,6 +423,7 @@ def build_task_worker(
                     checkpointer,
                     max_model_calls=budgets.max_model_calls,
                     max_tool_calls=budgets.max_tool_calls,
+                    batch_observer=observe_tool_batch,
                 )
             return research_agents[key]
 
@@ -417,6 +436,7 @@ def build_task_worker(
                     checkpointer,
                     max_model_calls=budgets.max_model_calls,
                     max_tool_calls=budgets.max_tool_calls,
+                    batch_observer=observe_tool_batch,
                 )
             return controlled_agents[key]
 
@@ -502,6 +522,11 @@ def build_task_retention() -> TaskRetentionService:
             close=connection.close,
             conversation_purger=conversations.purge_deleting,
             conversation_expirer=conversations.mark_expired_for_deletion,
+            task_row_retention=(
+                timedelta(days=settings.task_row_retention_days)
+                if settings.task_row_retention_days is not None
+                else None
+            ),
         )
     except Exception:
         connection.close()
@@ -653,6 +678,12 @@ def _run_task_maintenance(
             (
                 "task_content_retention",
                 lambda: task_retention.purge_finished_task_content(
+                    limit=_RECOVERY_BATCH_SIZE
+                ),
+            ),
+            (
+                "task_row_retention",
+                lambda: task_retention.purge_expired_task_rows(
                     limit=_RECOVERY_BATCH_SIZE
                 ),
             ),

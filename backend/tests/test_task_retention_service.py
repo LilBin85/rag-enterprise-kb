@@ -27,6 +27,8 @@ from rag_kb.infrastructure.database.approval_lifecycle import (
 from rag_kb.infrastructure.database.models import (
     AgentTaskRow,
     ArtifactRow,
+    ConversationRow,
+    ConversationTurnRow,
     PrincipalRow,
     TenantRow,
     ToolCallRow,
@@ -351,6 +353,145 @@ def test_finished_task_gc_marks_no_result_once_without_changing_status(runtime) 
         assert row.checkpoint_purged_at is not None
         assert row.result_purged_at is not None
     assert checkpointer.deleted == ["failed-task"]
+
+
+def _row_retention_service(database, repository, objects, checkpointer, clock, days: int | None) -> TaskRetentionService:
+    return TaskRetentionService(
+        lifecycle=DatabaseTaskRetentionLifecycle(database, repository, now=clock),
+        objects=objects,
+        results=AgentResultStore(objects),
+        checkpointer=checkpointer,
+        orphan_grace_seconds=60,
+        now=clock,
+        task_row_retention=timedelta(days=days) if days is not None else None,
+    )
+
+
+def test_task_row_purge_removes_expired_purged_unbound_terminal_task(runtime) -> None:
+    database, clock, _auth, objects, repository, checkpointer, retention = runtime
+    lease = _claim(runtime, "old-task")
+    repository.finish_task(
+        lease, status=TaskStatus.FAILED, error_code="task_agent_failed", run_id="trace-a"
+    )
+    with database.sessions.begin() as session:
+        row = session.get(AgentTaskRow, "old-task")
+        assert row is not None
+        row.content_expires_at = clock.value - timedelta(seconds=1)
+        row.updated_at = clock.value - timedelta(days=31)
+
+    assert retention.purge_finished_task_content(limit=10) == 1
+
+    row_retention = _row_retention_service(database, repository, objects, checkpointer, clock, 30)
+    assert row_retention.purge_expired_task_rows(limit=10) == 1
+    with database.sessions() as session:
+        assert session.get(AgentTaskRow, "old-task") is None
+    assert row_retention.purge_expired_task_rows(limit=10) == 0
+
+
+def test_task_row_purge_waits_for_active_conversation_and_content_gc(runtime) -> None:
+    database, clock, _auth, objects, repository, checkpointer, retention = runtime
+    lease = _claim(runtime, "bound-task")
+    repository.finish_task(
+        lease, status=TaskStatus.FAILED, error_code="task_agent_failed", run_id="trace-a"
+    )
+    with database.sessions.begin() as session:
+        row = session.get(AgentTaskRow, "bound-task")
+        assert row is not None
+        row.content_expires_at = clock.value - timedelta(seconds=1)
+        row.updated_at = clock.value - timedelta(days=31)
+        session.add(
+            ConversationRow(
+                conversation_id="conv-1",
+                tenant_id="tenant-a",
+                user_id="user-a",
+            )
+        )
+        session.flush()
+        session.add(
+            ConversationTurnRow(
+                turn_id="turn-1",
+                tenant_id="tenant-a",
+                conversation_id="conv-1",
+                user_id="user-a",
+                sequence=1,
+                status=TaskStatus.FAILED.value,
+                submission_kind="new",
+                requested_mode="research",
+                selected_mode="research",
+                task_id="bound-task",
+                idempotency_key="turn-key",
+                request_hash="sha256:" + "d" * 64,
+            )
+        )
+        # 先落回合行，再绑定任务引用（SQLite 立即 FK 检查对 update/insert 顺序敏感）。
+        session.flush()
+        row.conversation_id = "conv-1"
+        row.conversation_turn_id = "turn-1"
+
+    row_retention = _row_retention_service(database, repository, objects, checkpointer, clock, 30)
+    # 内容未清（checkpoint/result 未 purge）+ 活跃会话绑定，两道守卫都必须挡住。
+    assert row_retention.purge_expired_task_rows(limit=10) == 0
+    with database.sessions() as session:
+        assert session.get(AgentTaskRow, "bound-task") is not None
+
+    assert retention.purge_finished_task_content(limit=10) == 1
+    # 内容已清但会话仍活跃：仍不删。
+    assert row_retention.purge_expired_task_rows(limit=10) == 0
+    with database.sessions.begin() as session:
+        conversation = session.get(ConversationRow, "conv-1")
+        conversation.status = "deleted"
+        conversation.deleting_at = clock.value
+        conversation.deleted_at = clock.value
+
+    assert row_retention.purge_expired_task_rows(limit=10) == 1
+    with database.sessions() as session:
+        assert session.get(AgentTaskRow, "bound-task") is None
+
+
+def test_task_row_purge_treats_knowledge_query_as_content_free(runtime) -> None:
+    """快速问答同步任务从不产生 checkpoint/结果对象，天然无内容，直接可收敛。"""
+
+    database, clock, _auth, objects, repository, checkpointer, _retention = runtime
+    with database.sessions.begin() as session:
+        session.add(
+            AgentTaskRow(
+                task_id="sync-query",
+                tenant_id="tenant-a",
+                user_id="user-a",
+                goal="快速问答",
+                task_mode="knowledge_query",
+                status=TaskStatus.FAILED.value,
+                required_capability_name="cap",
+                required_protocol_version="v",
+                auth_context_ref="auth-context-ref",
+                updated_at=clock.value - timedelta(days=31),
+            )
+        )
+
+    row_retention = _row_retention_service(database, repository, objects, checkpointer, clock, 30)
+
+    assert row_retention.purge_expired_task_rows(limit=10) == 1
+    with database.sessions() as session:
+        assert session.get(AgentTaskRow, "sync-query") is None
+
+
+def test_task_row_purge_disabled_when_retention_is_none(runtime) -> None:
+    database, clock, _auth, objects, repository, checkpointer, _retention = runtime
+    lease = _claim(runtime, "kept-task")
+    repository.finish_task(
+        lease, status=TaskStatus.FAILED, error_code="task_agent_failed", run_id="trace-a"
+    )
+    with database.sessions.begin() as session:
+        row = session.get(AgentTaskRow, "kept-task")
+        assert row is not None
+        row.content_expires_at = clock.value - timedelta(seconds=1)
+        row.updated_at = clock.value - timedelta(days=365)
+
+    assert _retention.purge_finished_task_content(limit=10) == 1
+    disabled = _row_retention_service(database, repository, objects, checkpointer, clock, None)
+    assert disabled.purge_expired_task_rows(limit=10) == 0
+    with database.sessions() as session:
+        assert session.get(AgentTaskRow, "kept-task") is not None
 
 
 def test_finished_task_gc_retains_result_ref_after_real_delete_failure(runtime, monkeypatch) -> None:

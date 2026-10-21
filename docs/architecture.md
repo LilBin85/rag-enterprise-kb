@@ -8,7 +8,7 @@ PostgreSQL 保存租户、主体、文档版本、ACL、Research 与 controlled_
 
 ## Fast Path 与 Durable Path
 
-`EnterpriseRetriever` 是唯一 Retrieval Core。infrastructure factory 为 Fast Path 和 Durable Path 解析同一 retrieval settings，并装配相同的 BGE、Qdrant 授权搜索、SQL ACL adapter、候选/上下文限制、RRF、hybrid、阈值和证据充分性策略。它们只共享 `RetrievalResult`，不共享 evidence task 生命周期、回答/ToolMessage、HTTP 时序或 Agent 状态。
+`EnterpriseRetriever` 是唯一 Retrieval Core。infrastructure factory 为 Fast Path 和 Durable Path 解析同一 retrieval settings，并装配相同的 BGE、Qdrant 授权搜索、SQL ACL adapter、候选/上下文限制、RRF、hybrid、阈值、交叉编码重排和证据充分性策略。多路召回（dense + keyword sparse）与 bge-reranker 重排默认开启（`ENABLE_HYBRID_RETRIEVAL` / `ENABLE_RERANKER`）；重排只改变顺序与 `rerank_score`，权重未缓存或加载失败时回落融合顺序并记录 `retrieval.rerank.unavailable`，不影响问答可用性。它们只共享 `RetrievalResult`，不共享 evidence task 生命周期、回答/ToolMessage、HTTP 时序或 Agent 状态。
 
 | 场景 | Fast Path | Durable Path |
 | --- | --- | --- |
@@ -18,11 +18,13 @@ PostgreSQL 保存租户、主体、文档版本、ACL、Research 与 controlled_
 | 返回 | JSON `200`，或 `turn.accepted`、`status`、`answer.preview`、`done` 组成的 SSE `200` | 创建或恢复 `202 Accepted`，结果异步读取 |
 | 独立职责 | 内部 query fencing/evidence、单次回答 | task/checkpoint、工具预算、HITL、耐久恢复 |
 
-Fast Path 时序：`HTTP 会话消息 → ConversationService → KnowledgeQueryService → EnterpriseRetriever → Fast evidence ledger → constrained answer → citation revalidation → JSON response 或 SSE done`。服务端身份解析后，`ConversationService` 选择普通问答并调用 `KnowledgeQueryService`；请求 `Accept: text/event-stream` 时，受限执行器额外发送 `turn.accepted`、状态和累计草稿。检索器只返回当前授权候选；候选先进入 `evidence_records`，模型只能选择本次账本中的 chunk。拒答判定分两层：确定性证据门只在检索层拦截字面可验证的缺失（问题点名的数量/单位、ASCII 锚点在证据中不存在）；主谓语义是否足以回答由回答模型在受约束生成时以 verdict 判定（上下文不足必须 refusal），最终引用一律经证据账本复核构造，模型无法编造出处。`answer.preview` 不是持久消息或权威输出，只有完成的 `done` 结果才会写入会话。
+Fast Path 时序：`HTTP 会话消息 → ConversationService → KnowledgeQueryService → EnterpriseRetriever → Fast evidence ledger → constrained answer → citation revalidation → JSON response 或 SSE done`。服务端身份解析后，`ConversationService` 选择普通问答并调用 `KnowledgeQueryService`；请求 `Accept: text/event-stream` 时，受限执行器额外发送 `turn.accepted`、状态和累计草稿。检索器只返回当前授权候选；候选先进入 `evidence_records`，模型只能选择本次账本中的 chunk。拒答判定分两层：确定性证据门只在检索层拦截字面可验证的缺失——问题点名的单位在证据中没有任何"数字+单位"、ASCII 锚点在证据中不存在；问题自带错误前提的具体数字（"年假是 20 天吗"对证据"15 天"）与数字等价表达（"十五天"="15 天"）不参与硬判，放行后交由回答模型纠正前提。主谓语义是否足以回答由回答模型在受约束生成时以 verdict 判定（上下文不足必须 refusal），最终引用一律经证据账本复核构造，模型无法编造出处。引用复核的能力边界：合法引用、权限正确、事实被支持是三个不同层次，它挡不住"引用真实片段却写错数字"，后者由离屏评测 `rag_kb.evaluation.answer_quality` 度量。`answer.preview` 不是持久消息或权威输出，只有完成的 `done` 结果才会写入会话。
 
 Durable Path 时序：`HTTP → PostgreSQL task → task-worker/Agent → search_knowledge → EnterpriseRetriever → Durable evidence ledger → ToolMessage/checkpoint → async result`。`search_knowledge` 的 `limit` 只从 Core 已排序候选取前缀，不能重检索或改变排序。Fast Path 的 refusal 与 Durable ToolMessage 可以不同，但底层 fingerprint、ACL、候选顺序和 insufficiency code 必须一致。
 
 `POST /v1/documents` 建立首个版本，`POST /v1/documents/{document_id}/versions` 在同一文档下建立新版本；路径和 metadata 的 document_id 必须一致。文档上传先建立 SQL 预留并独占写入对象；摄取 worker 解析并保存 manifest 后分配新投影世代。上传、版本新增、删除和投影变更共享同文档 guard，避免跨存储操作相互越过。
+
+PDF 解析使用 Docling 且明确关闭 OCR（`do_ocr=False`）：只支持数字原生文本层 PDF。表格对象经 `export_to_markdown` 保留行列结构进入 chunk（只读 `text` 字段会整块丢失表格）；每个解析对象携带自己的真实页码，同一章节跨页后按页拆分，`source_locator` 为 `第 N 页 / 标题`，无标题文档同样得到真实页码。扫描件/图片型 PDF 没有文本层，解析结果为空并以 `document_parse_empty` 失败关闭——这是当前明确的支持边界，需要覆盖扫描件时再开启 OCR（引入 OCR 模型依赖与摄取延迟）。
 
 ## Qdrant 三阶段投影
 
@@ -51,7 +53,7 @@ Research 与 controlled_action 任务均以 `thread_id = task_id` 使用 LangGra
 
 只有构建完成的 `task-worker` 才注册 `task-agent/m2-fenced-v1` capability lease（独立心跳续租，与任务 invoke 解耦）；统一会话入口选择 Research 或 controlled_action 时，仓储门在插入事务内复核 capability 名称、协议版本和租期，缺失、错版本或过期时返回 503，普通 `answer`、文档接口和全局 readiness 不受影响。受控创建还受 feature gate 约束。任务执行期间按租约三分之一间隔续租，失败则本次结果不提交，任务保持可安全恢复。
 
-执行结论与正文可用性分离：独立的 `TaskRetentionService` 周期收敛 waiting deadline reaper、工具正文 GC、任务 checkpoint/结果 GC 与 `artifacts/` 固定前缀孤儿对象扫描；GC 只删除正文对象并写 purge 标记，绝不改写 succeeded/refused 等历史执行终态。artifact 正文读取要求任务 owner 与 `task:read`，并逐项复核 tenant/task/artifact 绑定、ready 状态、TTL/purge 与 SHA-256；对象键不离开服务边界。结果读取在返回前于行锁内二次复核 deadline、授权和证据账本：到期为 410、未完成/无结果为 409、完整性错误 fail-close 为 500。"object 写成功、DB 绑定前崩溃"的对象由即时补偿加固定前缀 grace 重扫双保险兜底，删除失败保留引用供下轮重试。checkpointer 的 msgpack serializer 只 allowlist `TaskResultCandidate`、显式禁用 pickle fallback，并在 `LANGGRAPH_STRICT_MSGPACK=true` 下叠加运行时 schema allowlist。
+执行结论与正文可用性分离：独立的 `TaskRetentionService` 周期收敛 waiting deadline reaper、工具正文 GC、任务 checkpoint/结果 GC 与 `artifacts/` 固定前缀孤儿对象扫描；GC 只删除正文对象并写 purge 标记，绝不改写 succeeded/refused 等历史执行终态。用户删除会话分两阶段收敛：入口拒绝带活跃回合（含澄清/审批等待）的会话并置 `deleting`，sweeper 清空正文后物理删除会话行（turns/messages 随 FK 级联移除），相关任务行解除会话绑定、goal 打码；历史 deleted 空壳行同批移除。终态任务行另有行级保留期（`TASK_ROW_RETENTION_DAYS`，默认 30）：内容清空且不再被活跃会话引用后，整行随 SQL 级联物理删除（approvals/artifacts/evidence/plan_revisions/events/resume_commands/tool_calls）；`purge_task_history.py` 可手动立即收敛。artifact 正文读取要求任务 owner 与 `task:read`，并逐项复核 tenant/task/artifact 绑定、ready 状态、TTL/purge 与 SHA-256；对象键不离开服务边界。结果读取在返回前于行锁内二次复核 deadline、授权和证据账本：到期为 410、未完成/无结果为 409、完整性错误 fail-close 为 500。"object 写成功、DB 绑定前崩溃"的对象由即时补偿加固定前缀 grace 重扫双保险兜底，删除失败保留引用供下轮重试。checkpointer 的 msgpack serializer 只 allowlist `TaskResultCandidate`、显式禁用 pickle fallback，并在 `LANGGRAPH_STRICT_MSGPACK=true` 下叠加运行时 schema allowlist。
 
 摄取和投影处理使用后台心跳续租；失去租约后旧 worker 不能提交。已有 receipt 的发布恢复跳过解析和 embedding。达到普通重试上限但仍可能遗留 Qdrant 世代时，任务进入可重复领取的 cleanup 阶段，清理成功后才写入最终失败。
 

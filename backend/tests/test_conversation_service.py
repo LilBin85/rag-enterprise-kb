@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from rag_kb.application.conversation_service import (
     ConversationRouteDecision,
@@ -118,6 +118,23 @@ def test_research_submit_is_durable_idempotent_and_single_active(service) -> Non
         conversations.read(auth=_auth("other-a"), conversation_id=created.conversation_id)
 
 
+def test_list_only_paginates_active_conversations(service) -> None:
+    conversations, _database = service
+    created = [conversations.create(auth=_auth()) for _ in range(3)]
+
+    assert conversations.delete(
+        auth=_auth(), conversation_id=created[0].conversation_id
+    ).status == "deleting"
+    assert conversations.delete(
+        auth=_auth(), conversation_id=created[1].conversation_id
+    ).status == "deleting"
+
+    page = conversations.list(auth=_auth(), limit=1)
+
+    assert [item.conversation_id for item in page.items] == [created[2].conversation_id]
+    assert page.next_cursor is None
+
+
 def test_explicit_document_scope_is_durable_and_part_of_idempotency(service) -> None:
     conversations, database = service
     created = conversations.create(auth=_auth())
@@ -218,7 +235,7 @@ class _ControlledRouter:
         return ConversationRouteDecision(
             selected_mode=ConversationMode.CONTROLLED_ACTION,
             resolved_input=content,
-            reason_code="write_intent_requires_explicit",
+            reason_code="auto_controlled_action",
         )
 
 
@@ -362,18 +379,45 @@ def test_replay_precedes_route_and_conflicting_key_never_reroutes(service) -> No
     assert router.calls == 1
 
 
-def test_auto_never_creates_controlled_action_turn(service) -> None:
+def test_auto_creates_controlled_action_turn_for_write_intent(service) -> None:
     _conversations, database = service
     conversations = ConversationService(
         DatabaseConversationRepository(database), DatabaseTaskRepository(database),
         router=_ControlledRouter(), controlled_action_enabled=True,
     )
     created = conversations.create(auth=_auth())
-    with pytest.raises(ConversationServiceError, match="controlled_action_explicit_mode_required"):
+    result = conversations.submit(
+        auth=_auth(), conversation_id=created.conversation_id, idempotency_key="auto-write",
+        kind="new", content="研究制度并创建工作项", mode="auto",
+    )
+
+    assert result.status_code == 202
+    assert result.requested_mode is ConversationMode.AUTO
+    assert result.selected_mode is ConversationMode.CONTROLLED_ACTION
+    assert result.route_reason_code == "auto_controlled_action"
+    assert result.task is not None
+    with database.sessions() as session:
+        turn = session.get(ConversationTurnRow, result.turn_id)
+        task = session.get(AgentTaskRow, result.task.task_id)
+    assert turn is not None and turn.requested_mode == "auto"
+    assert turn.selected_mode == "controlled_action"
+    assert task is not None and task.task_mode == "controlled_action"
+
+
+def test_auto_write_intent_fails_closed_when_controlled_actions_are_disabled(service) -> None:
+    _conversations, database = service
+    conversations = ConversationService(
+        DatabaseConversationRepository(database), DatabaseTaskRepository(database),
+        router=_ControlledRouter(), controlled_action_enabled=False,
+    )
+    created = conversations.create(auth=_auth())
+
+    with pytest.raises(ConversationServiceError, match="controlled_action_unavailable"):
         conversations.submit(
-            auth=_auth(), conversation_id=created.conversation_id, idempotency_key="auto-write",
+            auth=_auth(), conversation_id=created.conversation_id, idempotency_key="auto-write-disabled",
             kind="new", content="创建工作项", mode="auto",
         )
+
     with database.sessions() as session:
         assert session.scalar(select(ConversationTurnRow)) is None
 
@@ -733,9 +777,35 @@ def test_deleting_fast_conversation_cleans_empty_task_markers(service) -> None:
     assert repository.purge_deleting(limit=10) == 1
     with database.sessions() as session:
         row = session.get(ConversationRow, created.conversation_id)
-        task = session.scalar(select(ConversationTurnRow).where(ConversationTurnRow.conversation_id == created.conversation_id))
-    assert row is not None and row.status == "deleted" and row.title is None and row.summary is None
-    assert task is not None
+        turn = session.scalar(select(ConversationTurnRow).where(ConversationTurnRow.conversation_id == created.conversation_id))
+        messages = session.scalar(
+            select(func.count())
+            .select_from(ConversationMessageRow)
+            .where(ConversationMessageRow.conversation_id == created.conversation_id)
+        )
+    # 真删除：会话、回合与消息行物理移除（快速路径不产生任务行）。
+    assert row is None and turn is None and messages == 0
+
+
+def test_purge_deleting_removes_legacy_deleted_husk_rows(service) -> None:
+    _conversations, database = service
+    repository = DatabaseConversationRepository(database)
+    conversations = ConversationService(
+        repository, DatabaseTaskRepository(database), knowledge_queries=_RefusingKnowledge()
+    )
+    created = conversations.create(auth=_auth(), title="旧壳行")
+    # 模拟旧行为遗留的 deleted 空壳行（正文已清、行保留）。
+    with database.sessions.begin() as session:
+        row = session.get(ConversationRow, created.conversation_id)
+        now = datetime.now(UTC)
+        row.status = ConversationStatus.DELETED.value
+        row.deleting_at = now
+        row.deleted_at = now
+
+    assert repository.purge_deleting(limit=10) == 1
+
+    with database.sessions() as session:
+        assert session.get(ConversationRow, created.conversation_id) is None
 
 
 def test_deleting_conversation_expires_linked_artifact_content(service) -> None:
@@ -807,7 +877,13 @@ def test_deleting_conversation_expires_linked_artifact_content(service) -> None:
     assert repository.purge_deleting(limit=10) == 1
     with database.sessions() as session:
         artifact = session.get(ArtifactRow, "artifact-delete")
+        task = session.get(AgentTaskRow, submitted.task.task_id)
+        turn = session.get(ConversationTurnRow, submitted.turn_id)
     assert artifact is not None and artifact.content_expires_at is not None
+    # 真删除：回合行物理移除；任务行保留为独立记录（goal 打码、解除会话绑定）。
+    assert turn is None
+    assert task is not None and task.goal == "[conversation content purged]"
+    assert task.conversation_id is None and task.conversation_turn_id is None
     expires_at = artifact.content_expires_at
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)

@@ -6,17 +6,24 @@ from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Callable
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 
 from rag_kb.application.ports.task_retention import (
     ArtifactContentCandidate,
+    ExpiredTaskRow,
     ExpiredToolResult,
     OrphanReferenceSnapshot,
     TaskContentCandidate,
     TaskRetentionLifecyclePort,
 )
-from rag_kb.domain.tasks import TaskStatus
-from rag_kb.infrastructure.database.models import AgentTaskRow, ArtifactRow, ToolCallRow
+from rag_kb.domain.conversations import ConversationStatus
+from rag_kb.domain.tasks import TaskMode, TaskStatus
+from rag_kb.infrastructure.database.models import (
+    AgentTaskRow,
+    ArtifactRow,
+    ConversationRow,
+    ToolCallRow,
+)
 from rag_kb.infrastructure.database.session import Database
 from rag_kb.infrastructure.database.task_repository import DatabaseTaskRepository
 from rag_kb.infrastructure.database.unit_of_work import UnitOfWork
@@ -30,6 +37,17 @@ _TERMINAL_STATUS_VALUES = tuple(
         TaskStatus.FAILED,
         TaskStatus.CANCELLED,
         TaskStatus.UNKNOWN,
+    )
+)
+
+# 行级物理删除只针对确定终态；UNKNOWN 是恢复中的中间态，不参与。
+_ROW_PURGE_STATUS_VALUES = tuple(
+    status.value
+    for status in (
+        TaskStatus.SUCCEEDED,
+        TaskStatus.REFUSED,
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
     )
 )
 
@@ -216,6 +234,82 @@ class DatabaseTaskRetentionLifecycle(TaskRetentionLifecyclePort):
                 return False
             row.storage_key = None
             row.content_purged_at = now
+            return True
+
+    def expired_task_rows(
+        self,
+        *,
+        limit: int,
+        older_than: datetime,
+    ) -> tuple[ExpiredTaskRow, ...]:
+        """内容已清空、超过行保留期且不再被活跃会话引用的终态任务行。
+
+        knowledge_query 同步任务从不产生 LangGraph checkpoint 或结果对象，
+        视为天然无内容，不要求 purge 标记。
+        """
+        with UnitOfWork(self._database) as work:
+            assert work.session is not None
+            rows = tuple(
+                work.session.scalars(
+                    select(AgentTaskRow)
+                    .outerjoin(
+                        ConversationRow,
+                        and_(
+                            ConversationRow.tenant_id == AgentTaskRow.tenant_id,
+                            ConversationRow.conversation_id == AgentTaskRow.conversation_id,
+                        ),
+                    )
+                    .where(
+                        AgentTaskRow.status.in_(_ROW_PURGE_STATUS_VALUES),
+                        or_(
+                            and_(
+                                AgentTaskRow.checkpoint_purged_at.is_not(None),
+                                AgentTaskRow.result_purged_at.is_not(None),
+                            ),
+                            AgentTaskRow.task_mode == TaskMode.KNOWLEDGE_QUERY.value,
+                        ),
+                        AgentTaskRow.updated_at <= older_than,
+                        or_(
+                            AgentTaskRow.conversation_id.is_(None),
+                            ConversationRow.status.is_(None),
+                            ConversationRow.status == ConversationStatus.DELETING.value,
+                            ConversationRow.status == ConversationStatus.DELETED.value,
+                        ),
+                    )
+                    .order_by(AgentTaskRow.updated_at, AgentTaskRow.task_id)
+                    .limit(limit)
+                    .with_for_update(skip_locked=True, of=AgentTaskRow)
+                )
+            )
+            return tuple(ExpiredTaskRow(task_id=row.task_id) for row in rows)
+
+    def delete_purged_task_row(self, candidate: ExpiredTaskRow, *, older_than: datetime) -> bool:
+        """行锁内复核保留条件后物理删除；子表由 FK CASCADE 一并移除。"""
+        with UnitOfWork(self._database) as work:
+            assert work.session is not None
+            row = work.session.scalar(
+                select(AgentTaskRow)
+                .where(AgentTaskRow.task_id == candidate.task_id)
+                .with_for_update()
+            )
+            if row is None:
+                return False
+            updated_at = _aware(row.updated_at)
+            content_purged = (
+                row.task_mode == TaskMode.KNOWLEDGE_QUERY.value
+                or (
+                    row.checkpoint_purged_at is not None
+                    and row.result_purged_at is not None
+                )
+            )
+            if (
+                row.status not in _ROW_PURGE_STATUS_VALUES
+                or not content_purged
+                or updated_at is None
+                or updated_at > older_than
+            ):
+                return False
+            work.session.delete(row)
             return True
 
     def orphan_scan_exclusions(self) -> frozenset[str]:

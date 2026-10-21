@@ -22,6 +22,13 @@ class TaskContentCandidate:
 
 
 @dataclass(frozen=True)
+class ExpiredTaskRow:
+    """内容已清空且超过行保留期的终态任务行；删除时 SQL 级联清子表。"""
+
+    task_id: str
+
+
+@dataclass(frozen=True)
 class ArtifactContentCandidate:
     artifact_id: str
     storage_key: str
@@ -79,6 +86,15 @@ class TaskRetentionLifecyclePort(Protocol):
     ) -> tuple[ArtifactContentCandidate, ...]: ...
 
     def mark_artifact_content_purged(self, candidate: ArtifactContentCandidate) -> bool: ...
+
+    def expired_task_rows(
+        self,
+        *,
+        limit: int,
+        older_than: datetime,
+    ) -> tuple[ExpiredTaskRow, ...]: ...
+
+    def delete_purged_task_row(self, candidate: ExpiredTaskRow, *, older_than: datetime) -> bool: ...
 
     def orphan_scan_exclusions(self) -> frozenset[str]: ...
 
