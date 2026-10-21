@@ -1,0 +1,15 @@
+# 行尾规范：仓库与工作区统一 LF，杜绝 mixed endings 与 autocrlf 警告。
+# 2026-10-21 renormalize：索引本就全为 LF（见 git ls-files --eol），
+# 本文件只是把该事实固化为规则，renormalize 不改变任何 blob 内容。
+* text=auto eol=lf
+
+# Windows 脚本强制 CRLF（PowerShell 5.x 对 LF 兼容，但保持惯例安全）
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制明确豁免，防止 text=auto 误判
+*.pdf binary
+*.png binary
+*.jpg binary
+*.ico binary
