@@ -14,6 +14,8 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolRuntime
+from langgraph.types import Command
+from sqlalchemy import insert
 
 from rag_kb.agent import factory
 from rag_kb.agent.context import AgentRunContext
@@ -28,6 +30,7 @@ from rag_kb.agent.tools import (
     render_write_tool_message,
 )
 from rag_kb.application.approval_service import ApprovalService
+from rag_kb.application.ports.task_read import ArtifactSummary
 from rag_kb.application.task_result_service import TaskResultError, TaskResultService
 from rag_kb.application.tool_execution_service import (
     ToolExecutionError,
@@ -45,6 +48,7 @@ from rag_kb.infrastructure.database.approval_lifecycle import (
 from rag_kb.infrastructure.database.evidence_repository import EvidenceLedgerConflict
 from rag_kb.infrastructure.database.models import (
     AgentTaskRow,
+    ArtifactRow,
     PrincipalRow,
     TenantRow,
     ToolCallRow,
@@ -129,14 +133,17 @@ def test_agent_factory_configures_only_research_tools_and_m1_guards(monkeypatch)
     assert captured["checkpointer"] == "checkpointer"
     assert [type(item).__name__ for item in captured["middleware"]] == [
         "TodoListMiddleware",
-        "SingleBusinessToolCallMiddleware",
         "ClarificationInterruptMiddleware",
         "ExecutionGuardMiddleware",
+        "ToolCallLimitMiddleware",
         "ModelCallLimitMiddleware",
         "ToolCallLimitMiddleware",
+        "BusinessToolBatchMiddleware",
     ]
-    assert captured["middleware"][-2].thread_limit == 2
-    assert captured["middleware"][-1].thread_limit == 3
+    assert captured["middleware"][-4].tool_name == "search_knowledge"
+    assert captured["middleware"][-4].thread_limit == 3
+    assert captured["middleware"][-3].thread_limit == 2
+    assert captured["middleware"][-2].thread_limit == 3
 
 
 def test_research_tools_are_exactly_four_and_use_trusted_context() -> None:
@@ -448,6 +455,66 @@ def test_result_read_rejects_expired_body_before_object_read() -> None:
         service.read(auth=_auth(), state=state)
 
 
+def test_legacy_artifact_display_name_parsing_and_fallback() -> None:
+    assert DatabaseTaskResultReader._parse_display_name(
+        "说明\n# 新员工入职核心流程验收报告\n正文".encode(), "report"
+    ) == "新员工入职核心流程验收报告"
+    assert DatabaseTaskResultReader._parse_display_name(
+        b'{"title":"Create access checklist"}', "work_item_draft"
+    ) == "Create access checklist"
+    assert DatabaseTaskResultReader._fallback_artifact_name(
+        "report", "cf892401dbe0478d"
+    ) == "历史报告-cf892401db"
+
+
+def test_legacy_artifact_name_is_backfilled_after_verified_content_read(tmp_path: Path) -> None:
+    import hashlib
+
+    database = build_database(f"sqlite+pysqlite:///{(tmp_path / 'artifact-name.sqlite3').as_posix()}")
+    Base.metadata.create_all(database.engine)
+    objects = LocalObjectStore(tmp_path / "objects")
+    content = "# 新员工入职核心流程验收报告\n\n正文\n".encode()
+    content_hash = f"sha256:{hashlib.sha256(content).hexdigest()}"
+    storage_key = "artifacts/tenant/task/report/legacy.md"
+    objects.put_exclusive(storage_key, content)
+    with database.engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        connection.execute(
+            insert(ArtifactRow).values(
+                artifact_id="legacy-artifact",
+                task_id="task-a",
+                tenant_id="tenant-a",
+                tool_call_id="legacy-call",
+                artifact_type="report",
+                storage_key=storage_key,
+                content_hash=content_hash,
+                status="ready",
+            )
+        )
+        connection.commit()
+
+    reader = DatabaseTaskResultReader(database, SimpleNamespace(), artifacts=objects)
+    summary = ArtifactSummary(
+        artifact_id="legacy-artifact",
+        artifact_type="report",
+        content_hash=content_hash,
+    )
+    result = TaskResult(
+        task_id="task-a",
+        result_kind="controlled_action",
+        status="refused",
+        artifacts=(summary,),
+        created_at=datetime.now(UTC),
+    )
+    hydrated = reader._hydrate_artifacts(_auth(), SimpleNamespace(task_id="task-a"), result)
+
+    assert hydrated[0].display_name == "新员工入职核心流程验收报告"
+    assert hydrated[0].file_extension == "md"
+    with database.sessions() as session:
+        row = session.get(ArtifactRow, "legacy-artifact")
+        assert row is not None and row.display_name == "新员工入职核心流程验收报告"
+
+
 @pytest.mark.parametrize(
     ("change", "error_code"),
     [
@@ -592,11 +659,11 @@ def test_controlled_agent_factory_exposes_hitl_on_exactly_two_writes(monkeypatch
     assert names == [
         "TodoListMiddleware",
         "HumanInTheLoopMiddleware",
-        "SingleBusinessToolCallMiddleware",
         "ClarificationInterruptMiddleware",
         "ExecutionGuardMiddleware",
         "ModelCallLimitMiddleware",
         "ToolCallLimitMiddleware",
+        "BusinessToolBatchMiddleware",
     ]
     hitl = middlewares[1]
     assert set(hitl.interrupt_on) == {
@@ -606,8 +673,8 @@ def test_controlled_agent_factory_exposes_hitl_on_exactly_two_writes(monkeypatch
     for config in hitl.interrupt_on.values():
         assert set(config["allowed_decisions"]) == {"approve", "reject"}
         assert "when" not in config
-    assert middlewares[-2].thread_limit == 2
-    assert middlewares[-1].thread_limit == 3
+    assert middlewares[-3].thread_limit == 2
+    assert middlewares[-2].thread_limit == 3
 
 
 def test_controlled_tools_are_four_reads_plus_exactly_two_writes() -> None:
@@ -805,6 +872,89 @@ def test_controlled_agent_hitl_interrupt_pauses_before_write_execution() -> None
     assert configurable["checkpoint_id"]
     last_call = snapshot.values["messages"][-1].tool_calls[-1]
     assert last_call["id"] == "call_1"
+
+
+def test_controlled_agent_hitl_reject_resumes_with_structured_failure() -> None:
+    executor = RecordingWriteExecutor()
+    tools = build_controlled_action_tools(executor)
+    model = _ToolCallingFakeModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "create_report_artifact",
+                            "args": {"title": "报告", "content": "正文", "format": "markdown"},
+                            "id": "call_rejected",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "TaskResultCandidate",
+                            "args": {
+                                "status": "refused",
+                                "refusal_code": "approval_rejected",
+                                "stop_reason": "approval_rejected",
+                            },
+                            "id": "result_rejected",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+            ]
+        )
+    )
+    agent = factory.build_controlled_action_agent(
+        model,
+        tools,
+        InMemorySaver(),
+        max_model_calls=4,
+        max_tool_calls=4,
+    )
+    context = AgentRunContext(
+        task_id="task-hitl-reject",
+        tenant_id="tenant-a",
+        user_id="owner-a",
+        task_mode=TaskMode.CONTROLLED_ACTION,
+        worker_id="worker-a",
+        lease_generation=1,
+        run_id="run-a",
+        auth=_auth(),
+    )
+    config = {"configurable": {"thread_id": "task-hitl-reject"}}
+
+    agent.invoke(
+        {"messages": [HumanMessage(content="基于证据生成报告")]},
+        config=config,
+        context=context,
+    )
+    result = agent.invoke(
+        Command(
+            resume={
+                "decisions": [
+                    {
+                        "type": "reject",
+                        "message": render_write_tool_message(
+                            "create_report_artifact",
+                            None,
+                            error_code="approval_rejected",
+                        ),
+                    }
+                ]
+            }
+        ),
+        config=config,
+        context=context,
+    )
+
+    assert result["structured_response"].status == "refused"
+    assert result["structured_response"].refusal_code == "approval_rejected"
+    assert executor.requests == []
 
 
 def _write_result(**extra: object) -> ToolExecutionResult:

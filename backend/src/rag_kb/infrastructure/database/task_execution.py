@@ -281,6 +281,10 @@ class DatabaseTaskWorkerSettlement:
                 ArtifactSummary(
                     artifact_id=row.artifact_id,
                     artifact_type=row.artifact_type,
+                    display_name=row.display_name or "",
+                    file_extension=(
+                        "md" if (row.storage_key or "").lower().endswith(".md") else "json"
+                    ),
                     content_hash=row.content_hash,
                     status="ready",
                 )

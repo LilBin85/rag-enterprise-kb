@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -1129,7 +1130,13 @@ def test_reject_decision_resumes_thread_with_fixed_payload_and_zero_execution(
     assert len(resume["decisions"]) == 1
     decision = resume["decisions"][0]
     assert decision["type"] == "reject"
-    assert isinstance(decision.get("message"), str) and decision["message"].strip()
+    assert json.loads(decision["message"]) == {
+        "error_code": "approval_rejected",
+        "retryable": False,
+        "status": "failed",
+        "tool_call_id": None,
+        "tool_name": "create_report_artifact",
+    }
     with stage.database.sessions() as session:
         approval = session.get(ApprovalRow, approval_id)
         assert approval is not None and approval.status == "rejected"

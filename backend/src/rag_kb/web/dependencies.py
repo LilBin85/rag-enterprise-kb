@@ -40,7 +40,7 @@ from rag_kb.infrastructure.vectorstore.qdrant_document_index import QdrantDocume
 from rag_kb.observability import normalize_request_id
 
 
-EXPECTED_DATABASE_REVISION = "20260911_0017"
+EXPECTED_DATABASE_REVISION = "20260913_0018"
 
 
 class ReadinessFailure(RuntimeError):
@@ -216,10 +216,12 @@ def build_artifact_content_service() -> ArtifactContentService:
 
 def build_task_result_service() -> TaskResultService:
     settings = get_settings()
+    objects = LocalObjectStore(settings.object_store_root)
     return TaskResultService(DatabaseTaskResultReader(
         build_database(settings.database_url),
-        AgentResultStore(LocalObjectStore(settings.object_store_root)),
+        AgentResultStore(objects),
         EvidenceLedgerRepository(),
+        artifacts=objects,
     ))
 
 

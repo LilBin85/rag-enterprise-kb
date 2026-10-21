@@ -532,10 +532,6 @@ class ConversationService:
                         resolved_input=decision.resolved_input or content,
                         reason_code=f"explicit_{requested_mode.value}",
                     )
-                elif decision.selected_mode is ConversationMode.CONTROLLED_ACTION:
-                    raise ConversationServiceError(
-                        "controlled_action_explicit_mode_required"
-                    )
             except ConversationServiceError:
                 raise
             except Exception:
@@ -564,8 +560,6 @@ class ConversationService:
                 reason_code=f"explicit_{requested_mode.value}",
             )
         if decision.selected_mode is ConversationMode.CONTROLLED_ACTION:
-            if requested_mode is not ConversationMode.CONTROLLED_ACTION:
-                raise ConversationServiceError("controlled_action_explicit_mode_required")
             if not self._controlled_action_enabled:
                 raise ConversationServiceError("controlled_action_unavailable")
         return decision

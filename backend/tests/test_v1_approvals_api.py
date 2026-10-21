@@ -275,6 +275,7 @@ def test_decision_routes_wrong_interrupt_and_self_approval_to_stable_errors(setu
 
     assert clarification.status_code == 409
     assert self_approval.status_code == 403
+    assert self_approval.json()["detail"]["code"] == "approval_self_rejected"
     assert checkpoint_mismatch.status_code == 409
 
 

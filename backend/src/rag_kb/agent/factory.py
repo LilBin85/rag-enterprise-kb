@@ -17,9 +17,10 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from rag_kb.agent.context import AgentRunContext
 from rag_kb.agent.middleware import (
+    BatchObserver,
     ClarificationInterruptMiddleware,
+    BusinessToolBatchMiddleware,
     ExecutionGuardMiddleware,
-    SingleBusinessToolCallMiddleware,
 )
 from rag_kb.agent.prompt import CONTROLLED_ACTION_AGENT_PROMPT, TASK_AGENT_PROMPT
 from rag_kb.agent.result import TaskResultCandidate
@@ -33,6 +34,7 @@ def build_research_agent(
     *,
     max_model_calls: int,
     max_tool_calls: int,
+    batch_observer: BatchObserver | None = None,
 ) -> Any:
     """编译研究 Agent：结构化结果 + 线程短期记忆 + 调用限制，全部 fail-closed。"""
     return create_agent(
@@ -41,15 +43,20 @@ def build_research_agent(
         system_prompt=TASK_AGENT_PROMPT,
         middleware=[
             TodoListMiddleware(),
-            SingleBusinessToolCallMiddleware(),
             ClarificationInterruptMiddleware(),
             ExecutionGuardMiddleware(),
+            ToolCallLimitMiddleware(
+                tool_name="search_knowledge",
+                thread_limit=min(3, max_tool_calls),
+                exit_behavior="continue",
+            ),
             ModelCallLimitMiddleware(
                 thread_limit=max_model_calls, exit_behavior="error"
             ),
             ToolCallLimitMiddleware(
                 thread_limit=max_tool_calls, exit_behavior="error"
             ),
+            BusinessToolBatchMiddleware(batch_observer),
         ],
         # DeepSeek 当前不提供本项目所需的 native response_format；结果仍由工具调用校验。
         response_format=ToolStrategy(TaskResultCandidate),
@@ -65,6 +72,7 @@ def build_controlled_action_agent(
     *,
     max_model_calls: int,
     max_tool_calls: int,
+    batch_observer: BatchObserver | None = None,
 ) -> Any:
     """编译受控动作 Agent：两个 WRITE 精确经 HITL 暂停，decision 只允许 approve/reject。
 
@@ -85,8 +93,6 @@ def build_controlled_action_agent(
                 interrupt_on=interrupt_on,
                 description_prefix="受控写操作等待人工审批",
             ),
-            # LangChain 的 after_model 按声明逆序执行，故此守卫须放在 HITL 后。
-            SingleBusinessToolCallMiddleware(),
             ClarificationInterruptMiddleware(),
             ExecutionGuardMiddleware(),
             ModelCallLimitMiddleware(
@@ -95,6 +101,8 @@ def build_controlled_action_agent(
             ToolCallLimitMiddleware(
                 thread_limit=max_tool_calls, exit_behavior="error"
             ),
+            # after_model 按声明逆序执行：批次策略先于 HITL 与预算中间件校验。
+            BusinessToolBatchMiddleware(batch_observer),
         ],
         response_format=ToolStrategy(TaskResultCandidate),
         context_schema=AgentRunContext,

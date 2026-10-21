@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from dataclasses import dataclass
+from threading import Lock
+from time import monotonic
+from typing import Any, Callable
 
 from langchain.agents.middleware import AgentMiddleware, hook_config
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -21,23 +24,109 @@ class AgentGuardError(RuntimeError):
         self.code = code
 
 
-class SingleBusinessToolCallMiddleware(AgentMiddleware):
-    """每轮至多放行一个业务工具；Todo 工具不计入业务调用。"""
+_MAX_PARALLEL_READ_CALLS = 3
+_READ_TOOL_NAMES = frozenset(RESEARCH_TOOL_NAMES)
+_WRITE_TOOL_NAMES = frozenset(CONTROLLED_WRITE_TOOL_NAMES)
 
-    def after_model(self, state: dict[str, Any], runtime) -> dict[str, Any] | None:
+
+def _batch_error_message(call: dict[str, Any], code: str) -> ToolMessage:
+    return ToolMessage(
+        content=json.dumps(
+            {
+                "tool_name": call.get("name"),
+                "status": "failed",
+                "error_code": code,
+                "retryable": True,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        tool_call_id=str(call.get("id") or "missing-tool-call-id"),
+        name=call.get("name"),
+        status="error",
+    )
+
+
+def _prior_batch_error_count(messages: tuple[object, ...] | list[object], code: str) -> int:
+    count = 0
+    for message in messages:
+        if not isinstance(message, ToolMessage):
+            continue
+        try:
+            payload = json.loads(message.content)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict) and payload.get("error_code") == code:
+            count += 1
+    return count
+
+
+@dataclass
+class _BatchProgress:
+    started_at: float
+    total: int
+    completed: int = 0
+    succeeded: int = 0
+    failed: int = 0
+
+
+BatchObserver = Callable[[str, Any, dict[str, int]], None]
+
+
+class BusinessToolBatchMiddleware(AgentMiddleware):
+    """允许最多三个只读调用并行；所有写调用仍保持单调用审批路径。"""
+
+    def __init__(self, observer: BatchObserver | None = None) -> None:
+        self._observer = observer
+        self._progress: dict[tuple[str, ...], _BatchProgress] = {}
+        self._progress_lock = Lock()
+
+    @staticmethod
+    def _latest_calls(state: dict[str, Any]) -> list[dict[str, Any]]:
         messages = state.get("messages") or ()
-        if not messages:
-            return None
         latest = next(
             (message for message in reversed(messages) if isinstance(message, AIMessage)),
             None,
         )
-        if latest is None:
-            return None
-        calls = latest.tool_calls or ()
-        business_calls = [call for call in calls if call.get("name") != "write_todos"]
-        if len(business_calls) > 1:
-            raise AgentGuardError("agent_parallel_tool_call_denied")
+        return list(latest.tool_calls or ()) if latest is not None else []
+
+    @staticmethod
+    def _batch_key(calls: list[dict[str, Any]], context: Any) -> tuple[str, ...]:
+        return (str(getattr(context, "task_id", "")), *(str(call.get("id") or "") for call in calls))
+
+    def _reject_batch(
+        self,
+        messages: tuple[object, ...] | list[object],
+        calls: list[dict[str, Any]],
+        code: str,
+    ) -> dict[str, Any]:
+        if _prior_batch_error_count(messages, code):
+            raise AgentGuardError(code)
+        return {"messages": [_batch_error_message(call, code) for call in calls]}
+
+    def after_model(self, state: dict[str, Any], runtime) -> dict[str, Any] | None:
+        messages = state.get("messages") or ()
+        calls = self._latest_calls(state)
+        read_calls = [call for call in calls if call.get("name") in _READ_TOOL_NAMES]
+        write_calls = [call for call in calls if call.get("name") in _WRITE_TOOL_NAMES]
+        business_calls = [
+            call for call in calls if call.get("name") in _READ_TOOL_NAMES | _WRITE_TOOL_NAMES
+        ]
+        if read_calls and write_calls:
+            return self._reject_batch(messages, business_calls, "agent_read_write_batch_denied")
+        if len(write_calls) > 1:
+            return self._reject_batch(messages, write_calls, "agent_multiple_write_calls_denied")
+        if len(read_calls) > _MAX_PARALLEL_READ_CALLS:
+            return self._reject_batch(messages, read_calls, "agent_read_batch_limit_exceeded")
+        fingerprints = {
+            canonical_fingerprint(
+                "agent_tool_call_batch",
+                {"name": call.get("name"), "args": call.get("args")},
+            )
+            for call in read_calls
+        }
+        if len(fingerprints) != len(read_calls):
+            return self._reject_batch(messages, read_calls, "agent_duplicate_batch_tool_call")
         completed_controlled_write = False
         for message in messages:
             if not isinstance(message, ToolMessage) or message.name not in CONTROLLED_WRITE_TOOL_NAMES:
@@ -54,10 +143,62 @@ class SingleBusinessToolCallMiddleware(AgentMiddleware):
                 raise AgentGuardError("agent_controlled_write_result_invalid")
             completed_controlled_write |= payload["status"] == "succeeded"
         if completed_controlled_write and any(
-            call.get("name") in CONTROLLED_WRITE_TOOL_NAMES for call in business_calls
+            call.get("name") in _WRITE_TOOL_NAMES for call in write_calls
         ):
             raise AgentGuardError("agent_second_controlled_write_denied")
         return None
+
+    def wrap_tool_call(self, request, handler):
+        calls = self._latest_calls(request.state)
+        read_calls = [call for call in calls if call.get("name") in _READ_TOOL_NAMES]
+        if len(read_calls) <= 1 or request.tool_call.get("name") not in _READ_TOOL_NAMES:
+            return handler(request)
+        key = self._batch_key(read_calls, request.runtime.context)
+        with self._progress_lock:
+            progress = self._progress.get(key)
+            if progress is None:
+                progress = _BatchProgress(started_at=monotonic(), total=len(read_calls))
+                self._progress[key] = progress
+                if self._observer is not None:
+                    self._observer("tool_batch_started", request.runtime.context, {"total": progress.total})
+        result = None
+        failed = False
+        try:
+            result = handler(request)
+            if isinstance(result, ToolMessage):
+                try:
+                    payload = json.loads(result.content)
+                except (TypeError, ValueError):
+                    payload = None
+                failed = result.status == "error" or (
+                    isinstance(payload, dict) and payload.get("status") != "succeeded"
+                )
+            return result
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            with self._progress_lock:
+                progress.completed += 1
+                progress.failed += int(failed)
+                progress.succeeded += int(not failed)
+                if progress.completed == progress.total:
+                    self._progress.pop(key, None)
+                    if self._observer is not None:
+                        self._observer(
+                            "tool_batch_completed",
+                            request.runtime.context,
+                            {
+                                "total": progress.total,
+                                "succeeded": progress.succeeded,
+                                "failed": progress.failed,
+                                "duration_ms": max(0, round((monotonic() - progress.started_at) * 1000)),
+                            },
+                        )
+
+
+# 兼容旧导入名；行为已经升级为有界只读批次。
+SingleBusinessToolCallMiddleware = BusinessToolBatchMiddleware
 
 
 class ClarificationInterruptMiddleware(AgentMiddleware):
@@ -135,6 +276,7 @@ class ExecutionGuardMiddleware(AgentMiddleware):
         for message in messages:
             if not isinstance(message, AIMessage):
                 continue
+            message_fingerprints: set[str] = set()
             for call in getattr(message, "tool_calls", ()) or ():
                 if not isinstance(call, dict) or call.get("name") not in _BUSINESS_TOOL_NAMES:
                     continue
@@ -142,6 +284,9 @@ class ExecutionGuardMiddleware(AgentMiddleware):
                     "agent_tool_call_repeat",
                     {"name": call.get("name"), "args": call.get("args")},
                 )
+                if fingerprint in message_fingerprints:
+                    continue
+                message_fingerprints.add(fingerprint)
                 count = fingerprints.get(fingerprint, 0) + 1
                 if count >= _REPEATED_TOOL_CALLS:
                     raise AgentGuardError("agent_repeated_tool_call")

@@ -12,6 +12,7 @@ from uuid import uuid4
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 from opentelemetry import context as otel_context
+
 from rag_kb.application.agent_contract import (
     CONTROLLED_WRITE_TOOL_NAMES,
     AgentResultStore,
@@ -20,6 +21,7 @@ from rag_kb.application.agent_contract import (
     build_controlled_task_result,
     build_task_result,
 )
+from rag_kb.application.tool_execution_service import render_write_tool_message
 from rag_kb.application.approval_service import (
     ApprovalCheckpointBinding,
     ApprovalService,
@@ -71,15 +73,20 @@ _STALE_CHECKPOINT_CODE = "task_checkpoint_lease_stale"
 _HITL_ALLOWED_DECISIONS = frozenset({"approve", "reject"})
 # approval 有效期沿用现状：默认 15 分钟、应用进程时间源（开放问题 5 未拍板）。
 _APPROVAL_EXPIRY_SECONDS = 15 * 60
-# reject decision 的固定模型反馈文案；审计细节（rejection_reason）不进模型上下文。
-_REJECT_DECISION_MESSAGE = "操作未获业务审批，已由服务端拒绝。"
-
-
-def _approval_resume_payload(decision: str) -> dict[str, object]:
+def _approval_resume_payload(decision: str, *, tool_name: str) -> dict[str, object]:
     """服务端固定 resume payload；客户端与模型不能提交任何 resume 数据。"""
     if decision == "approve":
         return {"decisions": [{"type": "approve"}]}
-    return {"decisions": [{"type": "reject", "message": _REJECT_DECISION_MESSAGE}]}
+    return {
+        "decisions": [
+            {
+                "type": "reject",
+                "message": render_write_tool_message(
+                    tool_name, None, error_code="approval_rejected"
+                ),
+            }
+        ]
+    }
 
 
 class TaskWorkerError(RuntimeError):
@@ -614,11 +621,13 @@ class TaskWorker:
                 context = self._approval_run_context(
                     lease, auth, run_id, approval_facts
                 )
+                approval_action, _evidence_ids = approval_facts
                 invoke_input = Command(
                     resume=_approval_resume_payload(
                         "approve"
                         if resume_command.decision is ApprovalResumeDecision.APPROVED
-                        else "reject"
+                        else "reject",
+                        tool_name=approval_action.tool_name,
                     )
                 )
             else:  # StrEnum 的运行时防御，不能猜测未来命令类型。

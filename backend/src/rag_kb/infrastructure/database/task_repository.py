@@ -2244,6 +2244,52 @@ class DatabaseTaskRepository:
                 pending_tracestate=row.pending_tracestate,
             )
 
+    def record_tool_batch_event(
+        self,
+        *,
+        task_id: str,
+        worker_id: str,
+        lease_generation: int,
+        event_type: str,
+        run_id: str,
+        counts: dict[str, int],
+    ) -> None:
+        """在当前任务租约内持久化低基数的只读工具批次事件。"""
+        if event_type not in {"tool_batch_started", "tool_batch_completed"}:
+            raise ValueError("task_event_type_invalid")
+        allowed_counts = {"total", "succeeded", "failed", "duration_ms"}
+        if (
+            not counts
+            or not set(counts) <= allowed_counts
+            or any(not isinstance(value, int) or value < 0 for value in counts.values())
+        ):
+            raise ValueError("task_event_counts_invalid")
+        with UnitOfWork(self._database) as work:
+            assert work.session is not None
+            row = work.session.scalar(
+                select(AgentTaskRow)
+                .where(AgentTaskRow.task_id == task_id)
+                .with_for_update()
+            )
+            if row is None:
+                raise TaskRepositoryError("task_not_found")
+            now = self._lease_now(work.session)
+            expires_at = _aware(row.lease_expires_at)
+            if row.lease_owner != worker_id or row.lease_generation != lease_generation:
+                raise TaskRepositoryError("task_lease_generation_stale")
+            if expires_at is None or expires_at <= now:
+                raise TaskRepositoryError("task_lease_expired")
+            self._append_event(
+                work.session,
+                row,
+                event_type=event_type,
+                correlation_id=run_id,
+                run_id=run_id,
+                counts=counts,
+                stage=event_type,
+                status="running" if event_type == "tool_batch_started" else "completed",
+            )
+
     def pause_for_user(
         self,
         lease: TaskLease,
@@ -2753,6 +2799,8 @@ class DatabaseTaskRepository:
         correlation_id: str,
         run_id: str | None,
         counts: dict[str, int] | None = None,
+        stage: str | None = None,
+        status: str | None = None,
     ) -> None:
         sequence = session.scalar(
             select(func.coalesce(func.max(TaskEventRow.sequence), -1) + 1).where(
@@ -2772,8 +2820,8 @@ class DatabaseTaskRepository:
                 otel_trace_id=otel_trace_id,
                 otel_span_id=otel_span_id,
                 run_id=run_id,
-                stage=row.status,
-                status=row.status,
+                stage=stage or row.status,
+                status=status or row.status,
                 counts=dict(counts or {}),
                 token_usage=None,
                 error_code=row.last_error_code,

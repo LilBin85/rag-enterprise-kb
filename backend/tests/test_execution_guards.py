@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -147,21 +149,104 @@ def test_guard_ignores_todo_structured_unknown_and_uncontrolled_tool_messages() 
     guard.before_model(_state(*ignored_calls), runtime=None)
 
 
-def test_parallel_business_calls_are_rejected_after_structured_tool_message() -> None:
+def test_up_to_three_distinct_read_calls_are_allowed() -> None:
     guard = SingleBusinessToolCallMiddleware()
     parallel = AIMessage(
         content="",
         tool_calls=[
             {"name": "search_knowledge", "args": {"query": "q"}, "id": "search"},
             {"name": "fetch_evidence", "args": {"evidence_ids": ["e-1"]}, "id": "evidence"},
+            {"name": "list_document_versions", "args": {"document_id": "d-1"}, "id": "versions"},
         ],
     )
-    structured = ToolMessage(
-        "{}", tool_call_id="result", name="TaskResultCandidate"
-    )
+    assert guard.after_model(_state(parallel), runtime=None) is None
 
-    with pytest.raises(AgentGuardError, match="agent_parallel_tool_call_denied"):
-        guard.after_model(_state(parallel, structured), runtime=None)
+
+def test_read_batch_limit_returns_paired_recoverable_messages_then_stops() -> None:
+    guard = SingleBusinessToolCallMiddleware()
+    calls = [
+        {"name": "search_knowledge", "args": {"query": str(index)}, "id": f"call-{index}"}
+        for index in range(4)
+    ]
+    state = _state(AIMessage(content="", tool_calls=calls))
+    update = guard.after_model(state, runtime=None)
+    assert update is not None
+    errors = update["messages"]
+    assert [message.tool_call_id for message in errors] == [call["id"] for call in calls]
+    assert all(json.loads(message.content)["error_code"] == "agent_read_batch_limit_exceeded" for message in errors)
+    with pytest.raises(AgentGuardError, match="agent_read_batch_limit_exceeded"):
+        guard.after_model(_state(*state["messages"], *errors, state["messages"][-1]), runtime=None)
+
+
+def test_duplicate_read_batch_and_risky_write_batches_are_recoverable() -> None:
+    guard = SingleBusinessToolCallMiddleware()
+    duplicate = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "search_knowledge", "args": {"query": "q"}, "id": "a"},
+            {"name": "search_knowledge", "args": {"query": "q"}, "id": "b"},
+        ],
+    )
+    duplicate_update = guard.after_model(_state(duplicate), runtime=None)
+    assert duplicate_update is not None
+    assert {json.loads(message.content)["error_code"] for message in duplicate_update["messages"]} == {"agent_duplicate_batch_tool_call"}
+
+    mixed = AIMessage(content="", tool_calls=[
+        {"name": "search_knowledge", "args": {"query": "q"}, "id": "read"},
+        {"name": "create_report_artifact", "args": {"title": "t"}, "id": "write"},
+    ])
+    mixed_update = guard.after_model(_state(mixed), runtime=None)
+    assert mixed_update is not None
+    assert {json.loads(message.content)["error_code"] for message in mixed_update["messages"]} == {"agent_read_write_batch_denied"}
+
+    writes = AIMessage(content="", tool_calls=[
+        {"name": "create_report_artifact", "args": {"title": "t"}, "id": "w1"},
+        {"name": "create_work_item_draft", "args": {"title": "t"}, "id": "w2"},
+    ])
+    write_update = guard.after_model(_state(writes), runtime=None)
+    assert write_update is not None
+    assert {json.loads(message.content)["error_code"] for message in write_update["messages"]} == {"agent_multiple_write_calls_denied"}
+
+
+def test_read_batch_observer_aggregates_parallel_results_in_original_batch() -> None:
+    observed: list[tuple[str, dict[str, int]]] = []
+    guard = SingleBusinessToolCallMiddleware(
+        lambda event, _context, counts: observed.append((event, counts))
+    )
+    calls = [
+        {"name": "search_knowledge", "args": {"query": str(index)}, "id": f"call-{index}"}
+        for index in range(3)
+    ]
+    state = _state(AIMessage(content="", tool_calls=calls))
+
+    def execute(call: dict[str, object]) -> ToolMessage:
+        request = SimpleNamespace(
+            state=state,
+            runtime=SimpleNamespace(context=SimpleNamespace(task_id="task-a")),
+            tool_call=call,
+        )
+
+        def handler(_request) -> ToolMessage:
+            time.sleep(0.15)
+            return ToolMessage(
+                json.dumps({"status": "succeeded"}),
+                tool_call_id=str(call["id"]),
+                name=str(call["name"]),
+            )
+
+        return guard.wrap_tool_call(request, handler)
+
+    started = time.monotonic()
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        results = list(executor.map(execute, calls))
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.35
+    assert [message.tool_call_id for message in results] == [call["id"] for call in calls]
+    assert observed[0] == ("tool_batch_started", {"total": 3})
+    assert observed[1][0] == "tool_batch_completed"
+    assert observed[1][1]["total"] == observed[1][1]["succeeded"] == 3
+    assert observed[1][1]["failed"] == 0
 
 
 def test_second_controlled_write_after_success_is_rejected() -> None:
@@ -176,6 +261,36 @@ def test_second_controlled_write_after_success_is_rejected() -> None:
         guard.after_model(
             _state(first_write, completed, second_write), runtime=None
         )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        ToolMessage(
+            "操作未获业务审批，已由服务端拒绝。",
+            tool_call_id="report-1",
+            name="create_report_artifact",
+            status="error",
+        ),
+        ToolMessage(
+            json.dumps({"tool_name": "create_work_item_draft", "status": "failed"}),
+            tool_call_id="report-1",
+            name="create_report_artifact",
+            status="error",
+        ),
+        ToolMessage(
+            json.dumps({"tool_name": "create_report_artifact", "status": "rejected"}),
+            tool_call_id="report-1",
+            name="create_report_artifact",
+            status="error",
+        ),
+    ],
+)
+def test_controlled_write_messages_remain_strictly_validated(message: ToolMessage) -> None:
+    guard = SingleBusinessToolCallMiddleware()
+
+    with pytest.raises(AgentGuardError, match="agent_controlled_write_result_invalid"):
+        guard.after_model(_state(message), runtime=None)
 
 
 def test_completed_controlled_write_allows_structured_result() -> None:

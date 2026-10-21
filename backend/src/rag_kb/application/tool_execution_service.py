@@ -44,6 +44,45 @@ from rag_kb.observability import (
 
 logger = logging.getLogger(__name__)
 
+_WRITE_RENDER_FIELDS = ("artifact_id", "artifact_type", "content_hash")
+_RETRYABLE_TOOL_CODES = frozenset(
+    {
+        "tool_timeout",
+        "tool_execution_unavailable",
+        "previous_execution_in_progress",
+        "tool_result_readback_failed",
+        "execution_deadline_expired",
+    }
+)
+
+
+def render_write_tool_message(
+    tool_name: str,
+    result: ToolExecutionResult | None,
+    *,
+    error_code: str | None = None,
+) -> str:
+    """渲染 WRITE 工具的低敏结果契约，供 Agent 和恢复编排共同使用。"""
+    status = result.status if result is not None else "failed"
+    code = error_code if result is None else result.error_code
+    payload: dict[str, object] = {
+        "tool_call_id": result.tool_call_id if result is not None else None,
+        "tool_name": tool_name,
+        "status": status,
+        "error_code": code,
+        "retryable": status == "failed" and code in _RETRYABLE_TOOL_CODES,
+    }
+    if result is not None and result.result is not None:
+        for field in _WRITE_RENDER_FIELDS:
+            if field in result.result:
+                value = result.result[field]
+                payload[field] = value[:2_000] if isinstance(value, str) else value
+    if result is not None:
+        payload["result_ref"] = result.tool_call_id
+        if result.result_hash:
+            payload["result_hash"] = result.result_hash
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
 # 失租与身份失效都必须中止图执行，避免继续写 ToolMessage/checkpoint；
 # 但 TaskWorker 只可把前者视为 stale，后者仍应在持租约时失败关闭。
 _STALE_TOOL_CODES = frozenset({"tool_task_lease_stale", "task_checkpoint_lease_stale"})

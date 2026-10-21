@@ -1327,6 +1327,7 @@ class ArtifactRow(Base):
     tenant_id: Mapped[str] = mapped_column(String(200), nullable=False)
     tool_call_id: Mapped[str] = mapped_column(String(64), nullable=False)
     artifact_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(300))
     storage_key: Mapped[str | None] = mapped_column(String(500))
     content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)

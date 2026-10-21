@@ -57,7 +57,7 @@ def _response(detail: ApprovalDetail) -> ApprovalResponse:
 
 def _approval_error(exc: ApprovalServiceError) -> HTTPException:
     if exc.code in {"approver_permission_denied", "approval_self_rejected"}:
-        return HTTPException(status_code=403, detail="审批权限不足")
+        return HTTPException(status_code=403, detail={"code": exc.code})
     if exc.code == "approval_not_found":
         return HTTPException(status_code=404, detail="审批不存在")
     return HTTPException(status_code=409, detail="审批状态冲突")

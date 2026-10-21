@@ -42,3 +42,23 @@ def test_router_labels_roles_and_returns_standalone_followup() -> None:
     assert "不得把历史中的负责人、日期" in structured.messages[0].content
     assert decision.reason_code == "followup_rewrite"
     assert "岗位与清单确认" in decision.resolved_input
+
+
+def test_router_can_select_controlled_action_for_compound_request() -> None:
+    structured = _StructuredRouter()
+    structured.invoke = lambda _messages: SimpleNamespace(
+        selected_mode="controlled_action",
+        resolved_input="研究入职制度并创建一份报告产物",
+        reason_code="auto_controlled_action",
+    )
+    router = DeepSeekConversationRouter.__new__(DeepSeekConversationRouter)
+    router._structured = structured
+
+    decision = router.route(
+        content="研究入职制度并创建报告",
+        context=(),
+        requested_mode=ConversationMode.AUTO,
+    )
+
+    assert decision.selected_mode is ConversationMode.CONTROLLED_ACTION
+    assert decision.reason_code == "auto_controlled_action"

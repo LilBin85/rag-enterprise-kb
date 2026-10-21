@@ -38,6 +38,7 @@ class LocalArtifactToolAdapter:
         task_part = hashlib.sha256(context.task_id.encode()).hexdigest()[:24]
         key_part = hashlib.sha256((context.idempotency_key or context.tool_call_id).encode()).hexdigest()
         extension = "md" if arguments.get("format") == "markdown" else "json"
+        display_name = str(arguments["title"]).strip()[:300]
         storage_key = f"artifacts/{tenant_part}/{task_part}/{self._artifact_type}/{key_part}.{extension}"
         artifact_id = uuid4().hex
         with UnitOfWork(self._database) as work:
@@ -49,6 +50,7 @@ class LocalArtifactToolAdapter:
                     tenant_id=context.auth.tenant_id,
                     tool_call_id=context.tool_call_id,
                     artifact_type=self._artifact_type,
+                    display_name=display_name,
                     storage_key=storage_key,
                     content_hash=content_hash,
                     status="creating",

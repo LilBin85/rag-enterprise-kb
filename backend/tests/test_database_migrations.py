@@ -669,7 +669,7 @@ def test_m2_protocol_and_artifact_lifecycle_round_trip_preserves_history(tmp_pat
     }
 
     command.upgrade(config, "head")
-    assert EXPECTED_DATABASE_REVISION == "20260911_0017"
+    assert EXPECTED_DATABASE_REVISION == "20260913_0018"
     inspector = inspect(database.engine)
     assert "required_protocol_version" in {
         item["name"] for item in inspector.get_columns("agent_tasks")
@@ -679,6 +679,9 @@ def test_m2_protocol_and_artifact_lifecycle_round_trip_preserves_history(tmp_pat
     }
     assert "scope_document_id" in {
         item["name"] for item in inspector.get_columns("conversation_turns")
+    }
+    assert "display_name" in {
+        item["name"] for item in inspector.get_columns("artifacts")
     }
     # round-trip 后 artifact_refs 依然原样保留。
     with database.engine.connect() as connection:

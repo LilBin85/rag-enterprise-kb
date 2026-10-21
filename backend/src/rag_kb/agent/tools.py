@@ -15,6 +15,7 @@ from rag_kb.application.tool_execution_service import (
     ToolExecutionRequest,
     ToolExecutionResult,
     ToolExecutionService,
+    render_write_tool_message,
 )
 from rag_kb.domain.fingerprints import canonical_fingerprint
 
@@ -164,41 +165,6 @@ def render_tool_message(
     elif result is not None and result.result_hash:
         payload["result_ref"] = result.tool_call_id
         payload["result_hash"] = result.result_hash
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
-
-
-_WRITE_RENDER_FIELDS = ("artifact_id", "artifact_type", "content_hash")
-
-
-def render_write_tool_message(
-    tool_name: str,
-    result: ToolExecutionResult | None,
-    *,
-    error_code: str | None = None,
-) -> str:
-    """WRITE 专用 ToolMessage 渲染：只有 artifact_id/hash/status 等安全字段。
-
-    storage_key、原始参数与对象路径一律不进入模型上下文；成功结果由
-    ToolExecutionService 按 result_ref 幂等回读，渲染是确定性的。
-    """
-    status = result.status if result is not None else "failed"
-    code = error_code if result is None else result.error_code
-    payload: dict[str, object] = {
-        "tool_call_id": result.tool_call_id if result is not None else None,
-        "tool_name": tool_name,
-        "status": status,
-        "error_code": code,
-        "retryable": status == "failed" and code in _RETRYABLE_CODES,
-    }
-    if result is not None and result.result is not None:
-        body = result.result
-        for field in _WRITE_RENDER_FIELDS:
-            if field in body:
-                payload[field] = _trim_value(body[field])
-    if result is not None:
-        payload["result_ref"] = result.tool_call_id
-        if result.result_hash:
-            payload["result_hash"] = result.result_hash
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 

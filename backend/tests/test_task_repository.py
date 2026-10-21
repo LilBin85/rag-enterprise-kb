@@ -88,6 +88,43 @@ def test_create_claim_and_expired_lease_fence_old_worker(database) -> None:
         repository.refresh_lease(first)
 
 
+def test_tool_batch_events_keep_stage_and_bounded_counts(database) -> None:
+    repository = DatabaseTaskRepository(database)
+    created(repository)
+    lease = repository.claim_next(worker_id="worker-a", lease_seconds=60)
+    assert lease is not None
+
+    repository.record_tool_batch_event(
+        task_id="task-a",
+        worker_id="worker-a",
+        lease_generation=lease.lease_generation,
+        event_type="tool_batch_started",
+        run_id="run-a",
+        counts={"total": 3},
+    )
+    repository.record_tool_batch_event(
+        task_id="task-a",
+        worker_id="worker-a",
+        lease_generation=lease.lease_generation,
+        event_type="tool_batch_completed",
+        run_id="run-a",
+        counts={"total": 3, "succeeded": 2, "failed": 1, "duration_ms": 120},
+    )
+
+    with database.sessions() as session:
+        events = tuple(
+            session.scalars(
+                select(TaskEventRow)
+                .where(TaskEventRow.task_id == "task-a")
+                .order_by(TaskEventRow.sequence)
+            )
+        )
+    assert [event.event_type for event in events[-2:]] == ["tool_batch_started", "tool_batch_completed"]
+    assert [event.stage for event in events[-2:]] == ["tool_batch_started", "tool_batch_completed"]
+    assert events[-1].status == "completed"
+    assert events[-1].counts == {"total": 3, "succeeded": 2, "failed": 1, "duration_ms": 120}
+
+
 def test_settings_derived_budgets_are_persisted_for_new_research_tasks(
     database, monkeypatch
 ) -> None:

@@ -88,6 +88,17 @@ class TaskWorkerLifecyclePort(Protocol):
 
     def current_time(self) -> datetime: ...
 
+    def record_tool_batch_event(
+        self,
+        *,
+        task_id: str,
+        worker_id: str,
+        lease_generation: int,
+        event_type: str,
+        run_id: str,
+        counts: dict[str, int],
+    ) -> None: ...
+
     def consume_resume_command(self, lease: ResumeCommandLease) -> ResumeCommand: ...
 
     def pause_for_user(

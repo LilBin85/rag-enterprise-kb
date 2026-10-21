@@ -683,6 +683,24 @@ class Observability:
             buckets=_LONG_DURATION_BUCKETS,
             registry=self.registry,
         )
+        self._read_tool_batches = Counter(
+            "rag_kb_read_tool_batches_total",
+            "Bounded parallel read-tool batch outcomes.",
+            ("outcome",),
+            registry=self.registry,
+        )
+        self._read_tool_batch_width = Histogram(
+            "rag_kb_read_tool_batch_width",
+            "Number of read tools in a parallel batch.",
+            registry=self.registry,
+        )
+        self._read_tool_batch_duration = Histogram(
+            "rag_kb_read_tool_batch_duration_seconds",
+            "Parallel read-tool batch duration in seconds.",
+            ("outcome",),
+            buckets=_LONG_DURATION_BUCKETS,
+            registry=self.registry,
+        )
         self._approvals = Counter(
             "rag_kb_approvals_total",
             "Approval transitions.",
@@ -738,6 +756,11 @@ class Observability:
             "rag_kb_security_boundary_violations_total",
             "Security boundary violations.",
             ("kind",),
+            registry=self.registry,
+        )
+        self._artifact_name_backfill_failures = Counter(
+            "rag_kb_artifact_name_backfill_failures_total",
+            "Legacy artifact display-name backfill failures.",
             registry=self.registry,
         )
         self._task_queue_depth = Gauge(
@@ -1064,6 +1087,23 @@ class Observability:
             duration_seconds
         )
 
+    def record_read_tool_batch(
+        self,
+        *,
+        total: int,
+        succeeded: int,
+        failed: int,
+        duration_seconds: float,
+    ) -> None:
+        if not self.metrics_enabled or total <= 1:
+            return
+        outcome = "succeeded" if failed == 0 else "failed" if succeeded == 0 else "partial_failure"
+        self._read_tool_batches.labels(outcome=outcome).inc()
+        self._read_tool_batch_width.observe(total)
+        self._read_tool_batch_duration.labels(outcome=outcome).observe(
+            max(0, duration_seconds)
+        )
+
     def record_approval(
         self, *, decision: str, outcome: str, wait_seconds: float | None = None
     ) -> None:
@@ -1148,6 +1188,10 @@ class Observability:
     def record_security_boundary_violation(self, *, kind: str) -> None:
         if self.metrics_enabled and kind in _SECURITY_BOUNDARY_KINDS:
             self._security_boundary_violations.labels(kind=kind).inc()
+
+    def record_artifact_name_backfill_failure(self) -> None:
+        if self.metrics_enabled:
+            self._artifact_name_backfill_failures.inc()
 
     def set_task_queue_snapshot(
         self,

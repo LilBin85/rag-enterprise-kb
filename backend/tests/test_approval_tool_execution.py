@@ -447,6 +447,35 @@ def test_expired_approval_is_persisted_and_same_binding_can_be_requested_again(s
     assert replacement.approval_id != binding.approval_id
 
 
+def test_reading_approvals_expires_stale_pending_items(stage5) -> None:
+    database, requester, _, _, _lease = stage5
+    clock = [datetime.now(UTC)]
+    service = ApprovalService(
+        DatabaseApprovalLifecycle(database, now=lambda: clock[0]),
+        now=lambda: clock[0],
+    )
+    binding = service.request(
+        auth=requester,
+        task_id="task-1",
+        plan_revision=1,
+        plan_digest=_binding(database)[0],
+        evidence_digest=_binding(database)[1],
+        evidence_ids=("evidence-1",),
+        tool_name="create_report_artifact",
+        tool_version="1.0.0",
+        arguments=_arguments(),
+        expires_at=clock[0] + timedelta(minutes=1),
+    )
+
+    clock[0] += timedelta(minutes=2)
+
+    assert service.list_details(tenant_id=requester.tenant_id, status="pending") == ()
+    assert service.get_detail(
+        tenant_id=requester.tenant_id,
+        approval_id=binding.approval_id,
+    ).binding.status == "expired"
+
+
 def test_write_crash_is_unknown_and_never_success(stage5) -> None:
     database, requester, approver, _, lease = stage5
     service, binding = _approved(database, requester, approver)
@@ -706,6 +735,9 @@ def test_local_artifact_is_server_keyed_exclusive_and_readback_verified(stage5) 
     assert isinstance(result.result["artifact_id"], str) and result.result["artifact_id"]
     assert result.result["content_hash"].startswith("sha256:")
     assert "storage_key" not in result.result
+    with database.sessions() as session:
+        artifact = session.get(ArtifactRow, result.result["artifact_id"])
+        assert artifact is not None and artifact.display_name == "report"
     with pytest.raises(Exception, match="tool_arguments_invalid"):
         executor.execute(_request(requester, binding.approval_id, lease, {**_arguments(), "path": "C:/secret"}, "key-2"))
 

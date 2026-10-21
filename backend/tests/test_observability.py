@@ -182,6 +182,34 @@ def test_metric_label_contract_is_fixed_and_excludes_sensitive_or_high_cardinali
     )
 
 
+def test_read_tool_batch_metrics_record_width_duration_and_partial_failure() -> None:
+    observability = Observability(
+        enabled=False,
+        metrics_enabled=True,
+        service_name="rag-kb-test",
+        otlp_endpoint="",
+        trace_sample_ratio=1.0,
+    )
+
+    observability.record_read_tool_batch(
+        total=3,
+        succeeded=2,
+        failed=1,
+        duration_seconds=0.25,
+    )
+
+    payload = observability.metrics_payload().decode()
+    assert (
+        'rag_kb_read_tool_batches_total{outcome="partial_failure"} 1.0'
+        in payload
+    )
+    assert "rag_kb_read_tool_batch_width_count 1.0" in payload
+    assert (
+        'rag_kb_read_tool_batch_duration_seconds_count{outcome="partial_failure"} 1.0'
+        in payload
+    )
+
+
 def test_exporter_initialization_failure_does_not_block_local_traces(monkeypatch) -> None:
     def unavailable_exporter(**_kwargs):
         raise OSError("endpoint unavailable")

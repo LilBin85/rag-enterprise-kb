@@ -251,6 +251,7 @@ class ApprovalService:
     ) -> ResumeCommand:
         if not auth.has_permission(Permission.TASK_APPROVE):
             raise ApprovalServiceError("approver_permission_denied")
+        self.expire_due(tenant_id=auth.tenant_id)
         try:
             resume_decision = {
                 "approve": ApprovalResumeDecision.APPROVED,
@@ -315,6 +316,7 @@ class ApprovalService:
             self._raise_lifecycle(exc)
 
     def get_detail(self, *, tenant_id: str, approval_id: str) -> ApprovalDetail:
+        self.expire_due(tenant_id=tenant_id)
         try:
             return self._lifecycle.get_detail(tenant_id=tenant_id, approval_id=approval_id)
         except ApprovalLifecycleError as exc:
@@ -327,6 +329,7 @@ class ApprovalService:
         status: str | None = "pending",
         task_id: str | None = None,
     ) -> tuple[ApprovalBinding, ...]:
+        self.expire_due(tenant_id=tenant_id)
         return self._lifecycle.list(
             tenant_id=tenant_id,
             status=status,
@@ -340,6 +343,7 @@ class ApprovalService:
         status: str | None = "pending",
         task_id: str | None = None,
     ) -> tuple[ApprovalDetail, ...]:
+        self.expire_due(tenant_id=tenant_id)
         return self._lifecycle.list_details(
             tenant_id=tenant_id,
             status=status,

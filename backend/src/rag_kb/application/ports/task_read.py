@@ -53,12 +53,14 @@ class TaskArtifactResult:
 
 
 class ArtifactSummary(BaseModel):
-    """任务结果中的产物摘要；只含 ID/类型/hash/status，无对象路径。"""
+    """任务结果中的产物摘要；不暴露对象路径。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     artifact_id: str = Field(min_length=1, max_length=64)
     artifact_type: str = Field(min_length=1, max_length=40)
+    display_name: str = Field(default="", max_length=300)
+    file_extension: Literal["md", "json"] = "json"
     content_hash: str = Field(min_length=1, max_length=80)
     status: Literal["ready"] = "ready"
 
