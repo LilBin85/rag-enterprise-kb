@@ -49,7 +49,12 @@ def _chunk_items(items: list[ParsedItem], *, version_id: str, max_chars: int) ->
             flush()
             heading = text
             page = item.page
-        elif item.kind == "text":
+        else:
+            # 正文/表格携带自己的真实页码：同一章节跨页后，新页内容必须以新页码
+            # 定位（表格与普通正文同走这里，作为独立段落保持行列结构）。
+            if item.page is not None and item.page != page:
+                flush()
+                page = item.page
             paragraphs.append(text)
     flush()
 

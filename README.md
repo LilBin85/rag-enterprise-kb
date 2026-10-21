@@ -31,7 +31,7 @@ PostgreSQL 是任务、恢复命令和权限状态的唯一事实源，Qdrant �
 
 ## Fast Path 与 Durable Path
 
-`EnterpriseRetriever` 是唯一共享 Retrieval Core。它由 infrastructure factory 以同一组授权、Qdrant、BGE、候选/上下文限制、RRF、hybrid、阈值和证据充分性配置装配；两条路径只共享检索事实，不合并任务生命周期或响应语义。
+`EnterpriseRetriever` 是唯一共享 Retrieval Core。它由 infrastructure factory 以同一组授权、Qdrant、BGE、候选/上下文限制、RRF、hybrid、阈值、重排和证据充分性配置装配；多路召回与重排默认开启，重排失败回落融合顺序。两条路径只共享检索事实，不合并任务生命周期或响应语义。
 
 | 场景 | 选择 | 时序 | 返回 |
 | --- | --- | --- | --- |

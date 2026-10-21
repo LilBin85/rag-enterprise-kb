@@ -263,3 +263,38 @@ def test_version_anchor_may_be_satisfied_by_bound_source_metadata() -> None:
         "人力资源人员可以查阅单一来源采购的书面论证要求吗？",
         (candidate("人力资源在入职日前创建入职单。", source_file_name="新员工入职流程.md"),),
     ) is None
+
+
+def test_false_premise_number_is_not_a_hard_gate() -> None:
+    """问题自带错误前提时，具体数字不匹配不得清空候选，模型需要机会纠正。"""
+
+    policy = DeterministicEvidenceSufficiencyPolicy()
+    evidence = (candidate("员工入职满 1 年后，每年可享受带薪年假 15 天。"),)
+
+    assert policy.insufficiency_code("员工年假是 20 天吗？", evidence) is None
+    assert policy.insufficiency_code("员工年假不是 20 天吧？", evidence) is None
+    assert policy.select_candidates("员工年假是 20 天吗？", evidence) == evidence
+
+
+def test_number_equivalence_between_arabic_and_chinese_numerals() -> None:
+    """『十五天』与『15 天』等价：任一形式出现在任一侧都必须放行。"""
+
+    policy = DeterministicEvidenceSufficiencyPolicy()
+
+    assert policy.insufficiency_code(
+        "员工年假是十五天吗？", (candidate("每年可享受带薪年假 15 天。"),)
+    ) is None
+    assert policy.insufficiency_code(
+        "员工年假是 15 天吗？", (candidate("每年可享受带薪年假十五天。"),)
+    ) is None
+
+
+def test_false_premise_still_gates_when_unit_itself_is_absent() -> None:
+    """放宽的只是数字，不是单位：证据完全没有『数字+单位』时仍硬拦。"""
+
+    policy = DeterministicEvidenceSufficiencyPolicy()
+
+    assert policy.insufficiency_code(
+        "员工年假是 20 天吗？",
+        (candidate("员工每年享有带薪年假。"),),
+    ) == "evidence_quantitative_fact_missing"

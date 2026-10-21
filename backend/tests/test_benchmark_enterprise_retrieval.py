@@ -1,17 +1,150 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
+from rag_kb.application.ingestion_worker import WorkerRunResult
+from rag_kb.models import Role
+from rag_kb.retrieval_acceptance import AcceptanceCase, load_acceptance_dataset
 from scripts.benchmark_enterprise_retrieval import (
     BACKEND_ROOT,
     REPO_ROOT,
     CaseObservation,
+    _drain_ingestion_jobs,
     _evaluate_document_version_cases,
     _select_pipeline_configuration,
     main,
 )
-from rag_kb.retrieval_acceptance import AcceptanceCase, load_acceptance_dataset
-from rag_kb.models import Role
+
+
+class _Worker:
+    def __init__(self, outcomes):
+        self.outcomes = iter(outcomes)
+
+    def run_once(self):
+        return next(self.outcomes)
+
+
+class _Jobs:
+    def __init__(self, states):
+        self.states = {key: iter(value) for key, value in states.items()}
+        self.current = {}
+
+    def get_ingestion_job(self, job_id, _auth):
+        try:
+            self.current[job_id] = next(self.states[job_id])
+        except StopIteration:
+            pass
+        status = self.current.get(job_id)
+        return None if status is None else SimpleNamespace(status=status)
+
+
+def test_ingestion_drain_tolerates_idle_until_all_target_jobs_succeed() -> None:
+    clock = iter((0.0, 0.0, 0.1, 0.2, 0.3))
+    outcomes, diagnostics = _drain_ingestion_jobs(
+        _Worker(
+            (
+                WorkerRunResult("idle"),
+                WorkerRunResult("retry_scheduled", "job-2", "safe_code"),
+                WorkerRunResult("succeeded", "job-2"),
+            )
+        ),
+        _Jobs(
+            {
+                "job-1": ("pending", "succeeded"),
+                "job-2": ("pending", "pending", "pending", "succeeded"),
+            }
+        ),
+        None,
+        ("job-1", "job-2"),
+        diagnostics=lambda _ids: {"unexpected": True},
+        timeout_seconds=1,
+        poll_seconds=0,
+        monotonic=lambda: next(clock),
+        sleep=lambda _seconds: None,
+    )
+
+    assert [item["status"] for item in outcomes] == [
+        "idle",
+        "retry_scheduled",
+        "succeeded",
+    ]
+    assert diagnostics == {
+        "unexpected": True,
+        "error_code": None,
+        "unrelated_job_ids": [],
+        "duplicate_job_ids": [],
+    }
+
+
+def test_ingestion_drain_reports_terminal_failure() -> None:
+    expected_diagnostics = {"targets": [{"job_id": "job-1", "status": "failed"}]}
+    outcomes, diagnostics = _drain_ingestion_jobs(
+        _Worker((WorkerRunResult("failed", "job-1", "safe_code"),)),
+        _Jobs({"job-1": ("pending",)}),
+        None,
+        ("job-1",),
+        diagnostics=lambda _ids: expected_diagnostics,
+        timeout_seconds=1,
+        monotonic=lambda: 0.0,
+    )
+
+    assert outcomes == [{"status": "failed", "job_id": "job-1", "error_code": "safe_code"}]
+    assert diagnostics == {
+        **expected_diagnostics,
+        "error_code": "ingestion_drain_worker_failure",
+        "unrelated_job_ids": [],
+        "duplicate_job_ids": [],
+    }
+
+
+def test_ingestion_drain_reports_timeout_after_repeated_idle() -> None:
+    clock = iter((0.0, 0.0, 1.0))
+    expected_diagnostics = {"missing_job_ids": [], "queue_snapshot": []}
+    outcomes, diagnostics = _drain_ingestion_jobs(
+        _Worker((WorkerRunResult("idle"),)),
+        _Jobs({"job-1": ("pending",)}),
+        None,
+        ("job-1",),
+        diagnostics=lambda _ids: expected_diagnostics,
+        timeout_seconds=1,
+        poll_seconds=0,
+        monotonic=lambda: next(clock),
+        sleep=lambda _seconds: None,
+    )
+
+    assert outcomes == [{"status": "idle", "job_id": None, "error_code": None}]
+    assert diagnostics == {
+        **expected_diagnostics,
+        "error_code": "ingestion_drain_timeout",
+        "unrelated_job_ids": [],
+        "duplicate_job_ids": [],
+    }
+
+
+def test_ingestion_drain_records_unrelated_and_duplicate_worker_outcomes() -> None:
+    outcomes, diagnostics = _drain_ingestion_jobs(
+        _Worker(
+            (
+                WorkerRunResult("succeeded", "other-job"),
+                WorkerRunResult("succeeded", "job-1"),
+                WorkerRunResult("succeeded", "job-1"),
+            )
+        ),
+        _Jobs({"job-1": ("pending", "pending", "pending", "succeeded")}),
+        None,
+        ("job-1",),
+        diagnostics=lambda _ids: {"targets": []},
+        timeout_seconds=1,
+        poll_seconds=0,
+        monotonic=lambda: 0.0,
+        sleep=lambda _seconds: None,
+    )
+
+    assert len(outcomes) == 3
+    assert diagnostics["error_code"] is None
+    assert diagnostics["unrelated_job_ids"] == ["other-job"]
+    assert diagnostics["duplicate_job_ids"] == ["job-1"]
 
 
 def _case(

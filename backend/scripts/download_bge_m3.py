@@ -23,13 +23,18 @@ from huggingface_hub import snapshot_download
 
 ALLOW_PATTERNS = ["*.json", "*.model", "*.txt", "*.bin", "*.safetensors", "1_Pooling/*"]
 
+# bge-m3 是 dense/sparse 检索必需权重；bge-reranker-v2-m3 在 ENABLE_RERANKER=true
+# (默认)时使用。Docker 强制 HF_HUB_OFFLINE=1，未预下载时重排会回落融合顺序。
+MODELS = ("BAAI/bge-m3", "BAAI/bge-reranker-v2-m3")
+
 if __name__ == "__main__":
-    for attempt in range(1, 4):
-        try:
-            path = snapshot_download("BAAI/bge-m3", allow_patterns=ALLOW_PATTERNS)
-            print("downloaded to:", path)
-            break
-        except Exception as exc:  # 断点续传:重试不会丢失已下载部分
-            print(f"attempt {attempt} failed: {type(exc).__name__}: {exc};断点续传重试…")
-    else:
-        raise SystemExit("多次重试仍失败;请开启 VPN 后重跑本脚本")
+    for model_name in MODELS:
+        for attempt in range(1, 4):
+            try:
+                path = snapshot_download(model_name, allow_patterns=ALLOW_PATTERNS)
+                print(f"{model_name} downloaded to:", path)
+                break
+            except Exception as exc:  # 断点续传:重试不会丢失已下载部分
+                print(f"{model_name} attempt {attempt} failed: {type(exc).__name__}: {exc};断点续传重试…")
+        else:
+            raise SystemExit(f"{model_name} 多次重试仍失败;请开启 VPN 后重跑本脚本")

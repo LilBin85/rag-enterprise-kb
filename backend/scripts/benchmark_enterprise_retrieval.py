@@ -20,7 +20,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 from uuid import uuid4
 
 # 默认语料/数据集/输出锚定仓库根 data，默认契约锚定后端工程根 schemas；
@@ -28,7 +28,7 @@ from uuid import uuid4
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
 
-from sqlalchemy import delete
+from sqlalchemy import delete, func, select
 
 from rag_kb.application.document_service import DocumentService
 from rag_kb.application.enterprise_retriever import EnterpriseRetriever
@@ -41,11 +41,13 @@ from rag_kb.infrastructure.database.base import Base
 from rag_kb.infrastructure.database.index_projection_metadata import (
     DatabaseDocumentIndexMetadataPort,
 )
-from rag_kb.infrastructure.database.document_lifecycle import (
-    DatabaseDocumentLifecycle,
-    DocumentRegistryIngestionJobPort,
+from rag_kb.infrastructure.database.document_lifecycle import DatabaseDocumentLifecycle
+from rag_kb.infrastructure.database.models import (
+    ACLGrantRow,
+    IngestionJobRow,
+    PrincipalRow,
+    TenantRow,
 )
-from rag_kb.infrastructure.database.models import ACLGrantRow, PrincipalRow, TenantRow
 from rag_kb.infrastructure.database.session import build_database
 from rag_kb.infrastructure.ingestion.local_document_parser import LocalDocumentParser
 from rag_kb.infrastructure.object_store import LocalObjectStore
@@ -64,6 +66,143 @@ class CaseObservation:
     latency_ms: float
     sufficient: bool = True
     insufficiency_code: str | None = None
+
+
+def _drain_ingestion_jobs(
+    worker: IngestionWorker,
+    service: DocumentService,
+    auth: AuthContext,
+    job_ids: Sequence[str],
+    *,
+    diagnostics: Callable[[set[str]], dict[str, Any]],
+    timeout_seconds: float = 300.0,
+    poll_seconds: float = 0.25,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """有界排空本轮任务；idle 只表示当前没有可领取任务，不是失败。"""
+    expected = set(job_ids)
+    outcomes: list[dict[str, Any]] = []
+    succeeded_outcomes: set[str] = set()
+    unrelated_job_ids: set[str] = set()
+    duplicate_job_ids: set[str] = set()
+    deadline = monotonic() + timeout_seconds
+
+    def report(error_code: str | None) -> dict[str, Any]:
+        result = diagnostics(expected)
+        result.update(
+            {
+                "error_code": error_code,
+                "unrelated_job_ids": sorted(unrelated_job_ids),
+                "duplicate_job_ids": sorted(duplicate_job_ids),
+            }
+        )
+        return result
+
+    while True:
+        states = {job_id: service.get_ingestion_job(job_id, auth) for job_id in expected}
+        if states and all(
+            item is not None and item.status == "succeeded" for item in states.values()
+        ):
+            return outcomes, report(None)
+        if any(
+            item is None or item.status in {"failed", "cancelled"}
+            for item in states.values()
+        ):
+            return outcomes, report("ingestion_drain_terminal_failure")
+        if monotonic() >= deadline:
+            return outcomes, report("ingestion_drain_timeout")
+
+        outcome = asdict(worker.run_once())
+        outcomes.append(outcome)
+        outcome_job_id = outcome.get("job_id")
+        if outcome_job_id is not None and outcome_job_id not in expected:
+            unrelated_job_ids.add(str(outcome_job_id))
+        elif outcome["status"] == "succeeded" and outcome_job_id is not None:
+            if outcome_job_id in succeeded_outcomes:
+                duplicate_job_ids.add(str(outcome_job_id))
+            succeeded_outcomes.add(str(outcome_job_id))
+        if outcome["status"] in {"failed", "failure_recording_failed"}:
+            return outcomes, report("ingestion_drain_worker_failure")
+        if outcome["status"] in {"idle", "retry_scheduled"}:
+            sleep(poll_seconds)
+
+
+def _ingestion_diagnostics(
+    database,
+    lifecycle: DatabaseDocumentLifecycle,
+    job_ids: set[str],
+) -> dict[str, Any]:
+    """只记录队列控制面元数据，绝不输出正文、连接信息或租约所有者。"""
+    now = datetime.now(UTC)
+    with database.sessions() as session:
+        rows = tuple(
+            session.scalars(
+                select(IngestionJobRow)
+                .where(IngestionJobRow.job_id.in_(job_ids))
+                .order_by(IngestionJobRow.job_id)
+            )
+        )
+        targets = [
+            {
+                "job_id": row.job_id,
+                "status": row.status,
+                "attempts": row.attempts,
+                "error_code": row.error_code,
+                "due": row.available_at <= now,
+                "lease_generation": row.lease_generation,
+                "lease_active": (
+                    row.lease_expires_at is not None and row.lease_expires_at > now
+                ),
+                "lease_expires_at": (
+                    row.lease_expires_at.isoformat() if row.lease_expires_at else None
+                ),
+            }
+            for row in rows
+        ]
+        tenant_ids = {row.tenant_id for row in rows}
+        queue_rows = tuple(
+            session.execute(
+                select(
+                    IngestionJobRow.status,
+                    func.count(IngestionJobRow.job_id),
+                    func.min(IngestionJobRow.available_at),
+                )
+                .where(
+                    IngestionJobRow.tenant_id.in_(tenant_ids),
+                    IngestionJobRow.status.in_(("pending", "running", "awaiting_object")),
+                )
+                .group_by(IngestionJobRow.status)
+            )
+        ) if tenant_ids else ()
+    found = {row["job_id"] for row in targets}
+    return {
+        "targets": targets,
+        "missing_job_ids": sorted(job_ids - found),
+        "completed_job_ids": sorted(
+            row["job_id"] for row in targets if row["status"] == "succeeded"
+        ),
+        "incomplete_job_ids": sorted(
+            job_ids - {row["job_id"] for row in targets if row["status"] == "succeeded"}
+        ),
+        "queue_snapshot": {
+            status: {
+                "count": next((int(count) for item_status, count, _ in queue_rows if item_status == status), 0),
+                "next_available_at": next(
+                    (
+                        available_at.isoformat() if available_at is not None else None
+                        for item_status, _, available_at in queue_rows
+                        if item_status == status
+                    ),
+                    None,
+                ),
+            }
+            for status in ("pending", "running", "awaiting_object")
+        },
+        "queue_depth_snapshot": [
+            asdict(item) for item in lifecycle.queue_snapshot(max_attempts=3, limit=1000)
+        ],
+    }
 
 
 def _sha256_file(path: Path) -> str:
@@ -100,6 +239,20 @@ def _git_baseline_hash(repo_root: Path) -> str | None:
         return None
     value = result.stdout.strip()
     return value if result.returncode == 0 and value else None
+
+
+def _source_binding() -> dict[str, str]:
+    """绑定当前提交和含未提交改动的工作树，避免复测报告漂移。"""
+    try:
+        from scripts.build_project_acceptance_report import git_worktree_fingerprint
+    except ModuleNotFoundError:
+        from build_project_acceptance_report import git_worktree_fingerprint  # type: ignore[no-redef]
+
+    revision = _git_baseline_hash(REPO_ROOT)
+    fingerprint = git_worktree_fingerprint()
+    if revision is None or fingerprint is None:
+        raise RuntimeError("source_binding_unavailable")
+    return {"git_revision": revision, "worktree_sha256": fingerprint}
 
 
 def _read_old_baseline(path: Path) -> dict[str, Any]:
@@ -409,6 +562,7 @@ def run_benchmark(
         },
         "corpus": {"manifest": dataset.corpus_manifest, "sha256": _corpus_digest(corpus_dir, specs)},
         "git_baseline_hash": _git_baseline_hash(REPO_ROOT),
+        "source_binding": _source_binding(),
         "old_baseline_reference": _read_old_baseline(old_baseline_path),
         "configuration": {
             "database_source": "RAG_KB_DATABASE_URL",
@@ -438,10 +592,8 @@ def run_benchmark(
         phase = "create_tenant_principals"
         writer_auth, role_auths = _create_tenant_principals(database, tenant_id=tenant_id, run_id=run_id)
         tenant_created = True
-        service = DocumentService(
-            DatabaseDocumentLifecycle(database),
-            LocalObjectStore(object_root / "objects"),
-        )
+        lifecycle = DatabaseDocumentLifecycle(database)
+        service = DocumentService(lifecycle, LocalObjectStore(object_root / "objects"))
         seen_documents: set[str] = set()
         ingested: list[dict[str, Any]] = []
         phase = "register_uploads"
@@ -472,16 +624,26 @@ def run_benchmark(
             collection=collection,
         )
         worker = IngestionWorker(
-            DocumentRegistryIngestionJobPort(database),
+            lifecycle,
             LocalDocumentParser(LocalObjectStore(object_root / "objects"), max_chars=chunk_max_chars),
             indexer,
             worker_id=f"enterprise-retrieval-worker-{run_id}",
             lease_seconds=300,
         )
         phase = "ingest_documents"
-        worker_outcomes = [asdict(worker.run_once()) for _ in ingested]
-        if any(outcome["status"] != "succeeded" for outcome in worker_outcomes):
-            report["ingestion"] = {"uploads": ingested, "worker_outcomes": worker_outcomes}
+        worker_outcomes, ingestion_diagnostics = _drain_ingestion_jobs(
+            worker,
+            service,
+            writer_auth,
+            [str(upload["ingestion_job_id"]) for upload in ingested],
+            diagnostics=lambda job_ids: _ingestion_diagnostics(database, lifecycle, job_ids),
+        )
+        if ingestion_diagnostics["error_code"] is not None:
+            report["ingestion"] = {
+                "uploads": ingested,
+                "worker_outcomes": worker_outcomes,
+                "diagnostics": ingestion_diagnostics,
+            }
             raise RuntimeError("enterprise_benchmark_ingestion_failed")
         authorization = DatabaseAuthorizationPort(database)
         vectors = QdrantAuthorizedSearch(client, embedder, collection=collection)
@@ -543,7 +705,11 @@ def run_benchmark(
         report.update(
             {
                 "status": "completed",
-                "ingestion": {"uploads": ingested, "worker_outcomes": worker_outcomes},
+                "ingestion": {
+                    "uploads": ingested,
+                    "worker_outcomes": worker_outcomes,
+                    "diagnostics": ingestion_diagnostics,
+                },
                 "threshold_calibration": {
                     "selection_split": "calibration",
                     "test_labels_used_for_selection": False,
@@ -559,6 +725,13 @@ def run_benchmark(
                     "status": "not_evaluated",
                     "case_count": sum(case.split == "development" for case in dataset.cases),
                     "reason": "development split is excluded from calibration and holdout metrics",
+                },
+                "answer_quality": {
+                    "status": "not_evaluated",
+                    "reason": (
+                        "benchmark is retrieval-only; evaluate recorded answers with "
+                        "rag_kb.evaluation.answer_quality.evaluate_answer_support"
+                    ),
                 },
                 "all_cases": _evaluate_document_version_cases(
                     evaluated_cases, all_observations

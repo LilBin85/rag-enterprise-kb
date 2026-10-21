@@ -77,7 +77,14 @@ class Settings(BaseSettings):
     retrieval_score_threshold: float | None = Field(default=None, allow_inf_nan=False)
     retrieval_context_token_budget: int = Field(default=4000, ge=1, le=32000)
     retrieval_rrf_k: int = Field(default=60, ge=1, le=1000)
-    enable_hybrid_retrieval: bool = False
+    # 多路召回(dense + keyword sparse)与交叉编码重排默认开启；重排失败回落融合顺序。
+    enable_hybrid_retrieval: bool = True
+    enable_reranker: bool = True
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+
+    # 终态任务行保留期：内容（checkpoint/结果/产物正文）清空后，行再保留 N 天
+    # 即物理删除（SQL 级联清子表）。None 表示行永久保留（显式禁用行级收敛）。
+    task_row_retention_days: int | None = Field(default=30, ge=1)
 
     # M2 任务 Agent：Settings 只决定新任务的预算默认值。
     agent_max_model_calls: int = Field(

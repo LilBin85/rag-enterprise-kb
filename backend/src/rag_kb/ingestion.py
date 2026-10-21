@@ -35,7 +35,7 @@ def load_manifest(corpus_dir: Path) -> list[DocumentSpec]:
 
 @dataclass(frozen=True)
 class ParsedItem:
-    kind: Literal["title", "heading", "text"]
+    kind: Literal["title", "heading", "text", "table"]
     text: str
     page: int | None = None
 
@@ -75,20 +75,34 @@ def _parse_pdf_with_docling(path: Path) -> list[ParsedItem]:
             InputFormat.PDF: PdfFormatOption(pipeline_options=PdfPipelineOptions(do_ocr=False))
         }
     )
+    return items_from_docling_document(converter.convert(str(path)).document)
+
+
+def items_from_docling_document(document) -> list[ParsedItem]:
+    """把 Docling 文档对象映射为 ParsedItem，保留表格与正文真实页码。
+
+    表格对象没有可用的 ``text`` 字段，内容由表格数据/导出接口提供；只读 text 会
+    整块跳过表格。这里对表格显式调用 ``export_to_markdown`` 保留行列结构，并让
+    每个 item 携带自己的 ``prov[0].page_no``，使跨页正文能拿到实际页码。
+    """
     items: list[ParsedItem] = []
-    for item, _level in converter.convert(str(path)).document.iterate_items():
-        text = (getattr(item, "text", "") or "").strip()
-        if not text:
-            continue
+    for item, _level in document.iterate_items():
         raw_label = getattr(item, "label", None)
         label = str(getattr(raw_label, "value", raw_label or "text"))
-        prov = getattr(item, "prov", None)
-        if label == "title":
-            kind: Literal["title", "heading", "text"] = "title"
+        text = (getattr(item, "text", "") or "").strip()
+        if label == "table":
+            kind: Literal["title", "heading", "text", "table"] = "table"
+            exporter = getattr(item, "export_to_markdown", None)
+            text = exporter(document).strip() if callable(exporter) else ""
+        elif label == "title":
+            kind = "title"
         elif label == "section_header":
             kind = "heading"
         else:
             kind = "text"
+        if not text:
+            continue
+        prov = getattr(item, "prov", None)
         items.append(
             ParsedItem(
                 kind,

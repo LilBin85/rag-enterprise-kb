@@ -12,6 +12,7 @@ from rag_kb.ingestion import ParsedItem
 from rag_kb.infrastructure.ingestion.local_document_parser import (
     DocumentParseError,
     LocalDocumentParser,
+    _chunk_items,
 )
 from rag_kb.infrastructure.object_store import LocalObjectStore
 
@@ -125,3 +126,44 @@ def test_manifest_accepts_database_metadata_without_ordinal() -> None:
     second = DatabaseChunkMetadata("version-a:chunk-000001", _hash(b"alpha"), "First")
 
     assert compute_chunk_manifest_digest((first, second)) == compute_chunk_manifest_digest((second, first))
+
+
+def test_same_section_across_pages_keeps_actual_page_numbers() -> None:
+    chunks = _chunk_items(
+        [
+            ParsedItem("heading", "年假标准", 1),
+            ParsedItem("text", "第一页正文", 1),
+            ParsedItem("text", "第二页正文", 2),
+        ],
+        version_id="version-a",
+        max_chars=200,
+    )
+
+    assert [chunk.source_locator for chunk in chunks] == [
+        "第 1 页 / 年假标准",
+        "第 2 页 / 年假标准",
+    ]
+    assert [chunk.text for chunk in chunks] == ["第一页正文", "第二页正文"]
+
+
+def test_document_without_headings_still_gets_real_pages() -> None:
+    chunks = _chunk_items(
+        [ParsedItem("text", "第一页正文", 1), ParsedItem("text", "第二页正文", 2)],
+        version_id="version-a",
+        max_chars=200,
+    )
+
+    assert [chunk.source_locator for chunk in chunks] == ["第 1 页 / 正文", "第 2 页 / 正文"]
+
+
+def test_table_items_chunk_without_losing_rows() -> None:
+    table = "| 假期 | 天数 |\n| --- | --- |\n| 年假 | 15 |"
+    chunks = _chunk_items(
+        [ParsedItem("heading", "假期一览", 2), ParsedItem("table", table, 2)],
+        version_id="version-a",
+        max_chars=200,
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0].source_locator == "第 2 页 / 假期一览"
+    assert "| 年假 | 15 |" in chunks[0].text

@@ -284,6 +284,10 @@ class KnowledgeQueryService:
                 self._finish_task(execution, auth, status="succeeded")
             return self._refusal(kind, execution=execution)
 
+        # 引用复核只保证"合法引用"：used_chunk_ids 必须来自本轮账本且不重复。
+        # 合法引用 / 权限正确 / 事实被支持 是三个不同层次——这里能挡住模型编造
+        # 出处，但挡不住它引用真实片段却写错数字（如引用"年假 15 天"却答"200 天"）；
+        # 后者由离屏评测 rag_kb.evaluation.answer_quality 度量，不做运行时硬门。
         used_ids = verdict.used_chunk_ids
         if len(used_ids) != len(set(used_ids)):
             if not conversation_bound:

@@ -9,6 +9,7 @@ from rag_kb.config import Settings, resolve_retrieval_limits
 from rag_kb.embedder import BgeM3Embedder
 from rag_kb.infrastructure.database import Database
 from rag_kb.infrastructure.database.acl_repository import DatabaseAuthorizationPort
+from rag_kb.infrastructure.retrieval.reranker import BgeReranker
 from rag_kb.infrastructure.vectorstore.qdrant_authorized_search import QdrantAuthorizedSearch
 
 
@@ -32,4 +33,5 @@ def build_enterprise_retriever(
         hybrid_enabled=settings.enable_hybrid_retrieval,
         dense_score_threshold=settings.retrieval_score_threshold,
         consumer=consumer,
+        reranker=BgeReranker(settings.reranker_model) if settings.enable_reranker else None,
     )

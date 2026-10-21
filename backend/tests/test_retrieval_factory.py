@@ -15,6 +15,8 @@ def _settings(**overrides):
         "retrieval_context_token_budget": 1234,
         "retrieval_rrf_k": 77,
         "enable_hybrid_retrieval": True,
+        "enable_reranker": True,
+        "reranker_model": "BAAI/test-reranker",
         "retrieval_score_threshold": 0.25,
     }
     values.update(overrides)
@@ -25,6 +27,7 @@ def test_factory_preserves_all_retrieval_settings(monkeypatch) -> None:
     database = object()
     embedder = object()
     client = object()
+    reranker = object()
 
     class Authorization:
         def __init__(self, received_database) -> None:
@@ -46,6 +49,7 @@ def test_factory_preserves_all_retrieval_settings(monkeypatch) -> None:
     monkeypatch.setattr(factory, "QdrantClient", lambda *, url: client)
     monkeypatch.setattr(factory, "DatabaseAuthorizationPort", Authorization)
     monkeypatch.setattr(factory, "QdrantAuthorizedSearch", Vectors)
+    monkeypatch.setattr(factory, "BgeReranker", lambda model_name: reranker)
     monkeypatch.setattr(factory, "EnterpriseRetriever", Retriever)
 
     retriever = factory.build_enterprise_retriever(_settings(), database, consumer="durable")
@@ -62,7 +66,27 @@ def test_factory_preserves_all_retrieval_settings(monkeypatch) -> None:
         "hybrid_enabled": True,
         "dense_score_threshold": 0.25,
         "consumer": "durable",
+        "reranker": reranker,
     }
+
+
+def test_factory_omits_reranker_when_disabled(monkeypatch) -> None:
+    class Retriever:
+        def __init__(self, _authorization, _vectors, **kwargs) -> None:
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(factory, "BgeM3Embedder", lambda: object())
+    monkeypatch.setattr(factory, "QdrantClient", lambda *, url: object())
+    monkeypatch.setattr(factory, "DatabaseAuthorizationPort", lambda _database: object())
+    monkeypatch.setattr(factory, "QdrantAuthorizedSearch", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(factory, "EnterpriseRetriever", Retriever)
+
+    retriever = factory.build_enterprise_retriever(
+        _settings(enable_reranker=False), object(), consumer="fast"
+    )
+
+    assert retriever.kwargs["reranker"] is None
+    assert retriever.kwargs["hybrid_enabled"] is True
 
 
 def test_factory_rejects_invalid_limits_before_initializing_adapters(monkeypatch) -> None:
