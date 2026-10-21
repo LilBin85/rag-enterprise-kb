@@ -39,6 +39,11 @@ export interface ConversationList {
   next_cursor: string | null;
 }
 
+export interface ConversationDeleteResponse {
+  conversation_id: string;
+  status: "deleting";
+}
+
 export interface Citation {
     document_id: string;
     document_version: number;
@@ -51,6 +56,8 @@ export interface Citation {
 export interface ArtifactSummary {
   artifact_id: string;
   artifact_type: string;
+  display_name?: string;
+  file_extension?: "md" | "json";
   content_hash: string;
   status: "ready";
 }

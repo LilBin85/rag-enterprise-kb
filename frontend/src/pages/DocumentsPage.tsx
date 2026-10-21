@@ -192,7 +192,7 @@ export function DocumentsPage() {
   }, [jobSignature, jobs.data, queryClient, selectedDocumentId, session]);
 
   if (!hasPermission("document:read")) {
-    return <section className="restricted-page"><p className="eyebrow">受限入口</p><h1>当前身份无文档读取权限</h1><p>请切换到具有文档权限的演示身份后再访问此页面。</p></section>;
+    return <section className="restricted-page"><p className="eyebrow">受限入口</p><h1>当前身份无文档读取权限</h1><p>请切换到具有文档权限的身份后再访问此页面。</p></section>;
   }
 
   const rows = documents.data?.pages.flatMap((page) => page.items) ?? [];
@@ -219,7 +219,7 @@ export function DocumentsPage() {
           {documents.hasNextPage && <button className="text-button load-more" type="button" disabled={documents.isFetchingNextPage} onClick={() => documents.fetchNextPage()}>{documents.isFetchingNextPage ? "正在加载" : "加载更多"}</button>}
         </section>
         <section className="document-detail-panel" aria-live="polite">
-          {!selectedDocumentId && <div className="detail-empty"><p className="eyebrow">选择一份资料</p><h2>查看版本和摄取状态</h2><p>上传完成不代表新版本已经可用于问答。请选择左侧文档查看当前进度。</p></div>}
+          {!selectedDocumentId && <div className="detail-empty"><p className="eyebrow">选择一份资料</p><h2>查看处理状态</h2><p>请选择左侧文档，查看它是否已可用于问答。</p></div>}
           {selectedDocumentId && detail.isLoading && <><div className="skeleton h-8 w-2/3" /><div className="skeleton h-36 w-full" /></>}
           {selectedDocumentId && detail.isError && <div className="detail-empty"><p className="form-error">无法读取该文档，可能已被删除或无权访问。</p></div>}
           {detail.data && <>

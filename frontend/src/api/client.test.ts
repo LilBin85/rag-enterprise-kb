@@ -1,10 +1,26 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, submitMessage, uploadDocument } from "./client";
+import { ApiError, getMessages, submitMessage, uploadDocument } from "./client";
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("submitMessage", () => {
+  it("reads every message page without duplicating the boundary", async () => {
+    const first = Array.from({ length: 100 }, (_, index) => ({ message_id: `m-${index + 1}`, sequence: index + 1 }));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ items: first }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ items: [{ message_id: "m-101", sequence: 101 }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getMessages("demo-token", "c-1");
+
+    expect(result.items).toHaveLength(101);
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/v1/conversations/c-1/messages?limit=100&after_sequence=0",
+      "/v1/conversations/c-1/messages?limit=100&after_sequence=100",
+    ]);
+  });
+
   it("decodes fragmented Chinese SSE snapshots and combined terminal events", async () => {
     const text = [
       "event: turn.accepted\ndata: {\"conversation_id\":\"c-1\",\"turn_id\":\"t-1\",\"task_id\":\"task-1\",\"user_message\":{\"message_id\":\"m-1\",\"sequence\":1}}\n\n",

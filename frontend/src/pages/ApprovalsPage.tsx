@@ -103,7 +103,7 @@ export function ApprovalsPage() {
       setDecision(null);
       toast({
         title: result.status === "approved" ? "已接受批准决定" : "已接受拒绝决定",
-        detail: "服务器已保存恢复命令，任务仍需等待 Worker 处理。",
+        detail: "决定已保存，任务会继续处理；最终结果请在关联会话中查看。",
       });
     },
     onError: async (cause) => {
@@ -120,12 +120,19 @@ export function ApprovalsPage() {
         toast({ title: "审批状态已变化", detail: "已重新读取详情；请确认最新状态后再决定。" });
         return;
       }
-      toast({ title: "未能提交审批决定", detail: cause instanceof ApiError && cause.status === 403 ? "服务器拒绝了该决定。" : "请稍后重试。" });
+      toast({
+        title: "未能提交审批决定",
+        detail: cause instanceof ApiError && cause.code === "approval_self_rejected"
+          ? "任务发起人不能审批自己的操作，请切换到其他审批身份。"
+          : cause instanceof ApiError && cause.status === 403
+            ? "当前身份没有执行此审批的权限。"
+            : "请稍后重试。",
+      });
     },
   });
 
   if (!hasPermission("task:approve")) {
-    return <section className="restricted-page"><p className="eyebrow">受限入口</p><h1>当前身份无审批权限</h1><p>审批请切换到独立 approver 演示身份。发起任务的身份不能自行审批。</p></section>;
+    return <section className="restricted-page"><p className="eyebrow">受限入口</p><h1>当前身份无审批权限</h1><p>请切换到具有审批权限的身份后再访问。任务发起人不能审批自己的操作。</p></section>;
   }
 
   const selected = detail.data;
@@ -145,11 +152,11 @@ export function ApprovalsPage() {
           {approvals.data?.map((approval) => <button className={`approval-row ${selectedId === approval.approval_id ? "selected" : ""}`} type="button" key={approval.approval_id} onClick={() => setSelectedId(approval.approval_id)}><div><strong>{approval.tool_name}</strong><span>{approval.summary || "无可展示的操作摘要"}</span></div><div><ApprovalBadge status={approval.status} /><small>截止 {formatTime(approval.expires_at)}</small></div></button>)}
         </section>
         <section className="approval-detail-panel" aria-live="polite">
-          {!selectedId && <div className="detail-empty"><p className="eyebrow">选择一项操作</p><h2>查看安全摘要后再决定</h2><p>界面不会显示原始参数、检查点或内部哈希；服务端仍会校验所有绑定。</p></div>}
+          {!selectedId && <div className="detail-empty"><p className="eyebrow">选择一项操作</p><h2>查看操作摘要后再决定</h2><p>选择左侧项目后，可核对操作内容、有效期和当前状态。</p></div>}
           {selectedId && detail.isLoading && <><div className="skeleton h-8 w-2/3" /><div className="skeleton h-36 w-full" /></>}
           {selectedId && detail.isError && <div className="detail-empty"><p className="form-error">无法读取审批详情，请返回列表重新选择。</p></div>}
           {selected && <>
-            <div className="detail-heading"><div><p className="eyebrow">操作工具</p><h2>{selected.tool_name}</h2><p>版本 {selected.tool_version}</p></div><ApprovalBadge status={selected.status} /></div>
+            <div className="detail-heading"><div><p className="eyebrow">待确认操作</p><h2>{selected.tool_name}</h2></div><ApprovalBadge status={selected.status} /></div>
             <section className="approval-detail-section"><p className="section-label">操作摘要</p><p>{selected.summary || "服务端未提供可展示的操作摘要。"}</p></section>
             <section className="approval-detail-section"><dl className="approval-facts"><div><dt>任务</dt><dd>{selected.task_id}</dd></div><div><dt>有效期至</dt><dd>{formatTime(selected.expires_at)}</dd></div><div><dt>当前状态</dt><dd>{statusLabel[selected.status]}</dd></div></dl></section>
             {selected.status === "pending" && <div className="approval-actions"><button className="secondary-button" type="button" onClick={() => setDecision("approve")}>批准</button><button className="danger-button compact-danger" type="button" onClick={() => setDecision("reject")}>拒绝</button></div>}

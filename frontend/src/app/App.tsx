@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 
-import { ApiError, deleteConversation, listConversations } from "../api/client";
+import { ApiError, cancelTask, deleteConversation, getConversation, listConversations } from "../api/client";
+import type { ConversationList, ConversationSummary } from "../api/types";
 import { useAuth } from "./auth";
 import { Hint, useToast } from "../components/feedback";
 import { ApprovalsPage } from "../pages/ApprovalsPage";
@@ -62,6 +63,11 @@ function ConversationRail({ onNavigate }: { onNavigate: () => void }) {
   const navigate = useNavigate();
   const toast = useToast();
   const client = useQueryClient();
+  const pathnameRef = useRef(location.pathname);
+  pathnameRef.current = location.pathname;
+  const [confirming, setConfirming] = useState<ConversationSummary | null>(null);
+  const [checkingId, setCheckingId] = useState<string | null>(null);
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const conversations = useInfiniteQuery({
     queryKey: ["conversations", session],
     initialPageParam: null as string | null,
@@ -69,21 +75,58 @@ function ConversationRail({ onNavigate }: { onNavigate: () => void }) {
     getNextPageParam: (page) => page.next_cursor,
     enabled: Boolean(token),
   });
-  const remove = useMutation({
-    mutationFn: (conversationId: string) => deleteConversation(token!, conversationId),
-    onSuccess: (_, conversationId) => {
-      void client.invalidateQueries({ queryKey: ["conversations", session] });
-      if (location.pathname.endsWith(`/${conversationId}`)) navigate("/chat");
-      toast({ title: "会话已请求删除", detail: "删除将在服务器完成状态校验后生效。" });
-    },
-    onError: (cause) => {
-      toast({
-        title: "无法删除会话",
-        detail: cause instanceof ApiError && cause.status === 409 ? "会话仍有活动任务，请先等待或取消。" : "请稍后重试。",
-      });
-    },
-  });
   const rows = conversations.data?.pages.flatMap((page) => page.items) ?? [];
+
+  const openDelete = async (conversation: ConversationSummary) => {
+    setCheckingId(conversation.conversation_id);
+    try {
+      setConfirming(await getConversation(token!, conversation.conversation_id));
+    } catch (cause) {
+      toast({ title: "无法读取会话状态", detail: cause instanceof ApiError && cause.status === 404 ? "会话已经不存在。" : "请稍后重试。" });
+      void client.invalidateQueries({ queryKey: ["conversations", session] });
+    } finally {
+      setCheckingId(null);
+    }
+  };
+
+  const removeConversation = async () => {
+    if (!confirming || deletingIds.has(confirming.conversation_id)) return;
+    const conversationId = confirming.conversation_id;
+    setConfirming(null);
+    setDeletingIds((current) => new Set(current).add(conversationId));
+    try {
+      if (confirming.active_turn?.task_id) {
+        await cancelTask(token!, confirming.active_turn.task_id, confirming.active_turn.state_version);
+        const latest = await getConversation(token!, conversationId);
+        if (latest.active_turn) throw new ApiError(409, "conversation_has_active_turn");
+      }
+      await deleteConversation(token!, conversationId);
+      client.setQueryData<InfiniteData<ConversationList>>(["conversations", session], (current) => current ? ({
+        ...current,
+        pages: current.pages.map((page) => ({
+          ...page,
+          items: page.items.filter((item) => item.conversation_id !== conversationId),
+        })),
+      }) : current);
+      void client.cancelQueries({ queryKey: ["conversation", session, conversationId] });
+      void client.cancelQueries({ queryKey: ["messages", session, conversationId] });
+      client.removeQueries({ queryKey: ["conversation", session, conversationId] });
+      client.removeQueries({ queryKey: ["messages", session, conversationId] });
+      if (pathnameRef.current.endsWith(`/${conversationId}`)) navigate("/chat");
+      toast({ title: "会话已移除", detail: "内容正在后台清理。" });
+      void client.invalidateQueries({ queryKey: ["conversations", session] });
+    } catch (cause) {
+      const conflict = cause instanceof ApiError && cause.status === 409;
+      toast({ title: "无法删除会话", detail: conflict ? "任务状态已变化或仍在运行，请重新确认。" : "请稍后重试。" });
+      void client.invalidateQueries({ queryKey: ["conversations", session] });
+    } finally {
+      setDeletingIds((current) => {
+        const next = new Set(current);
+        next.delete(conversationId);
+        return next;
+      });
+    }
+  };
 
   return (
     <section className="conversation-rail">
@@ -111,10 +154,10 @@ function ConversationRail({ onNavigate }: { onNavigate: () => void }) {
                 className="delete-conversation"
                 type="button"
                 aria-label="删除会话"
-                disabled={remove.isPending}
-                onClick={() => window.confirm("确认删除此会话？活动任务需要先由服务器结束或取消。") && remove.mutate(conversation.conversation_id)}
+                disabled={deletingIds.has(conversation.conversation_id) || checkingId === conversation.conversation_id}
+                onClick={() => void openDelete(conversation)}
               >
-                删除
+                {deletingIds.has(conversation.conversation_id) ? "删除中" : checkingId === conversation.conversation_id ? "检查中" : "删除"}
               </button>
             </div>
           );
@@ -125,6 +168,28 @@ function ConversationRail({ onNavigate }: { onNavigate: () => void }) {
         <button className="text-button" type="button" disabled={conversations.isFetchingNextPage} onClick={() => conversations.fetchNextPage()}>
           {conversations.isFetchingNextPage ? "正在加载" : "加载更多"}
         </button>
+      )}
+      {confirming && (
+        <div className="modal-layer" role="presentation">
+          <button className="modal-scrim" type="button" aria-label="关闭删除确认" onClick={() => setConfirming(null)} />
+          <section className="modal-dialog delete-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-conversation-title">
+            <p className="eyebrow">删除会话</p>
+            <h2 id="delete-conversation-title">删除“{confirming.title || "未命名对话"}”？</h2>
+            <p className="decision-note">
+              {confirming.active_turn?.task_id
+                ? "此会话仍有任务在运行。确认后将先取消任务，再移除会话。"
+                : confirming.active_turn
+                  ? "当前回答仍在生成且暂时无法取消，请等待完成后再删除。"
+                  : "会话会立即从列表移除，相关内容由服务器在后台清理。"}
+            </p>
+            <div className="modal-actions">
+              <button className="text-button" type="button" autoFocus onClick={() => setConfirming(null)}>取消</button>
+              <button className="danger-button compact-danger" type="button" disabled={Boolean(confirming.active_turn && !confirming.active_turn.task_id)} onClick={() => void removeConversation()}>
+                {confirming.active_turn?.task_id ? "取消任务并删除" : "确认删除"}
+              </button>
+            </div>
+          </section>
+        </div>
       )}
     </section>
   );

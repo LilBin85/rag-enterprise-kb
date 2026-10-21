@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import ReactMarkdown from "react-markdown";
 
 import {
   ApiError,
@@ -12,8 +11,11 @@ import {
   getTaskResult,
 } from "../api/client";
 import type { ArtifactSummary, Citation, Task } from "../api/types";
+import type { TaskEvent } from "../api/types";
 import { useAuth } from "../app/auth";
 import { useToast } from "./feedback";
+import { MarkdownContent } from "./markdown-content";
+import { artifactDisplayName, artifactDownloadName, artifactTypeLabel } from "./artifact-file";
 
 const activeStatuses = new Set([
   "planning",
@@ -34,6 +36,15 @@ const taskLabels: Record<string, string> = {
   unknown: "状态待确认",
 };
 
+function eventSummary(event: TaskEvent) {
+  const total = Number(event.counts.total ?? 0);
+  const succeeded = Number(event.counts.succeeded ?? 0);
+  const failed = Number(event.counts.failed ?? 0);
+  if (event.event_type === "tool_batch_started") return `并行读取 ${total} 项`;
+  if (event.event_type === "tool_batch_completed") return `成功 ${succeeded} 项，失败 ${failed} 项`;
+  return event.stage;
+}
+
 function TaskBadge({ task }: { task: Task }) {
   const label = task.status === "succeeded" && !task.result_available
     ? "结果待确认"
@@ -44,22 +55,24 @@ function TaskBadge({ task }: { task: Task }) {
 export function CitationList({ citations }: { citations: Citation[] }) {
   if (!citations.length) return null;
   return (
-    <section className="source-list" aria-label="来源">
-      <p className="section-label">来源</p>
-      {citations.map((citation) => (
-        <Link
-          className="source-item"
-          key={`${citation.document_id}-${citation.chunk_id}-${citation.source_locator}`}
-          to={`/documents?document=${encodeURIComponent(citation.document_id)}`}
-        >
-          <span>{citation.document_title || citation.source_file_name}</span>
-          <small>
-            {citation.document_title ? `${citation.source_file_name} · ` : ""}
-            V{citation.document_version} · {citation.document_id.slice(0, 8)} · {citation.source_locator}
-          </small>
-        </Link>
-      ))}
-    </section>
+    <details className="source-list">
+      <summary>{citations.length} 个来源</summary>
+      <section aria-label="来源">
+        {citations.map((citation) => (
+          <Link
+            className="source-item"
+            key={`${citation.document_id}-${citation.chunk_id}-${citation.source_locator}`}
+            to={`/documents?document=${encodeURIComponent(citation.document_id)}`}
+          >
+            <span>{citation.document_title || citation.source_file_name}</span>
+            <small>
+              {citation.document_title ? `${citation.source_file_name} · ` : ""}
+              V{citation.document_version} · {citation.source_locator}
+            </small>
+          </Link>
+        ))}
+      </section>
+    </details>
   );
 }
 
@@ -142,7 +155,7 @@ export function TaskDrawer({ taskId, onClose }: { taskId: string; onClose: () =>
     const url = URL.createObjectURL(artifact.data.blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = selectedArtifact.artifact_id;
+    link.download = artifactDownloadName(selectedArtifact);
     document.body.append(link);
     link.click();
     link.remove();
@@ -181,7 +194,7 @@ export function TaskDrawer({ taskId, onClose }: { taskId: string; onClose: () =>
           <ol className="event-list">
             {events.data.slice(-5).reverse().map((event) => (
               <li key={event.sequence}>
-                <span>{event.stage}</span>
+                <span>{eventSummary(event)}</span>
                 <small>{event.status}{event.error_code ? ` · ${event.error_code}` : ""}</small>
               </li>
             ))}
@@ -191,7 +204,7 @@ export function TaskDrawer({ taskId, onClose }: { taskId: string; onClose: () =>
       {result.data && (
         <section className="drawer-section result-block">
           <p className="section-label">最终结果</p>
-          <ReactMarkdown skipHtml>{result.data.answer || "任务未提供可展示的正文。"}</ReactMarkdown>
+          <MarkdownContent>{result.data.answer || "任务未提供可展示的正文。"}</MarkdownContent>
           <CitationList citations={result.data.citations} />
         </section>
       )}
@@ -204,13 +217,14 @@ export function TaskDrawer({ taskId, onClose }: { taskId: string; onClose: () =>
           <div className="artifact-list">
             {artifacts.map((item) => (
               <button key={item.artifact_id} className="artifact-button" type="button" onClick={() => setSelectedArtifact(item)}>
-                <span>{item.artifact_type}</span><small>{item.artifact_id.slice(0, 10)}</small>
+                <span>{artifactDisplayName(item)}</span>
+                <small>{artifactTypeLabel(item.artifact_type)} · {item.artifact_id.slice(0, 10)}</small>
               </button>
             ))}
           </div>
           {selectedArtifact && (
             <div className="artifact-preview">
-              <div className="artifact-preview-heading"><strong>{selectedArtifact.artifact_type}</strong><button className="text-button" onClick={() => setSelectedArtifact(null)}>收起</button></div>
+              <div className="artifact-preview-heading"><strong>{artifactDisplayName(selectedArtifact)}</strong><button className="text-button" onClick={() => setSelectedArtifact(null)}>收起</button></div>
               {artifact.isLoading && <div className="skeleton h-20 w-full" />}
               {artifact.isError && <p className="empty-copy">产物正文不可用、已隐藏或已过期。</p>}
               {artifact.data && <><pre>{artifact.data.text}</pre><button className="secondary-button artifact-download" type="button" onClick={downloadArtifact}>下载原始内容</button></>}

@@ -3,6 +3,7 @@ import type {
   ApprovalDecision,
   ApprovalStatus,
   ConversationList,
+  ConversationDeleteResponse,
   ConversationMessages,
   ConversationStreamEvent,
   ConversationSummary,
@@ -133,20 +134,29 @@ export function getConversation(
   });
 }
 
-export function getMessages(
+export async function getMessages(
   token: string,
   conversationId: string,
   signal?: AbortSignal,
 ): Promise<ConversationMessages> {
-  return request<ConversationMessages>(
-    `/v1/conversations/${conversationId}/messages`,
-    token,
-    { signal },
-  );
+  const items: ConversationMessages["items"] = [];
+  let afterSequence = 0;
+  while (true) {
+    const page = await request<ConversationMessages>(
+      `/v1/conversations/${conversationId}/messages?limit=100&after_sequence=${afterSequence}`,
+      token,
+      { signal },
+    );
+    items.push(...page.items);
+    if (page.items.length < 100) return { items };
+    const nextSequence = Math.max(...page.items.map((item) => item.sequence));
+    if (nextSequence <= afterSequence) return { items };
+    afterSequence = nextSequence;
+  }
 }
 
-export function deleteConversation(token: string, conversationId: string): Promise<void> {
-  return request<void>(`/v1/conversations/${conversationId}`, token, {
+export function deleteConversation(token: string, conversationId: string): Promise<ConversationDeleteResponse> {
+  return request<ConversationDeleteResponse>(`/v1/conversations/${conversationId}`, token, {
     method: "DELETE",
   });
 }

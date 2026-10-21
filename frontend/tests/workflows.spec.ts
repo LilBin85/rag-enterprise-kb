@@ -35,6 +35,7 @@ const approval = {
 };
 
 async function mockApi(page: Page) {
+  let conversationVisible = true;
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -46,7 +47,33 @@ async function mockApi(page: Page) {
     if (url.pathname === "/v1/me") {
       return json(request.headers().authorization === "Bearer approver-token" ? approver : admin);
     }
-    if (url.pathname === "/v1/conversations") return json({ items: [], next_cursor: null });
+    if (url.pathname === "/v1/conversations") return json({
+      items: conversationVisible ? [{
+        conversation_id: "conversation-1",
+        title: "需要删除的会话",
+        state_version: 1,
+        status: "active",
+        created_at: "2027-01-02T03:04:05Z",
+        updated_at: "2027-01-02T03:04:05Z",
+        active_turn: null,
+      }] : [],
+      next_cursor: null,
+    });
+    if (url.pathname === "/v1/conversations/conversation-1" && request.method() === "GET") {
+      return json({
+        conversation_id: "conversation-1",
+        title: "需要删除的会话",
+        state_version: 1,
+        status: "active",
+        created_at: "2027-01-02T03:04:05Z",
+        updated_at: "2027-01-02T03:04:05Z",
+        active_turn: null,
+      });
+    }
+    if (url.pathname === "/v1/conversations/conversation-1" && request.method() === "DELETE") {
+      conversationVisible = false;
+      return json({ conversation_id: "conversation-1", status: "deleting" }, 202);
+    }
     if (url.pathname === "/v1/documents") {
       return json({
         items: [{ document_id: "annual-leave", title: "员工年假制度", department: "hr", status: "active" }],
@@ -88,6 +115,19 @@ test("shows document versions and ingestion status for an authorized identity", 
   const version = page.locator(".version-row");
   await expect(version.getByText("可用于问答", { exact: true })).toBeVisible();
   await expect(version.getByText("已完成", { exact: true })).toBeVisible();
+});
+
+test("removes an accepted conversation deletion from the rail immediately", async ({ page }) => {
+  await mockApi(page);
+  await connect(page, "admin-token");
+
+  await expect(page.getByText("需要删除的会话", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "删除会话" }).click();
+  await expect(page.getByRole("heading", { name: "删除“需要删除的会话”？" })).toBeVisible();
+  await page.getByRole("button", { name: "确认删除" }).click();
+
+  await expect(page.getByText("需要删除的会话", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("会话已移除", { exact: true })).toBeVisible();
 });
 
 test("shows an approver the decision confirmation step", async ({ page }) => {
