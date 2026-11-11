@@ -47,6 +47,24 @@ def _batch_error_message(call: dict[str, Any], code: str) -> ToolMessage:
     )
 
 
+_HITL_REJECT_PREFIX = "User rejected the tool call for `"
+_HITL_REJECT_REASON_SEPARATOR = "` with reason: "
+
+
+def _controlled_write_contract_text(content: object) -> object:
+    """取出受控写结果契约文本。
+
+    langchain 1.4+ 的 HITL 中间件在 reject 决策时把拒绝原因包装成
+    "User rejected the tool call for `<tool>` with reason: <reason>" 的 status=error
+    ToolMessage；其中 <reason> 才是服务端写入的契约文本，需剥离框架前缀后照常校验。
+    """
+    if isinstance(content, str) and content.startswith(_HITL_REJECT_PREFIX):
+        separator_at = content.find(_HITL_REJECT_REASON_SEPARATOR)
+        if separator_at != -1:
+            return content[separator_at + len(_HITL_REJECT_REASON_SEPARATOR):]
+    return content
+
+
 def _prior_batch_error_count(messages: tuple[object, ...] | list[object], code: str) -> int:
     count = 0
     for message in messages:
@@ -132,13 +150,8 @@ class BusinessToolBatchMiddleware(AgentMiddleware):
             if not isinstance(message, ToolMessage) or message.name not in CONTROLLED_WRITE_TOOL_NAMES:
                 continue
             try:
-                payload = json.loads(message.content)
+                payload = json.loads(_controlled_write_contract_text(message.content))
             except (TypeError, ValueError):
-                # langchain 1.4+ 的 HITL 中间件在 reject 决策时合成 status=error 的
-                # ToolMessage（正文为 "User rejected the tool call ..." 解释文本），
-                # 不是本服务的 WRITE 结果契约；被拒绝的调用未执行，按未完成处理。
-                if getattr(message, "status", None) == "error":
-                    continue
                 raise AgentGuardError("agent_controlled_write_result_invalid") from None
             if (
                 not isinstance(payload, dict)

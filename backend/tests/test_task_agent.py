@@ -1023,6 +1023,18 @@ def test_rejected_write_message_synthesized_by_hitl_is_not_a_write_contract() ->
 
     assert BusinessToolBatchMiddleware().after_model({"messages": [rejected]}, None) is None
 
+    plain_reason = ToolMessage(
+        content=(
+            "User rejected the tool call for `create_report_artifact` "
+            "with reason: 用户拒绝"
+        ),
+        tool_call_id="call_rejected_plain",
+        name="create_report_artifact",
+        status="error",
+    )
+    with pytest.raises(AgentGuardError):
+        BusinessToolBatchMiddleware().after_model({"messages": [plain_reason]}, None)
+
     malformed = ToolMessage(
         content="not-a-write-contract",
         tool_call_id="call_malformed",
