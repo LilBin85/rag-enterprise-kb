@@ -134,6 +134,11 @@ class BusinessToolBatchMiddleware(AgentMiddleware):
             try:
                 payload = json.loads(message.content)
             except (TypeError, ValueError):
+                # langchain 1.4+ 的 HITL 中间件在 reject 决策时合成 status=error 的
+                # ToolMessage（正文为 "User rejected the tool call ..." 解释文本），
+                # 不是本服务的 WRITE 结果契约；被拒绝的调用未执行，按未完成处理。
+                if getattr(message, "status", None) == "error":
+                    continue
                 raise AgentGuardError("agent_controlled_write_result_invalid") from None
             if (
                 not isinstance(payload, dict)

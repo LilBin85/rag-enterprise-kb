@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolRuntime
 from langgraph.types import Command
@@ -19,6 +19,7 @@ from sqlalchemy import insert
 
 from rag_kb.agent import factory
 from rag_kb.agent.context import AgentRunContext
+from rag_kb.agent.middleware import AgentGuardError, BusinessToolBatchMiddleware
 from rag_kb.agent.result import TaskResult, TaskResultCandidate, build_task_result
 from rag_kb.agent.tools import (
     CONTROLLED_WRITE_TOOL_NAMES,
@@ -1002,3 +1003,30 @@ def test_write_tool_message_work_item_draft_render_exposes_artifact_id_only() ->
     assert payload["artifact_id"] == "artifact-2"
     assert payload["artifact_type"] == "work_item_draft"
     assert "storage_key" not in payload
+
+
+def test_rejected_write_message_synthesized_by_hitl_is_not_a_write_contract() -> None:
+    reason = render_write_tool_message(
+        "create_report_artifact",
+        None,
+        error_code="approval_rejected",
+    )
+    rejected = ToolMessage(
+        content=(
+            "User rejected the tool call for `create_report_artifact` "
+            f"with reason: {reason}"
+        ),
+        tool_call_id="call_rejected",
+        name="create_report_artifact",
+        status="error",
+    )
+
+    assert BusinessToolBatchMiddleware().after_model({"messages": [rejected]}, None) is None
+
+    malformed = ToolMessage(
+        content="not-a-write-contract",
+        tool_call_id="call_malformed",
+        name="create_report_artifact",
+    )
+    with pytest.raises(AgentGuardError):
+        BusinessToolBatchMiddleware().after_model({"messages": [malformed]}, None)
